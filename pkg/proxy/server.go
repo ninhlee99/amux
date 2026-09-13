@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
@@ -203,16 +204,28 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 					r.Header.Add("anthropic-beta", "oauth-2025-04-20")
 				}
 			}
-			// else: no rotator token. If the caller brought their own
-			// credential (hasCallerCredential), it passes through
-			// unchanged — that's their key, not ours to touch. If not,
-			// server.go already refused the request before reaching here.
+			// Scrub internal routing and leak headers before outbound dispatch
+			guard.SanitizeOutboundRequest(r)
 			// Redact body before it leaves the machine toward Anthropic/upstream.
 			redactOutboundBody(r)
 		},
+		Transport: &dynamicProxyRoundTripper{rot: rot},
 		ModifyResponse: func(resp *http.Response) error {
 			rot.Observe(resp)
 			usage.WrapUsageCapture(resp, rot.Active())
+			active := rot.Active()
+			if active != "" {
+				switch resp.StatusCode {
+				case http.StatusOK, http.StatusCreated:
+					guard.RecordSuccess(active)
+				case http.StatusTooManyRequests:
+					retryAfter := guard.ParseRetryAfter(resp.Header)
+					guard.GlobalHealth().RecordRateLimit(active, retryAfter)
+					guard.GlobalPacer().RecordRateLimit(active, retryAfter)
+				case http.StatusUnauthorized, http.StatusForbidden:
+					guard.GlobalHealth().RecordAuthError(active, resp.Status)
+				}
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -220,6 +233,34 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 			http.Error(w, "amux proxy: upstream error", http.StatusBadGateway)
 		},
 	}, nil
+}
+
+type dynamicProxyRoundTripper struct {
+	rot *Rotator
+}
+
+func (d *dynamicProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var proxyURL string
+	if d.rot != nil {
+		active := d.rot.Active()
+		if active != "" {
+			meta := profile.ReadMeta("claude", active)
+			if meta.Proxy != "" {
+				proxyURL = meta.Proxy
+			}
+		}
+	}
+	if proxyURL == "" {
+		proxyURL = os.Getenv("AM_EGRESS_PROXY")
+	}
+	if proxyURL != "" {
+		t, err := guard.NewProxyTransport(proxyURL)
+		if err == nil {
+			return t.RoundTrip(req)
+		}
+		log.Printf("guard: egress proxy failed for %q: %v", proxyURL, err)
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 // newHandler builds the full HTTP handler serving Claude Code, the OpenAI
@@ -258,7 +299,13 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		s["mode"] = mode.Get()
 		s["pool"] = chatPool.Status()
 		s["tool_pool"] = toolPool.Status()
+		s["guard"] = guard.Status()
 		_ = json.NewEncoder(w).Encode(s)
+	})
+
+	mux.HandleFunc("/_am/guard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(guard.Status())
 	})
 
 	mux.HandleFunc("/_am/switch", func(w http.ResponseWriter, r *http.Request) {

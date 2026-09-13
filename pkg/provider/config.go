@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"amux-accounts/pkg/auth"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/types"
 )
@@ -60,6 +62,9 @@ type ProviderConfig struct {
 	ParentMessageID string `json:"parentMessageId,omitempty"`
 	// Gemini web: JSON array of chat.metadata (cid/rid/rcid/…).
 	MetadataJSON string `json:"metadataJson,omitempty"`
+
+	// Proxy specifies an egress proxy URL (http://, https://, socks5://) for this account/provider
+	Proxy string `json:"proxy,omitempty"`
 }
 
 // IsConfigured reports whether the provider has valid credentials and is in
@@ -415,6 +420,16 @@ func ResolveSecret(val string) string {
 }
 
 func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
+	var proxyClient *http.Client
+	if p.Proxy != "" {
+		c, err := guard.GetClientForProxy(p.Proxy)
+		if err != nil {
+			log.Printf("provider %s: configure proxy %q failed: %v", p.ID, p.Proxy, err)
+		} else {
+			proxyClient = c
+		}
+	}
+
 	switch p.Type {
 	case "openai_compatible":
 		if p.BaseURL == "" {
@@ -430,6 +445,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			BaseURL:     p.BaseURL,
 			APIKey:      ResolveSecret(p.APIKey),
 			TargetModel: model,
+			HTTPClient:  proxyClient,
 		}, nil
 
 	case "gemini":
@@ -437,7 +453,11 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 		if model == "" {
 			model = "gemini-3.6-flash"
 		}
-		return NewGeminiAdapter(p.ID, p.Priority, ResolveSecret(p.APIKey), model), nil
+		g := NewGeminiAdapter(p.ID, p.Priority, ResolveSecret(p.APIKey), model)
+		if proxyClient != nil {
+			g.HTTPClient = proxyClient
+		}
+		return g, nil
 
 	case "chatgpt_web":
 		return &ChatGPTWebAdapter{
@@ -445,6 +465,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			PriorityLvl:     p.Priority,
 			SessionToken:    ResolveSecret(p.SessionToken),
 			TargetModel:     p.Model,
+			HTTPClient:      proxyClient,
 			convID:          p.ConversationID,
 			parentMessageID: p.ParentMessageID,
 		}, nil
@@ -456,6 +477,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			SessionKey:  ResolveSecret(p.SessionKey),
 			Cookies:     p.Cookies,
 			TargetModel: p.Model,
+			HTTPClient:  proxyClient,
 			orgID:       p.OrgID,
 			convUUID:    p.ConversationID,
 		}, nil
@@ -467,11 +489,12 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			cookies = "__Secure-1PSID=" + sk
 		}
 		return &GeminiWebAdapter{
-			AdapterID:   p.ID,
-			PriorityLvl: p.Priority,
-			Cookies:     cookies,
-			TargetModel: p.Model,
-			cid:         p.ConversationID,
+			AdapterID:    p.ID,
+			PriorityLvl:  p.Priority,
+			Cookies:      cookies,
+			TargetModel:  p.Model,
+			HTTPClient:   proxyClient,
+			cid:          p.ConversationID,
 			metadataJSON: p.MetadataJSON,
 		}, nil
 

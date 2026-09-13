@@ -75,6 +75,10 @@ type ChatRequest struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// TargetTier requests a specific model class: "flash" (fast), "pro" (heavy/reasoning), or "" (auto).
 	TargetTier string `json:"target_tier,omitempty"`
+	// SessionID optionally identifies the multi-turn conversational session or thread.
+	SessionID string `json:"session_id,omitempty"`
+	// Metadata carries arbitrary client metadata passed along with the request.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // StreamChunk is one piece of a streamed reply. The producer closes the
@@ -87,7 +91,7 @@ type StreamChunk struct {
 	FinishReason string     // "stop", "tool_calls", "end_turn", ...
 	Done         bool
 	Error        error
-	// LogText is the raw provider reply for watch (not sent to the client).
+	// LogText is the raw provider reply for request logging and error diagnosis (not sent to the client).
 	LogText string
 }
 

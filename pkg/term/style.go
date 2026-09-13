@@ -251,7 +251,6 @@ func ProgressBar(pct float64, width int) string {
 
 const (
 	kvLabelW = 10
-	blockW   = 58 // total chars between leading indent and newline, including both borders
 )
 
 // VisibleLen counts printable runes, ignoring ANSI escapes.
@@ -315,60 +314,41 @@ func truncateVisible(s string, width int) string {
 	return b.String()
 }
 
-func innerW() int { return blockW - 2 }
-
-// Section opens a closed ASCII block with a titled top border.
+// Section prints a clean, bold uppercase section label.
 func Section(title string) {
 	fmt.Println()
-	t := " " + strings.ToUpper(strings.TrimSpace(title)) + " "
-	mid := innerW()
-	if len(t) > mid-4 {
-		t = t[:mid-4] + " "
-	}
-	left := 2
-	right := mid - left - len(t)
-	if right < 1 {
-		right = 1
-		left = mid - len(t) - 1
-		if left < 1 {
-			left = 1
-		}
-	}
-	top := "+" + strings.Repeat("-", left) + t + strings.Repeat("-", right) + "+"
-	fmt.Println(Cyan(Bold("  " + top)))
+	t := strings.ToUpper(strings.TrimSpace(title))
+	fmt.Printf("  %s %s\n", Cyan(Bold("■")), White(Bold(t)))
 }
 
-// PanelEnd closes the current block.
-func PanelEnd() {
-	fmt.Println(Cyan("  +" + strings.Repeat("-", innerW()) + "+"))
-}
+// PanelEnd closes the section cleanly.
+func PanelEnd() {}
 
-// Header prints a modern banner block.
+// Header prints a modern, minimalist header banner.
 func Header(title, subtitle string) {
-	Section(title)
+	fmt.Println()
+	t := strings.TrimSpace(title)
 	if subtitle != "" {
-		Row(Dim(subtitle))
+		fmt.Printf("  %s %s  %s\n", Cyan(Bold("●")), Bold(t), Dim("· "+subtitle))
+	} else {
+		fmt.Printf("  %s %s\n", Cyan(Bold("●")), Bold(t))
 	}
-	PanelEnd()
 }
 
-// KV prints key/value inside the open block, right border aligned.
+// KV prints indented key/value pairs with clean label alignment.
 func KV(key, value string) {
-	label := fmt.Sprintf("%-*s", kvLabelW, key)
-	Row(Dim(label) + "  " + value)
+	label := fmt.Sprintf("%-*s", kvLabelW, strings.ToLower(key)+":")
+	fmt.Printf("    %s  %s\n", Dim(label), value)
 }
 
-// Row prints one content line inside the open block (padded + right border).
+// Row prints an indented content line without arbitrary clipping.
 func Row(s string) {
-	w := innerW()
-	s = truncateVisible(s, w)
-	s = padVisible(s, w)
-	fmt.Printf("  %s%s%s\n", Cyan("|"), s, Cyan("|"))
+	fmt.Printf("    %s\n", s)
 }
 
-// BlankRow prints an empty padded line inside the block.
+// BlankRow prints an empty line.
 func BlankRow() {
-	Row("")
+	fmt.Println()
 }
 
 func max(a, b int) int {

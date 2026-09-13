@@ -48,6 +48,7 @@ Accounts:
   amux on <id>                put it back
   amux add [tool] [name]      save current CLI login (claude / codex / gemini)
   amux rm <id|name>           delete account (CLI profile → trash, provider → removed)
+  amux accounts rm <id>       alias to amux rm <id> (delete provider)
   amux rename <id> <new>      rename Claude profile
   amux restore <id>           restore trash (` + "`am restore --backup`" + ` = last auto-backup)
   amux sw                     picker · am sw <id> pin Claude or provider
@@ -66,9 +67,7 @@ Add providers:
   amux oauth <provider>       standalone OAuth (claude, codex, antigravity, agy, kimi, grok)
   amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq / kimi / grok
   amux api add <name> --endpoint <url> --api-key <key> [--model M] [--priority N]
-  amux accounts rm <id>       delete a provider from the list (or use am rm <id>)
   amux doctor providers       1-turn probe each adapter
-  amux chat [--provider id]   terminal chat + failover
   amux btw <message>          inject a note to the agent while it is running
                               (e.g. "am btw check if README is up to date too")
 
@@ -91,6 +90,7 @@ Monitoring & Utilities:
                             utilization >= N% (default 95). Also: AM_ROTATE_THRESHOLD
   amux env [--public]         print export ANTHROPIC_BASE_URL=... for eval "$(amux env)";
                             --public uses LAN IP when proxy is bound on 0.0.0.0
+  amux guard [reset]          view anti-ban health scores, quarantine state, and session affinity
   amux hook [install|uninstall|status]
   amux export [tool] [name..] [-o file|--stdout]  encrypted profile bundle
   amux import [-f file] [--activate tool=name]
@@ -259,8 +259,8 @@ func Run(rawArgs []string) {
 	case "status", "st":
 		ui.CmdStatus()
 
-	case "watch", "dash", "dashboard":
-		ui.CmdWatch()
+	case "guard":
+		ui.CmdGuard(args)
 
 	case "current":
 		tool := "claude"
@@ -311,9 +311,6 @@ func Run(rawArgs []string) {
 
 	case "api":
 		ui.CmdAPI(args)
-
-	case "chat":
-		ui.CmdChat(args)
 
 	case "btw":
 		if len(args) == 0 {

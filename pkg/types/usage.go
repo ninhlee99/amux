@@ -20,7 +20,7 @@ type EventEntry struct {
 	Message string    `json:"msg"`
 }
 
-// RequestEntry captures one chat turn's input/output for the watch dashboard.
+// RequestEntry captures one chat turn's input/output for logging and error diagnosis.
 type RequestEntry struct {
 	Time       time.Time `json:"t"`
 	Dialect    string    `json:"dialect,omitempty"` // claude|cursor|codex|…

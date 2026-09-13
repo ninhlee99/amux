@@ -26,13 +26,13 @@ var (
 func eventsPath() string   { return filepath.Join(types.BaseDir(), "events.log") }
 func requestsPath() string { return filepath.Join(types.BaseDir(), "requests.log") }
 
-// AppendEvent writes one tagged event for the Logs tab.
+// AppendEvent writes one tagged event to events.log.
 func AppendEvent(tag, msg string) {
 	e := types.EventEntry{Time: time.Now(), Tag: strings.TrimSpace(tag), Message: strings.TrimSpace(msg)}
 	appendJSONL(eventsPath(), e, maxEventLines)
 }
 
-// AppendRequest writes one chat I/O record for the Requests tab.
+// AppendRequest writes one chat I/O record to requests.log.
 func AppendRequest(e types.RequestEntry) {
 	if e.Time.IsZero() {
 		e.Time = time.Now()

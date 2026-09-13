@@ -35,12 +35,11 @@ amux/
 │       ├── claude-code-tools.html  # Phân tích công cụ Claude Code
 │       ├── antigravity-tools.html  # Phân tích công cụ Antigravity (AGY)
 │       ├── codex-tools.html        # Phân tích công cụ Codex CLI
-│       ├── cursor-tools.html       # Phân tích công cụ Cursor IDE
-│       └── amux-watch-dashboard-mockup.png # Mockup giao diện TUI Watch
+│       └── cursor-tools.html       # Phân tích công cụ Cursor IDE
 │
 └── pkg/
     ├── cli/                        # [ENTRYPOINT] Bộ phân phối lệnh CLI
-    │   ├── cli.go                  # Dispatcher chính, flags, setup, run, proxy, watch, logs...
+    │   ├── cli.go                  # Dispatcher chính, flags, setup, run, proxy, logs...
     │   ├── account.go              # Quản lý toggle account (off/on), pool commands, ID resolver
     │   └── cli_test.go             # Unit tests cho CLI parsing & actions
     │
@@ -106,6 +105,15 @@ amux/
     │   ├── redact.go               # Che email, API key, webhook, token, credit card trên payload outbound
     │   └── redact_test.go          # Tests cơ chế lọc và ẩn thông tin nhạy cảm
     │
+    ├── guard/                      # [GUARD] Lớp phòng thủ chống quét & bảo vệ tài khoản (Anti-Ban Engine)
+    │   ├── guard.go                # Facade điều phối các cơ chế bảo vệ, quản lý singleton
+    │   ├── sanitizer.go            # Khử rò rỉ headers nội bộ (X-Provider, Via, X-Forwarded-*)
+    │   ├── pacer.go                # Điều tiết nhịp độ (pacing), trễ giả lập (micro-jitter) & exponential backoff
+    │   ├── health.go               # Chấm điểm Health Score (0-100), Circuit Breaker & Auto-Quarantine cách ly
+    │   ├── affinity.go             # Session & Thread Affinity (ghim tài khoản cố định theo phiên làm việc)
+    │   ├── proxy_egress.go         # Quản lý proxy riêng biệt (HTTP, SOCKS5) cho từng tài khoản/profile
+    │   └── guard_test.go           # Unit tests toàn diện cho bộ guard
+    │
     ├── tools/                      # [TOOL MID-LAYER] Chuẩn hóa Tool Calling đa nền tảng
     │   ├── dialect.go              # Canonical Tool types (ToolDef, ToolCall, ToolResult)
     │   ├── claude.go               # Chuyển đổi tool schema và tool_use / tool_result của Anthropic
@@ -134,10 +142,10 @@ amux/
     │   └── *_test.go               # Tests server, rotator, authtoken, lifecycle, supervisor
     │
     ├── monitor/                    # [OBSERVABILITY] Giám sát, chẩn đoán lỗi & sự kiện
-    │   ├── store.go                # Ring buffer lưu trữ nhật ký sự kiện và truy vấn cho TUI Watch
+    │   ├── store.go                # Lưu trữ nhật ký sự kiện (~/.am/events.log) và request I/O (~/.am/requests.log)
     │   ├── sink.go                 # Ghi nhật ký vào terminal, ~/.am/events.log, ~/.am/requests.log
     │   ├── error_diag.go           # Lưu vết lỗi turns (~/.am/errors.log), log_stats.json, 7-day retention cleanup
-    │   └── *_test.go               # Tests query ring buffer và chẩn đoán lỗi
+    │   └── *_test.go               # Tests query lưu trữ và chẩn đoán lỗi
     │
     ├── usage/                      # [METRICS] Đo lường & thống kê tiêu thụ token
     │   ├── capture.go              # Tee-reader bóc tách token từ luồng phản hồi streaming
@@ -145,12 +153,10 @@ amux/
     │   ├── usage.go                # Thống kê và tổng hợp token theo ngày, tuần, tháng, project, model
     │   └── *_test.go               # Tests capture và tính toán usage
     │
-    ├── term/                       # [TUI KIT] Giao diện dòng lệnh & Bảng màu Tokyo Night
-    │   ├── style.go                # Định nghĩa màu sắc, bảng mã Tokyo Night và lipgloss styles
-    │   ├── panel.go                # Component hiển thị khung hộp viền bo tròn (rounded panels)
-    │   ├── log.go                  # Định dạng thông điệp log theo cấp độ với icon trực quan
-    │   ├── logo.go                 # Biểu trưng amux dạng ASCII và màu sắc
-    │   └── style_test.go           # Tests render style
+    ├── term/                       # [TERM STYLING] Giao diện dòng lệnh tối giản & Bảng màu Clean ANSI
+    │   ├── style.go                # Định nghĩa màu sắc ANSI, palette thích ứng Dark/Light, format label & header
+    │   ├── log.go                  # Định dạng thông điệp log theo cấp độ với nhãn thời gian thực
+    │   └── style_test.go           # Tests render style & ANSI formatting
     │
     ├── hook/                       # [INTEGRATION] Vòng đời Hooks & Tự động cập nhật
     │   ├── hook.go                 # Quản lý lifecycle hooks cho Claude Code, AGY, Codex, Cursor
@@ -163,14 +169,9 @@ amux/
     │   ├── env.go                  # eval "$(am env)", đồng bộ biến môi trường, am env set/get/rm/list
     │   └── env_test.go             # Tests shell environment output và persistence
     │
-    └── ui/                         # [PRESENTATION] Giao diện TUI tương tác
-        ├── watch.go                # Điều phối Dashboard TUI Bubble Tea (4 tabs thời gian thực)
-        ├── watch_panels.go         # Render các tab Dash, Accounts, Activity, Usage
-        ├── watch_styles.go         # Styles riêng cho bảng điều khiển watch
-        ├── watch_util.go           # Tiện ích định dạng thời gian, dung lượng, số lượng token
+    └── ui/                         # [PRESENTATION] Giao diện CLI tương tác
         ├── picker.go               # Menu tương tác chọn nhanh profile hoặc provider bằng phím mũi tên
-        ├── chat.go                 # Trình trò chuyện dòng lệnh am chat với cơ chế multi-provider failover
-        ├── status.go               # Xuất thông tin trạng thái hoạt động am status
+        ├── status.go               # Báo cáo trạng thái hoạt động am status và am guard
         └── login.go                # Wizard hướng dẫn đăng nhập tài khoản trình duyệt và cấu hình API
 ```
 
@@ -180,24 +181,25 @@ amux/
 
 | Package | Phân Tầng | Trách nhiệm chính |
 | :--- | :--- | :--- |
-| `main.go` & `pkg/cli` | **Entrypoint** | Tiếp nhận lệnh CLI; điều phối các chức năng tài khoản (`off`/`on`), cấu hình pool, quản lý proxy, TUI watch, login, logs, run tool... |
+| `main.go` & `pkg/cli` | **Entrypoint** | Tiếp nhận lệnh CLI; điều phối các chức năng tài khoản (`off`/`on`), cấu hình pool, quản lý proxy, guard, login, logs, run tool... |
 | `pkg/types` | **Domain Core** | Định nghĩa toàn bộ contracts, interfaces, và chuẩn định dạng ID (`brand[:method]:NN`). Tuyệt đối không import các package nội bộ khác. |
 | `pkg/auth` | **Security / Auth** | Đọc/ghi macOS Keychain, quản lý & refresh OAuth token của Claude, mã hóa AES-256-GCM (`AMENC1:`) bằng master key Scrypt. |
 | `pkg/profile` | **Profile Domain** | Đóng gói snapshot môi trường CLI (`.amp`), chuyển đổi export/import (`.amexp`), quản lý bật/tắt profile trong xoay vòng. |
 | `pkg/provider` | **Adapter Plugin** | Hiện thực các LLM provider (OpenAI API, Gemini Native API, Claude/ChatGPT/Gemini Web session, Codex CLI reuse); tự động giải mã Sentinel PoW challenge (`chatgpt_sentinel.go`); đồng bộ `accounts.json`. |
 | `pkg/browser` | **Infrastructure** | Tự động hóa đăng nhập trình duyệt (CDP) và trích xuất cookie Chromium từ macOS Keychain. |
-| `pkg/router` | **Routing & Intelligence** | Quản lý failover pool theo mức độ ưu tiên (`priority`), tự động phạt cooldown 30 phút khi gặp 429; phân loại độ phức tạp tác vụ (`classifier.go`) để tự động kích hoạt thinking mode hoặc escalate Pro model. |
+| `pkg/router` | **Routing & Intelligence** | Quản lý failover pool theo mức độ ưu tiên (`priority`), tự động phạt cooldown khi gặp 429; phân loại độ phức tạp tác vụ (`classifier.go`) để tự động kích hoạt thinking mode hoặc escalate Pro model. |
 | `pkg/bridge` | **Protocol Bridge** | Cầu nối đa giao thức: OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), Google Gemini (`/v1beta/models/...`); điều hướng bằng `X-Provider`/`X-Model`; ghi log I/O bảo mật. |
 | `pkg/privacy` | **Data Protection** | Quét và làm mờ (redact) các dữ liệu nhạy cảm (email, API key, webhook, token, thẻ ngân hàng) trước khi gửi ra upstream. |
+| `pkg/guard` | **Anti-Ban Engine** | Lớp phòng thủ 5 tầng chống bị phát hiện/gắn cờ tài khoản: Header Sanitizer, Traffic Pacing/Jitter, Health Score & Circuit Breaker, Session Affinity, Egress Proxy riêng biệt. |
 | `pkg/tools` | **Tool Mid-Layer** | Chuẩn hóa schema công cụ giữa Claude Code, Cursor, Codex, Gemini (Antigravity); giả lập vòng lặp gọi tool (`webloop.go`) cho các web session. |
 | `pkg/utils` | **Shared Utilities** | Tiện ích chuyển đổi và chuẩn hóa JSON Schema dùng chung giữa các adapter. |
 | `pkg/proxy` | **Gateway Daemon** | Lắng nghe tại cổng `:8787`, cơ chế tự động xoay vòng tài khoản (Rotator), cấp phát API key tạm thời khi mở mạng (`authtoken.go`), HTTP CONNECT tunnel, watchdog giám sát. |
-| `pkg/monitor` | **Observability** | Ring buffer lưu vết sự kiện cho TUI Watch, ghi log xoay vòng, chẩn đoán lỗi turn (`errors.log`) và tự động dọn dẹp sau 7 ngày (`error_diag.go`). |
+| `pkg/monitor` | **Observability** | Ghi nhật ký sự kiện (`events.log`), lưu vết I/O (`requests.log`), chẩn đoán lỗi turn (`errors.log`) và tự động dọn dẹp sau 7 ngày (`error_diag.go`). |
 | `pkg/usage` | **Metrics & Analytics** | Bóc tách số lượng token streaming, liên kết với thư mục dự án của client, thống kê theo ngày/tuần/tháng. |
-| `pkg/term` | **TUI Kit** | Bảng màu Tokyo Night, hỗ trợ vẽ panel bo tròn, định dạng log có biểu tượng cho giao diện dòng lệnh. |
+| `pkg/term` | **Term Styling** | Bảng màu ANSI thích ứng Dark/Light, định dạng dòng lệnh tối giản, nhãn rõ ràng, log có gắn nhãn thời gian thực. |
 | `pkg/hook` | **Integration / System** | Cài đặt lifecycle hooks chuẩn hóa cho Claude Code, Antigravity, Codex, Cursor; đồng bộ biến môi trường với `launchctl`; tự động cập nhật qua LaunchAgent. |
 | `pkg/env` | **Shell Environment** | Cung cấp lệnh xuất môi trường `eval "$(am env)"`, lưu trữ cấu hình môi trường tùy biến (`am env set/get/rm/list`). |
-| `pkg/ui` | **Presentation** | Giao diện TUI tương tác cao: `am watch` (4 tabs), menu chọn nhanh `picker`, trình chat dòng lệnh `chat`, bảng báo cáo `status`, wizard `login`. |
+| `pkg/ui` | **Presentation** | Giao diện dòng lệnh tương tác: menu chọn nhanh `picker`, báo cáo trạng thái `status` & `guard`, wizard đăng nhập `login`. |
 
 ---
 
