@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am usage [day\|week\|month\|all]` | Thống kê token (`-D` chi tiết, `-d YYYY-MM-DD`, `-p PROJECT`) |
 | `am logs [flags]` | Quản lý nhật ký hoạt động: `--count` (thống kê), `--errors` (xem lỗi), `--clean` (dọn dẹp > 7 ngày) |
 | `am proxy [up\|down\|token]` | Điều khiển daemon `:8787`. Hỗ trợ: `--public`, `-b/--addr`, `-p/--port`, `--threshold N` |
-| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`, `opencode`, `codex`) kèm tự động nạp môi trường proxy |
+| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`, `codex`) kèm tự động nạp môi trường proxy |
 | `am env [--public]` | Xuất biến môi trường cho lệnh `eval "$(am env)"` (`--public` sử dụng IP mạng LAN) |
 | `am env [set\|get\|rm\|list]` | Quản lý và lưu trữ cố định các biến môi trường tùy chỉnh cho proxy/công cụ |
 | `am hook [claude\|agy\|codex\|cursor]` | Điều khiển hook vòng đời cho từng công cụ (`start` / `stop`) |

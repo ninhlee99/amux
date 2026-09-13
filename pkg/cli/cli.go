@@ -79,7 +79,7 @@ Monitoring & Utilities:
                             token usage analytics
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude / agy / antigravity / opencode / codex) routed through proxy
+  amux run <tool> [args...]   exec tool (claude / agy / antigravity / codex) routed through proxy
   amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
                             run/manage proxy daemon (default 127.0.0.1:8787;
                             --public binds 0.0.0.0; -p/--port overrides port)
@@ -868,20 +868,6 @@ func cmdRun(args []string) {
 			"GEMINI_API_BASE="+base,
 			"GOOGLE_GENAI_BASE_URL="+base,
 		)
-	case "opencode":
-		var err error
-		bin, err = exec.LookPath(tool)
-		if err != nil {
-			die("%v", err)
-		}
-		execArgs = append([]string{tool}, rest...)
-		environ = append(os.Environ(),
-			"OPENAI_BASE_URL="+base+"/v1",
-			"OPENAI_API_BASE="+base+"/v1",
-			"OPENAI_API_KEY=am-proxy",
-			"ANTHROPIC_BASE_URL="+base,
-			"ANTHROPIC_AUTH_TOKEN=am-proxy",
-		)
 	case "codex":
 		var err error
 		bin, err = exec.LookPath(tool)
@@ -894,7 +880,7 @@ func cmdRun(args []string) {
 			"OPENAI_API_KEY=am-proxy",
 		)
 	default:
-		die("amux run currently supports: claude, agy, antigravity, opencode, codex")
+		die("amux run currently supports: claude, agy, antigravity, codex")
 	}
 
 	_ = syscall.Exec(bin, execArgs, environ)
