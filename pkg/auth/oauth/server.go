@@ -105,7 +105,8 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		cancel()
 		return "", ctx.Err()
 	case res := <-ch:
-		// Allow brief moment for TCP buffers to flush to local browser
+		// Allow brief moment (100ms) for loopback TCP buffers and FIN/ACK handshakes
+		// to complete so the browser receives the rendered HTML without socket reset.
 		time.Sleep(100 * time.Millisecond)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = srv.Shutdown(shutdownCtx)

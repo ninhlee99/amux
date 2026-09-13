@@ -187,11 +187,18 @@ func TestCallbackServer_Security(t *testing.T) {
 				serverErr <- err
 			}()
 
-			time.Sleep(50 * time.Millisecond)
-
-			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback%s", port, tc.query))
+			// Retry connection until listener is ready
+			var resp *http.Response
+			var err error
+			for i := 0; i < 20; i++ {
+				resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback%s", port, tc.query))
+				if err == nil {
+					break
+				}
+				time.Sleep(15 * time.Millisecond)
+			}
 			if err != nil {
-				t.Fatalf("GET failed: %v", err)
+				t.Fatalf("GET failed after retries: %v", err)
 			}
 			defer resp.Body.Close()
 
@@ -254,6 +261,24 @@ func TestPollDeviceToken(t *testing.T) {
 			wantSlowDown: false,
 			wantErr:      true,
 			wantTerminal: true,
+		},
+		{
+			name:         "server_error_transient",
+			statusCode:   http.StatusBadRequest,
+			responseBody: `{"error":"server_error"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: false,
+		},
+		{
+			name:         "temporarily_unavailable_transient",
+			statusCode:   http.StatusBadRequest,
+			responseBody: `{"error":"temporarily_unavailable"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: false,
 		},
 		{
 			name:         "server_500",

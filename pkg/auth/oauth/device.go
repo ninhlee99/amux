@@ -125,11 +125,14 @@ func RunDeviceFlow(ctx context.Context, cfg DeviceFlowConfig, customName string)
 				if errors.As(err, &termErr) {
 					return "", fmt.Errorf("authorization failed: %w", termErr)
 				}
-				// Transient network or server hiccup: continue polling until timeout
+				// Transient network, HTTP 5xx, or temporary gateway hiccup: inform user and continue polling
+				fmt.Printf("[notice: transient connection hiccup (%v), retrying…]\n", err)
 				continue
 			}
 			if slowDown {
-				// RFC 8628 §3.5: MUST increase interval by 5 seconds (capped at 60s)
+				// RFC 8628 §3.5: MUST increase interval by 5 seconds.
+				// We cap the upper bound at 60s as an operational safety limit to avoid
+				// runaway interval inflation while still respecting backoff requests.
 				interval += 5 * time.Second
 				if interval > 60*time.Second {
 					interval = 60 * time.Second
@@ -200,6 +203,8 @@ func pollDeviceToken(ctx context.Context, client *http.Client, cfg DeviceFlowCon
 		return nil, false, false, nil
 	case "slow_down":
 		return nil, false, true, nil
+	case "server_error", "temporarily_unavailable":
+		return nil, false, false, fmt.Errorf("upstream oauth server error: %s", tok.Error)
 	case "access_denied":
 		return nil, false, false, &TerminalOAuthError{Code: "access_denied", Message: "user denied authorization"}
 	case "expired_token":
