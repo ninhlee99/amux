@@ -62,7 +62,7 @@ Rotate pool:
   amux pool model <id> M      change provider model (hot-reload)
 
 Add providers:
-  amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq
+  amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq / kimi / grok
   amux api add <name> --endpoint <url> --api-key <key> [--model M] [--priority N]
   amux accounts rm <id>       delete a provider from the list (or use am rm <id>)
   amux doctor providers       1-turn probe each adapter

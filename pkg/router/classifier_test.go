@@ -80,6 +80,83 @@ func TestClassifyTask(t *testing.T) {
 			wantHeavy:    true,
 			wantThinking: true,
 		},
+		{
+			name: "explicit kimi-k3 model request",
+			req: &types.ChatRequest{
+				Model: "kimi-k3",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit grok-2 model request",
+			req: &types.ChatRequest{
+				Model: "grok-2-latest",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit kimi-k2 model request",
+			req: &types.ChatRequest{
+				Model: "kimi-k2",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit kimi-k3-thinking model request",
+			req: &types.ChatRequest{
+				Model: "kimi-k3-thinking",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit moonshot-v1-128k model request",
+			req: &types.ChatRequest{
+				Model: "moonshot-v1-128k",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit grok-3-mini model request",
+			req: &types.ChatRequest{
+				Model: "grok-3-mini",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
+		{
+			name: "explicit grok-beta model request",
+			req: &types.ChatRequest{
+				Model: "grok-beta",
+				Messages: []types.ChatMessage{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			wantHeavy:    true,
+			wantThinking: true,
+		},
 	}
 
 	for _, tc := range cases {

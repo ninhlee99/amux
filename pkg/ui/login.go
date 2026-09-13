@@ -75,10 +75,12 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 func CmdLogin(args []string) {
 	if len(args) == 0 {
 		fmt.Println("Usage: amux login <provider> [--browser] [--token T] [--cookie C] [--refresh R] [--model M]")
-		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq")
+		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok")
 		fmt.Println()
 		fmt.Println("  chatgpt / claude / gemini-web  default = open browser, CDP cookie capture")
 		fmt.Println("  gemini (API)                   AI Studio API key")
+		fmt.Println("  kimi                           Moonshot Kimi API key")
+		fmt.Println("  grok                           xAI Grok API key")
 		fmt.Println("  --token/--cookie  skip browser, use pasted credentials")
 		fmt.Println("  --no-browser      paste interactively instead of opening a window")
 		return
@@ -98,8 +100,12 @@ func CmdLogin(args []string) {
 		loginGitHubModels(flags)
 	case "groq":
 		loginGroq(flags)
+	case "kimi", "moonshot", "kimiapi":
+		loginKimi(flags)
+	case "grok", "xai", "grokapi":
+		loginGrok(flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: chatgpt, claude, gemini, gemini-web, github, groq\n", target)
+		fmt.Printf("Unknown provider %q. Supported: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok\n", target)
 	}
 }
 
@@ -468,17 +474,30 @@ func loginGitHubModels(f loginFlags) {
 	fmt.Printf("Saved GitHub Models as %s.\n", id)
 }
 
-func loginGroq(f loginFlags) {
-	fmt.Println("== Login: Groq ==")
+type openAICompatSpec struct {
+	Name         string
+	EnvVar       string
+	DefaultURL   string
+	DefaultModel string
+	IDPrefix     string
+	Priority     int
+}
+
+func loginOpenAICompat(spec openAICompatSpec, f loginFlags) {
+	fmt.Printf("== Login: %s ==\n", spec.Name)
 	key := strings.TrimSpace(f.token)
 	if key == "" {
-		key = readLinePrompt("Groq API key (Enter = $GROQ_API_KEY): ")
+		key = readLinePrompt(fmt.Sprintf("%s API key (Enter = $%s): ", spec.Name, spec.EnvVar))
 	}
 	if key == "" {
-		key = "env:GROQ_API_KEY"
+		key = "env:" + spec.EnvVar
 	}
-	id, priorityFloor, multi := nextPoolID("groqapi")
-	priority := provider.PriorityAPIGroq
+	model := f.model
+	if model == "" {
+		model = spec.DefaultModel
+	}
+	id, priorityFloor, multi := nextPoolID(spec.IDPrefix)
+	priority := spec.Priority
 	if multi {
 		priority = priorityFloor
 	}
@@ -486,16 +505,49 @@ func loginGroq(f loginFlags) {
 		ID:       id,
 		Type:     "openai_compatible",
 		Priority: priority,
-		BaseURL:  "https://api.groq.com/openai/v1",
+		BaseURL:  spec.DefaultURL,
 		APIKey:   key,
-		Model:    "llama-3.3-70b-versatile",
+		Model:    model,
 	})
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("Saved Groq as %s.\n", id)
+	fmt.Printf("Saved %s as %s (model: %s).\n", spec.Name, id, model)
+}
+
+func loginGroq(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Groq",
+		EnvVar:       "GROQ_API_KEY",
+		DefaultURL:   "https://api.groq.com/openai/v1",
+		DefaultModel: "llama-3.3-70b-versatile",
+		IDPrefix:     "groq:api",
+		Priority:     provider.PriorityAPIGroq,
+	}, f)
+}
+
+func loginKimi(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Kimi (Moonshot AI)",
+		EnvVar:       "KIMI_API_KEY",
+		DefaultURL:   "https://api.moonshot.cn/v1",
+		DefaultModel: "moonshot-v1-128k",
+		IDPrefix:     "kimi:api",
+		Priority:     provider.PriorityAPIKimi,
+	}, f)
+}
+
+func loginGrok(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Grok (xAI)",
+		EnvVar:       "XAI_API_KEY",
+		DefaultURL:   "https://api.x.ai/v1",
+		DefaultModel: "grok-2-latest",
+		IDPrefix:     "grok:api",
+		Priority:     provider.PriorityAPIGrok,
+	}, f)
 }
 
 // CmdDoctorProviders live-probes every pool adapter with a tiny chat turn and
@@ -805,10 +857,18 @@ func CmdAPI(args []string) {
 		}
 
 		id := name
-		// OpenRouter keys always get openrouter:api:NN so multi-key works.
+		// Known endpoints/names get canonical brand:api:NN prefixes so multi-key works.
 		nameL := strings.ToLower(strings.TrimSpace(name))
 		if provider.IsOpenRouterEndpoint(endpoint) || nameL == "openrouter" || nameL == "openrouter:api" || strings.HasPrefix(nameL, "openrouter:api:") {
 			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "openrouter:api"); err == nil {
+				id = next
+			}
+		} else if provider.IsKimiEndpoint(endpoint) || nameL == "kimi" || nameL == "moonshot" || strings.HasPrefix(nameL, "kimi:api:") {
+			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "kimi:api"); err == nil {
+				id = next
+			}
+		} else if provider.IsGrokEndpoint(endpoint) || nameL == "grok" || nameL == "xai" || strings.HasPrefix(nameL, "grok:api:") {
+			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "grok:api"); err == nil {
 				id = next
 			}
 		}
