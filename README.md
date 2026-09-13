@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | :--- | :--- |
 | `am accounts` | Hiển thị **tất cả** tài khoản: Claude Code + Web Sessions + API (`POOL=IN/OUT`) |
 | `am off <id>` / `am on <id>` | Đưa tài khoản ra ngoài / trở lại vòng xoay (vẫn lưu trong danh sách `accounts`) |
-| `am add [tool] [tên]` | Lưu thông tin đăng nhập CLI hiện tại (`claude` / `codex` / `gemini` / `antigravity`) |
+| `am snapshot [tool] [tên]` | Chụp snapshot phiên CLI hiện tại (`claude` / `codex` / `gemini` / `antigravity`). Alias cũ: `am add` |
 | `am rm <id\|name>` | Xoá tài khoản (profile CLI chuyển vào thùng rác, provider bị gỡ bỏ) |
 | `am restore <id>` | Khôi phục tài khoản từ thùng rác (`am restore --backup` khôi phục bản sao lưu gần nhất) |
 | `am rename <cũ> <mới>` | Đổi tên profile Claude |
@@ -90,13 +90,14 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am pool priority <id> <N>` | Đặt độ ưu tiên (số nhỏ ưu tiên gọi trước, tự động nạp lại không cần restart) |
 | `am pool model <id> <model>` | Thay đổi model mặc định của provider (hot-reload thời gian thực) |
 | `am pool set <id> [flags]` | Cấu hình nhanh provider: `--priority N`, `--model M`, `--on`, `--off` |
-| `am login <provider>` | Đăng nhập tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `github`, `groq`, `kimi`, `grok` |
+| `am oauth <provider> [tên]` | **Standalone OAuth:** Đăng nhập trực tiếp OAuth (`claude`, `codex`, `antigravity`, `kimi`, `grok`) không cần cài đặt CLI gốc |
+| `am login <provider>` | Đăng nhập tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `github`, `groq`, `kimi`, `grok`, `codex`, `antigravity` |
 | `am api add <tên> [flags]` | Thêm OpenAI-compatible endpoint (`--endpoint <url> --api-key <key> [--model M] [--priority N]`) |
 | `am accounts rm <id>` | Xoá hoàn toàn provider khỏi cấu hình |
 | `am doctor providers` | Gửi truy vấn thử nghiệm (1-turn probe) kiểm tra tình trạng kết nối từng adapter |
 | `am chat [--provider <id>]` | Trò chuyện trực tiếp trên terminal kèm khả năng tự động failover |
 
-> **Codex CLI:** Sau khi chạy `am add codex`, token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
+> **Codex CLI:** Sau khi chạy `am snapshot codex` (hoặc `am add codex`), token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
 >
 > 💡 **Mẹo cấu hình API Key:** Bạn có thể export sẵn biến môi trường trước khi chạy `am login`:
 > - **Google AI Studio:** `export GOOGLE_AI_STUDIO_KEY="AIzaSy..."` → `am login gemini`
@@ -115,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am usage [day\|week\|month\|all]` | Thống kê token (`-D` chi tiết, `-d YYYY-MM-DD`, `-p PROJECT`) |
 | `am logs [flags]` | Quản lý nhật ký hoạt động: `--count` (thống kê), `--errors` (xem lỗi), `--clean` (dọn dẹp > 7 ngày) |
 | `am proxy [up\|down\|token]` | Điều khiển daemon `:8787`. Hỗ trợ: `--public`, `-b/--addr`, `-p/--port`, `--threshold N` |
-| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`) kèm tự động kết nối và nạp môi trường proxy |
+| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`, `opencode`, `codex`) kèm tự động nạp môi trường proxy |
 | `am env [--public]` | Xuất biến môi trường cho lệnh `eval "$(am env)"` (`--public` sử dụng IP mạng LAN) |
 | `am env [set\|get\|rm\|list]` | Quản lý và lưu trữ cố định các biến môi trường tùy chỉnh cho proxy/công cụ |
 | `am hook [claude\|agy\|codex\|cursor]` | Điều khiển hook vòng đời cho từng công cụ (`start` / `stop`) |

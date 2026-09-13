@@ -16,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/env"
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/monitor"
@@ -45,7 +46,7 @@ Accounts:
   amux accounts               list ALL accounts (Claude + web + API)
   amux off <id>               take any account out of rotate (stays in list)
   amux on <id>                put it back
-  amux add [tool] [name]      save current CLI login (claude / codex / gemini)
+  amux snapshot [tool] [name] snapshot current CLI login (claude / codex / gemini; alias: am add)
   amux rm <id|name>           delete account (CLI profile → trash, provider → removed)
   amux rename <id> <new>      rename Claude profile
   amux restore <id>           restore trash (` + "`am restore --backup`" + ` = last auto-backup)
@@ -62,13 +63,14 @@ Rotate pool:
   amux pool model <id> M      change provider model (hot-reload)
 
 Add providers:
+  amux oauth <provider>       standalone OAuth (claude, codex, antigravity, agy, kimi, grok)
   amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq / kimi / grok
   amux api add <name> --endpoint <url> --api-key <key> [--model M] [--priority N]
   amux accounts rm <id>       delete a provider from the list (or use am rm <id>)
   amux doctor providers       1-turn probe each adapter
   amux chat [--provider id]   terminal chat + failover
 
-  Codex: after am add codex, token is reused as codex:NN — no extra login.
+  Codex: after am snapshot codex (or am add codex), token is reused as codex:NN — no extra login.
 
 Monitoring & Utilities:
   amux update [--force] [--quiet]
@@ -77,7 +79,7 @@ Monitoring & Utilities:
                             token usage analytics
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude / agy / antigravity) routed through the proxy
+  amux run <tool> [args...]   exec tool (claude / agy / antigravity / opencode / codex) routed through proxy
   amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
                             run/manage proxy daemon (default 127.0.0.1:8787;
                             --public binds 0.0.0.0; -p/--port overrides port)
@@ -142,9 +144,9 @@ func Run(rawArgs []string) {
 		}
 		cmdUpdate(force, quiet)
 
-	case "a", "add":
+	case "snapshot", "snap", "a", "add":
 		tool, name := toolAndName(args)
-		cmdAdd(tool, name)
+		cmdSnapshot(tool, name)
 
 	case "ls", "list":
 		cmdLs(args)
@@ -276,6 +278,24 @@ func Run(rawArgs []string) {
 
 	case "login":
 		ui.CmdLogin(args)
+
+	case "oauth":
+		if len(args) == 0 {
+			fmt.Println("Usage: amux oauth <provider> [custom-name]")
+			fmt.Println("\nSupported standalone OAuth providers (no CLI/IDE installation required):")
+			for _, p := range oauth.SupportedOAuthProviders() {
+				fmt.Printf("  • %s\n", p)
+			}
+			return
+		}
+		target := args[0]
+		customName := ""
+		if len(args) > 1 {
+			customName = args[1]
+		}
+		if err := oauth.InteractiveOAuth(target, customName); err != nil {
+			die("oauth error: %v", err)
+		}
 
 	case "doctor":
 		if len(args) > 0 && (args[0] == "providers" || args[0] == "provider") {
@@ -609,18 +629,18 @@ func cmdLs(args []string) {
 	w.Flush()
 }
 
-func cmdAdd(tool, name string) {
+func cmdSnapshot(tool, name string) {
 	spec, ok := profile.LookupToolSpec(tool)
 	if !ok {
 		die("unknown tool %q", tool)
 	}
 	if acct := profile.DetectAccount(spec); acct != "" && profile.ProfileNameForAccount(tool, acct) == "" {
-		fmt.Printf("%s is logged in as %s — saving that.\n", tool, acct)
+		fmt.Printf("%s is logged in as %s — saving snapshot.\n", tool, acct)
 		pName := profileName(name, acct)
 		if _, err := profile.CmdSave(tool, pName); err != nil {
 			die("save failed: %v", err)
 		}
-		fmt.Printf("\nto add a different account: log into it in %s, then run `amux add %s` again.\n", tool, tool)
+		fmt.Printf("\nto add a different account: log into it in %s, then run `amux snapshot %s` (or `am add %s`) again.\n", tool, tool, tool)
 		return
 	}
 	loginHint(tool)
@@ -639,6 +659,10 @@ func cmdAdd(tool, name string) {
 	if _, err := profile.CmdSave(tool, pName); err != nil {
 		die("save failed: %v", err)
 	}
+}
+
+func cmdAdd(tool, name string) {
+	cmdSnapshot(tool, name)
 }
 
 func profileName(name, acct string) string {
@@ -844,8 +868,33 @@ func cmdRun(args []string) {
 			"GEMINI_API_BASE="+base,
 			"GOOGLE_GENAI_BASE_URL="+base,
 		)
+	case "opencode":
+		var err error
+		bin, err = exec.LookPath(tool)
+		if err != nil {
+			die("%v", err)
+		}
+		execArgs = append([]string{tool}, rest...)
+		environ = append(os.Environ(),
+			"OPENAI_BASE_URL="+base+"/v1",
+			"OPENAI_API_BASE="+base+"/v1",
+			"OPENAI_API_KEY=am-proxy",
+			"ANTHROPIC_BASE_URL="+base,
+			"ANTHROPIC_AUTH_TOKEN=am-proxy",
+		)
+	case "codex":
+		var err error
+		bin, err = exec.LookPath(tool)
+		if err != nil {
+			die("%v", err)
+		}
+		execArgs = append([]string{tool}, rest...)
+		environ = append(os.Environ(),
+			"OPENAI_BASE_URL="+base+"/v1",
+			"OPENAI_API_KEY=am-proxy",
+		)
 	default:
-		die("amux run currently supports: claude, agy, antigravity")
+		die("amux run currently supports: claude, agy, antigravity, opencode, codex")
 	}
 
 	_ = syscall.Exec(bin, execArgs, environ)
