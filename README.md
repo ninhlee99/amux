@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | :--- | :--- |
 | `am accounts` | Hiển thị **tất cả** tài khoản: Claude Code + Web Sessions + API (`POOL=IN/OUT`) |
 | `am off <id>` / `am on <id>` | Đưa tài khoản ra ngoài / trở lại vòng xoay (vẫn lưu trong danh sách `accounts`) |
-| `am snapshot [tool] [tên]` | Chụp snapshot phiên CLI hiện tại (`claude` / `codex` / `gemini` / `antigravity`). Alias cũ: `am add` |
+| `am add [tool] [tên]` | Lưu thông tin đăng nhập CLI hiện tại (`claude` / `codex` / `gemini` / `antigravity`) |
 | `am rm <id\|name>` | Xoá tài khoản (profile CLI chuyển vào thùng rác, provider bị gỡ bỏ) |
 | `am restore <id>` | Khôi phục tài khoản từ thùng rác (`am restore --backup` khôi phục bản sao lưu gần nhất) |
 | `am rename <cũ> <mới>` | Đổi tên profile Claude |
@@ -97,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am doctor providers` | Gửi truy vấn thử nghiệm (1-turn probe) kiểm tra tình trạng kết nối từng adapter |
 | `am chat [--provider <id>]` | Trò chuyện trực tiếp trên terminal kèm khả năng tự động failover |
 
-> **Codex CLI:** Sau khi chạy `am snapshot codex` (hoặc `am add codex`), token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
+> **Codex CLI:** Sau khi chạy `am add codex`, token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
 >
 > 💡 **Mẹo cấu hình API Key:** Bạn có thể export sẵn biến môi trường trước khi chạy `am login`:
 > - **Google AI Studio:** `export GOOGLE_AI_STUDIO_KEY="AIzaSy..."` → `am login gemini`

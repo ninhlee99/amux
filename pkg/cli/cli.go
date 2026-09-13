@@ -46,7 +46,7 @@ Accounts:
   amux accounts               list ALL accounts (Claude + web + API)
   amux off <id>               take any account out of rotate (stays in list)
   amux on <id>                put it back
-  amux snapshot [tool] [name] snapshot current CLI login (claude / codex / gemini; alias: am add)
+  amux add [tool] [name]      save current CLI login (claude / codex / gemini)
   amux rm <id|name>           delete account (CLI profile → trash, provider → removed)
   amux rename <id> <new>      rename Claude profile
   amux restore <id>           restore trash (` + "`am restore --backup`" + ` = last auto-backup)
@@ -70,7 +70,7 @@ Add providers:
   amux doctor providers       1-turn probe each adapter
   amux chat [--provider id]   terminal chat + failover
 
-  Codex: after am snapshot codex (or am add codex), token is reused as codex:NN — no extra login.
+  Codex: after am add codex, token is reused as codex:NN — no extra login.
 
 Monitoring & Utilities:
   amux update [--force] [--quiet]
@@ -144,9 +144,9 @@ func Run(rawArgs []string) {
 		}
 		cmdUpdate(force, quiet)
 
-	case "snapshot", "snap", "a", "add":
+	case "add":
 		tool, name := toolAndName(args)
-		cmdSnapshot(tool, name)
+		cmdAdd(tool, name)
 
 	case "ls", "list":
 		cmdLs(args)
@@ -629,18 +629,18 @@ func cmdLs(args []string) {
 	w.Flush()
 }
 
-func cmdSnapshot(tool, name string) {
+func cmdAdd(tool, name string) {
 	spec, ok := profile.LookupToolSpec(tool)
 	if !ok {
 		die("unknown tool %q", tool)
 	}
 	if acct := profile.DetectAccount(spec); acct != "" && profile.ProfileNameForAccount(tool, acct) == "" {
-		fmt.Printf("%s is logged in as %s — saving snapshot.\n", tool, acct)
+		fmt.Printf("%s is logged in as %s — saving that.\n", tool, acct)
 		pName := profileName(name, acct)
 		if _, err := profile.CmdSave(tool, pName); err != nil {
 			die("save failed: %v", err)
 		}
-		fmt.Printf("\nto add a different account: log into it in %s, then run `amux snapshot %s` (or `am add %s`) again.\n", tool, tool, tool)
+		fmt.Printf("\nto add a different account: log into it in %s, then run `amux add %s` again.\n", tool, tool)
 		return
 	}
 	loginHint(tool)
@@ -659,10 +659,6 @@ func cmdSnapshot(tool, name string) {
 	if _, err := profile.CmdSave(tool, pName); err != nil {
 		die("save failed: %v", err)
 	}
-}
-
-func cmdAdd(tool, name string) {
-	cmdSnapshot(tool, name)
 }
 
 func profileName(name, acct string) string {
