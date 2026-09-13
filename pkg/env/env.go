@@ -50,10 +50,11 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 	if proxyUp {
 		fmt.Printf("export ANTHROPIC_BASE_URL=%s\n", proxyBase)
 		fmt.Printf("export ANTHROPIC_AUTH_TOKEN=am-proxy\n")
+		fmt.Printf("export OPENAI_BASE_URL=%s/v1\n", proxyBase)
+		fmt.Printf("export OPENAI_API_KEY=am-proxy\n")
 		fmt.Printf("export GEMINI_API_BASE=%s\n", proxyBase)
 		fmt.Printf("export GOOGLE_GENAI_BASE_URL=%s\n", proxyBase)
-		fmt.Printf("alias agy='am run agy'\n")
-		fmt.Printf("alias antigravity='am run antigravity'\n")
+		fmt.Printf("alias codex='am run codex'\n")
 	} else {
 		// A shell that already ran `eval "$(am env)"` while the proxy was up
 		// has these exported in its live session. Omitting the line here
@@ -67,14 +68,19 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 		if _, ok := m["ANTHROPIC_AUTH_TOKEN"]; !ok {
 			fmt.Printf("unset ANTHROPIC_AUTH_TOKEN\n")
 		}
+		if _, ok := m["OPENAI_BASE_URL"]; !ok {
+			fmt.Printf("unset OPENAI_BASE_URL\n")
+		}
+		if _, ok := m["OPENAI_API_KEY"]; !ok {
+			fmt.Printf("unset OPENAI_API_KEY\n")
+		}
 		if _, ok := m["GEMINI_API_BASE"]; !ok {
 			fmt.Printf("unset GEMINI_API_BASE\n")
 		}
 		if _, ok := m["GOOGLE_GENAI_BASE_URL"]; !ok {
 			fmt.Printf("unset GOOGLE_GENAI_BASE_URL\n")
 		}
-		fmt.Printf("unalias agy 2>/dev/null || true\n")
-		fmt.Printf("unalias antigravity 2>/dev/null || true\n")
+		fmt.Printf("unalias codex 2>/dev/null || true\n")
 	}
 
 	names := make([]string, 0, len(m))
@@ -84,7 +90,7 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 	sort.Strings(names)
 	for _, k := range names {
 		// Don't override the gateway token we just set for the live proxy.
-		if proxyUp && (k == "ANTHROPIC_AUTH_TOKEN" || k == "ANTHROPIC_BASE_URL" || k == "GEMINI_API_BASE" || k == "GOOGLE_GENAI_BASE_URL") {
+		if proxyUp && (k == "ANTHROPIC_AUTH_TOKEN" || k == "ANTHROPIC_BASE_URL" || k == "OPENAI_BASE_URL" || k == "OPENAI_API_KEY" || k == "GEMINI_API_BASE" || k == "GOOGLE_GENAI_BASE_URL") {
 			continue
 		}
 		fmt.Printf("export %s=%s\n", k, ShellQuote(m[k]))

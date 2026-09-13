@@ -236,6 +236,12 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		bridge.HandleChatCompletions(w, r, chatPool)
 	})
+	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		bridge.HandleOpenAIResponses(w, r, chatPool)
+	})
+	mux.HandleFunc("/responses", func(w http.ResponseWriter, r *http.Request) {
+		bridge.HandleOpenAIResponses(w, r, chatPool)
+	})
 	mux.HandleFunc("/v1/models", bridge.HandleModels)
 	mux.HandleFunc("/models", bridge.HandleModels)
 
@@ -359,7 +365,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			return
 		}
 
-		if strings.HasSuffix(path, "/chat/completions") || path == "/v1/models" || path == "/models" {
+		if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") || path == "/v1/models" || path == "/models" {
 			mux.ServeHTTP(w, r)
 			return
 		}

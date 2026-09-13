@@ -79,7 +79,13 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	// Save profile in amux
 	profileName := customName
 	if profileName == "" {
-		profileName = accountEmail
+		if existing := profile.ProfileNameForAccount("claude", accountEmail); existing != "" {
+			profileName = existing
+			fmt.Printf("Account %s already exists — updating profile %q…\n", accountEmail, profileName)
+		} else {
+			profileName = accountEmail
+			fmt.Printf("New account %s detected — creating profile %q…\n", accountEmail, profileName)
+		}
 	}
 	profileName = profile.SanitizeName(profileName)
 

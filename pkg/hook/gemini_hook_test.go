@@ -85,8 +85,8 @@ func TestCodexHookInstallUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CodexHookUninstall failed: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 removed, got %d", n)
+	if n != 3 {
+		t.Fatalf("expected 3 removed, got %d", n)
 	}
 	if CodexHookInstalled() {
 		t.Fatalf("expected CodexHookInstalled() to be false")

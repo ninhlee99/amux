@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net"
@@ -59,7 +60,9 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		}
 
 		if expectedState != "" {
-			if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expectedState)) != 1 {
+			hExpected := sha256.Sum256([]byte(expectedState))
+			hActual := sha256.Sum256([]byte(state))
+			if state == "" || subtle.ConstantTimeCompare(hExpected[:], hActual[:]) != 1 {
 				w.WriteHeader(http.StatusBadRequest)
 				fmt.Fprintf(w, errorHTML, "State parameter mismatch or missing (potential CSRF attempt)")
 				if f, ok := w.(http.Flusher); ok {
@@ -105,12 +108,14 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		cancel()
 		return "", ctx.Err()
 	case res := <-ch:
-		// Allow brief moment (100ms) for loopback TCP buffers and FIN/ACK handshakes
-		// to complete so the browser receives the rendered HTML without socket reset.
-		time.Sleep(100 * time.Millisecond)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = srv.Shutdown(shutdownCtx)
-		cancel()
+		// Drain loopback connection in background after allowing brief moment (100ms)
+		// for TCP buffers to flush rendered HTML to browser without socket reset.
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
 		if res.Error != "" {
 			return "", fmt.Errorf("oauth error from provider: %s", res.Error)
 		}

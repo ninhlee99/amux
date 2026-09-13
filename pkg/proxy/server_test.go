@@ -522,3 +522,38 @@ func TestHandler_ClaudeResetSwitchesBackFromPool(t *testing.T) {
 		t.Fatalf("expected auto-switch back to b, active=%q", rot.Active())
 	}
 }
+
+// TestHandler_ResponsesEndpointRoutesToPool verifies that /v1/responses and
+// /responses requests from Codex CLI are intercepted and served by the pool.
+func TestHandler_ResponsesEndpointRoutesToPool(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 1. /v1/responses
+	body1 := `{"model":"gpt-5-codex","input":"hello","stream":true}`
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /v1/responses, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	if !strings.Contains(rec1.Body.String(), "response.output_text.delta") {
+		t.Errorf("expected delta event from /v1/responses, got: %s", rec1.Body.String())
+	}
+
+	// 2. /responses
+	body2 := `{"model":"gpt-5-codex","input":"hello","stream":false}`
+	req2 := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /responses, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if !strings.Contains(rec2.Body.String(), `"object":"response"`) {
+		t.Errorf("expected response object from /responses, got: %s", rec2.Body.String())
+	}
+}
+

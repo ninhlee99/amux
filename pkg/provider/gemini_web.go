@@ -77,15 +77,9 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		return nil, err
 	}
 
-	if req.FullContext {
-		a.resetConversation()
-	}
-	continuing := !req.FullContext && len(a.loadMetadata()) > 0
+	continuing := len(a.loadMetadata()) > 0
 	prompt := WebBackendPrompt(req, continuing)
 	meta := a.loadMetadata()
-	if req.FullContext {
-		meta = nil
-	}
 
 	rotated := false
 	for attempt := 0; attempt < 2; attempt++ {

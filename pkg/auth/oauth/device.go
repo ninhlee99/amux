@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"amux-accounts/pkg/proxy"
 )
 
+// DeviceFlowConfig holds configuration for RFC 8628 OAuth 2.0 Device Authorization Grant.
+// Note: Designed for OAuth 2.0 Public Clients (CLI tools) where client_secret is omitted.
 type DeviceFlowConfig struct {
 	ProviderLabel string
 	ClientID      string
@@ -79,7 +82,7 @@ func RunDeviceFlow(ctx context.Context, cfg DeviceFlowConfig, customName string)
 	}
 
 	var authRes deviceAuthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&authRes); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&authRes); err != nil {
 		return "", fmt.Errorf("decode device auth response: %w", err)
 	}
 
@@ -98,7 +101,7 @@ func RunDeviceFlow(ctx context.Context, cfg DeviceFlowConfig, customName string)
 	_ = OpenBrowser(verifyURL)
 
 	interval := time.Duration(authRes.Interval) * time.Second
-	if interval < 3*time.Second {
+	if interval < 5*time.Second {
 		interval = 5 * time.Second
 	}
 
@@ -189,12 +192,27 @@ func pollDeviceToken(ctx context.Context, client *http.Client, cfg DeviceFlowCon
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, false, true, nil
+	}
+
 	if resp.StatusCode >= 500 {
 		return nil, false, false, fmt.Errorf("server error %d", resp.StatusCode)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false, false, fmt.Errorf("read response body: %w", err)
+	}
+
 	var tok deviceTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+	if err := json.Unmarshal(body, &tok); err != nil {
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, false, false, &TerminalOAuthError{
+				Code:    fmt.Sprintf("http_%d", resp.StatusCode),
+				Message: fmt.Sprintf("upstream client error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body))),
+			}
+		}
 		return nil, false, false, fmt.Errorf("decode error: %w", err)
 	}
 
@@ -213,7 +231,7 @@ func pollDeviceToken(ctx context.Context, client *http.Client, cfg DeviceFlowCon
 		if tok.AccessToken != "" {
 			return &tok, true, false, nil
 		}
-		return nil, false, false, nil
+		return nil, false, false, fmt.Errorf("unexpected empty token response (no access_token or error field)")
 	default:
 		return nil, false, false, &TerminalOAuthError{Code: tok.Error, Message: fmt.Sprintf("%s oauth error", cfg.ProviderLabel)}
 	}

@@ -92,7 +92,13 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	// 2. Add or update in amux accounts.json
 	id := customName
 	if id == "" {
-		id = "codex:01"
+		slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
+		id = slot.ID
+		if slot.Relogin {
+			fmt.Printf("Account %s already exists — updating provider %s…\n", email, id)
+		} else {
+			fmt.Printf("New account %s detected — creating provider %s…\n", email, id)
+		}
 	}
 	err = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
 		ID:           id,

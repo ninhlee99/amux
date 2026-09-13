@@ -21,9 +21,9 @@ func GeneratePKCE() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
-// GenerateState generates a cryptographically random state string to mitigate CSRF attacks.
+// GenerateState generates a cryptographically random state string to mitigate CSRF attacks (RFC 6749 / OAuth 2.1).
 func GenerateState() (string, error) {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}

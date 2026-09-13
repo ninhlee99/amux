@@ -41,6 +41,9 @@ func TestGenerateState(t *testing.T) {
 	if s1 == "" || s2 == "" {
 		t.Errorf("empty state generated")
 	}
+	if len(s1) < 43 || len(s2) < 43 {
+		t.Errorf("state entropy too low: len=%d, want >= 43", len(s1))
+	}
 	if s1 == s2 {
 		t.Errorf("state is not random: %s == %s", s1, s2)
 	}
@@ -290,7 +293,42 @@ func TestPollDeviceToken(t *testing.T) {
 			wantTerminal: false,
 		},
 		{
-			name:         "malformed_html",
+			name:         "http_429_slow_down",
+			statusCode:   http.StatusTooManyRequests,
+			responseBody: `{"error":"slow_down"}`,
+			wantDone:     false,
+			wantSlowDown: true,
+			wantErr:      false,
+		},
+		{
+			name:         "empty_200_body",
+			statusCode:   http.StatusOK,
+			responseBody: `{}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: false,
+		},
+		{
+			name:         "http_401_invalid_client",
+			statusCode:   http.StatusUnauthorized,
+			responseBody: `{"error":"invalid_client"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: true,
+		},
+		{
+			name:         "non_json_400_terminal",
+			statusCode:   http.StatusBadRequest,
+			responseBody: `<html>Bad Request</html>`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: true,
+		},
+		{
+			name:         "malformed_html_200",
 			statusCode:   http.StatusOK,
 			responseBody: `<html><head><title>Bad Gateway</title></head></html>`,
 			wantDone:     false,

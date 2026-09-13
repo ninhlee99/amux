@@ -54,25 +54,48 @@ func TestAccountPoolRouter_Preferred(t *testing.T) {
 	}
 }
 
-func TestAccountPoolRouter_PreferredHardPinNoFailover(t *testing.T) {
+func TestAccountPoolRouter_PreferredFailsOverOnOtherErrors(t *testing.T) {
 	a1 := &dummyAdapter{id: "geminiapi:01", priority: 1}
 	a2 := &failAdapter{id: "chatgptweb:01", priority: 20, err: errors.New("upstream 403")}
 
 	pool := NewAccountPoolRouter([]types.ProviderAdapter{a1, a2})
 	pool.SetPreferred("chatgptweb:01")
 
-	_, err := pool.Send(context.Background(), &types.ChatRequest{Model: "test"})
-	if err == nil {
-		t.Fatal("expected preferred failure to surface, not failover")
+	ch, err := pool.Send(context.Background(), &types.ChatRequest{Model: "test"})
+	if err != nil {
+		t.Fatalf("expected failover to succeed, got %v", err)
 	}
-	if a1.called {
-		t.Fatal("gemini must not be called when preferred chatgptweb fails non-429")
+	chunk := <-ch
+	if chunk.ID != "geminiapi:01" {
+		t.Fatalf("expected chunk from geminiapi:01, got %s", chunk.ID)
 	}
 	if !a2.called {
-		t.Fatal("expected preferred chatgptweb to be tried")
+		t.Fatal("expected preferred chatgptweb to be tried first")
 	}
-	if pool.Preferred() != "chatgptweb:01" {
-		t.Fatalf("preferred should stay pinned on non-429 fail, got %s", pool.Preferred())
+	if !a1.called {
+		t.Fatal("expected gemini to be called on failover")
+	}
+	if pool.Preferred() != "geminiapi:01" {
+		t.Fatalf("auto-switch should promote failover winner, got %s", pool.Preferred())
+	}
+}
+
+func TestAccountPoolRouter_PreferredMissingFromPoolClearsPreference(t *testing.T) {
+	a1 := &dummyAdapter{id: "geminiapi:01", priority: 1}
+
+	pool := NewAccountPoolRouter([]types.ProviderAdapter{a1})
+	pool.SetPreferred("nonexistent:01")
+
+	ch, err := pool.Send(context.Background(), &types.ChatRequest{Model: "test"})
+	if err != nil {
+		t.Fatalf("expected pool to fall through without crash, got %v", err)
+	}
+	chunk := <-ch
+	if chunk.ID != "geminiapi:01" {
+		t.Fatalf("expected chunk from geminiapi:01, got %s", chunk.ID)
+	}
+	if pool.Preferred() != "geminiapi:01" {
+		t.Fatalf("expected winner to be promoted to preferred, got %s", pool.Preferred())
 	}
 }
 

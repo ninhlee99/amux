@@ -102,7 +102,13 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	// Save profile in amux
 	pName := customName
 	if pName == "" {
-		pName = email
+		if existing := profile.ProfileNameForAccount("antigravity", email); existing != "" {
+			pName = existing
+			fmt.Printf("Account %s already exists — updating profile %q…\n", email, pName)
+		} else {
+			pName = email
+			fmt.Printf("New account %s detected — creating profile %q…\n", email, pName)
+		}
 	}
 	pName = profile.SanitizeName(pName)
 	spec, _ := profile.LookupToolSpec("antigravity")

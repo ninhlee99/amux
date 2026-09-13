@@ -79,7 +79,7 @@ Monitoring & Utilities:
                             token usage analytics
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude / agy / antigravity / codex) routed through proxy
+  amux run <tool> [args...]   exec tool (claude) routed through proxy
   amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
                             run/manage proxy daemon (default 127.0.0.1:8787;
                             --public binds 0.0.0.0; -p/--port overrides port)
@@ -634,17 +634,8 @@ func cmdAdd(tool, name string) {
 	if !ok {
 		die("unknown tool %q", tool)
 	}
-	if acct := profile.DetectAccount(spec); acct != "" && profile.ProfileNameForAccount(tool, acct) == "" {
-		fmt.Printf("%s is logged in as %s — saving that.\n", tool, acct)
-		pName := profileName(name, acct)
-		if _, err := profile.CmdSave(tool, pName); err != nil {
-			die("save failed: %v", err)
-		}
-		fmt.Printf("\nto add a different account: log into it in %s, then run `amux add %s` again.\n", tool, tool)
-		return
-	}
 	loginHint(tool)
-	fmt.Print("press Enter when you've logged in as the new account… ")
+	fmt.Print("press Enter when you've logged in… ")
 	var ignored string
 	_, _ = fmt.Scanln(&ignored)
 	acct := profile.DetectAccount(spec)
@@ -652,13 +643,23 @@ func cmdAdd(tool, name string) {
 		die("still can't detect a %s login", tool)
 	}
 	if existing := profile.ProfileNameForAccount(tool, acct); existing != "" {
-		fmt.Printf("%s is already saved as %q — nothing to do.\n", acct, existing)
+		pName := existing
+		if name != "" {
+			pName = profile.SanitizeName(name)
+		}
+		fmt.Printf("Account %s already exists — updating saved profile %q…\n", acct, pName)
+		if _, err := profile.CmdSave(tool, pName); err != nil {
+			die("update failed: %v", err)
+		}
+		fmt.Printf("Updated profile %q (%s).\n", pName, acct)
 		return
 	}
 	pName := profileName(name, acct)
+	fmt.Printf("New account %s detected — saving profile %q…\n", acct, pName)
 	if _, err := profile.CmdSave(tool, pName); err != nil {
 		die("save failed: %v", err)
 	}
+	fmt.Printf("Saved new profile %q (%s).\n", pName, acct)
 }
 
 func profileName(name, acct string) string {
@@ -848,22 +849,6 @@ func cmdRun(args []string) {
 			"ANTHROPIC_AUTH_TOKEN=am-proxy",
 			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		)
-	case "agy", "antigravity":
-		target := tool
-		var err error
-		bin, err = exec.LookPath(target)
-		if err != nil && tool == "antigravity" {
-			target = "agy"
-			bin, err = exec.LookPath(target)
-		}
-		if err != nil {
-			die("%v", err)
-		}
-		execArgs = append([]string{target}, rest...)
-		environ = append(os.Environ(),
-			"GEMINI_API_BASE="+base,
-			"GOOGLE_GENAI_BASE_URL="+base,
-		)
 	case "codex":
 		var err error
 		bin, err = exec.LookPath(tool)
@@ -876,7 +861,7 @@ func cmdRun(args []string) {
 			"OPENAI_API_KEY=am-proxy",
 		)
 	default:
-		die("amux run currently supports: claude, agy, antigravity, codex")
+		die("amux run currently supports: claude, codex (agy/antigravity connects directly to Google Cloud without proxy redirection)")
 	}
 
 	_ = syscall.Exec(bin, execArgs, environ)
@@ -980,7 +965,7 @@ func cmdHookInstall(args []string) {
 		if err := hook.CodexHookInstall(); err != nil {
 			fmt.Printf("warning: codex hook install: %v\n", err)
 		} else {
-			fmt.Printf("installed hooks in %s\n  SessionStart  -> amux hook codex start\n\n", hook.CodexHooksPath())
+			fmt.Printf("installed hooks in %s\n  SessionStart -> amux hook codex start\n  SessionEnd   -> amux hook codex stop\n  Stop         -> amux hook codex stop\n\n", hook.CodexHooksPath())
 			installedCount++
 		}
 	}
@@ -1005,7 +990,7 @@ func cmdHookInstall(args []string) {
 	proxyUp := proxy.ProxyUp()
 	hook.SyncLaunchctlEnv(proxyUp, proxy.ProxyBase())
 	if proxyUp {
-		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
+		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL, OPENAI_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
 	} else {
 		fmt.Println("launchctl: cleared gateway vars from macOS session env (proxy not running)")
 	}
@@ -1167,13 +1152,22 @@ func cmdHookStatus(args []string) {
 		fmt.Printf("ANTHROPIC_BASE_URL: %s  (not the proxy)\n", os.Getenv("ANTHROPIC_BASE_URL"))
 	}
 
+	switch os.Getenv("OPENAI_BASE_URL") {
+	case proxy.ProxyBase() + "/v1":
+		fmt.Printf("OPENAI_BASE_URL:    %s\n", proxy.ProxyBase()+"/v1")
+	case "":
+		fmt.Println("OPENAI_BASE_URL:    not set — codex will bypass the proxy unless run via `am run codex`")
+	default:
+		fmt.Printf("OPENAI_BASE_URL:    %s  (not the proxy)\n", os.Getenv("OPENAI_BASE_URL"))
+	}
+
 	switch os.Getenv("GEMINI_API_BASE") {
 	case proxy.ProxyBase():
-		fmt.Printf("GEMINI_API_BASE: %s\n", proxy.ProxyBase())
+		fmt.Printf("GEMINI_API_BASE:    %s\n", proxy.ProxyBase())
 	case "":
-		fmt.Println("GEMINI_API_BASE: not set — agy may bypass the proxy unless run via `am run agy`")
+		fmt.Println("GEMINI_API_BASE:    not set")
 	default:
-		fmt.Printf("GEMINI_API_BASE: %s  (not the proxy)\n", os.Getenv("GEMINI_API_BASE"))
+		fmt.Printf("GEMINI_API_BASE:    %s  (not the proxy)\n", os.Getenv("GEMINI_API_BASE"))
 	}
 
 	if proxy.ProxyUp() {
