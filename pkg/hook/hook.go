@@ -447,6 +447,8 @@ func CodexHookInstall() error {
 	}
 	m := LoadCodexHooks()
 	AddHook(m, "SessionStart", fmt.Sprintf("%q hook codex start", self))
+	AddHook(m, "SessionEnd", fmt.Sprintf("%q hook codex stop", self))
+	AddHook(m, "Stop", fmt.Sprintf("%q hook codex stop", self))
 	return SaveCodexHooks(m)
 }
 

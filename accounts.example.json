@@ -25,6 +25,22 @@
       "model": "llama-3.3-70b-versatile"
     },
     {
+      "id": "kimi:api:01",
+      "type": "openai_compatible",
+      "priority": 4,
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiKey": "env:KIMI_API_KEY",
+      "model": "moonshot-v1-128k"
+    },
+    {
+      "id": "grok:api:01",
+      "type": "openai_compatible",
+      "priority": 5,
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKey": "env:XAI_API_KEY",
+      "model": "grok-2-latest"
+    },
+    {
       "id": "chatgpt:01",
       "type": "chatgpt_web",
       "priority": 5,

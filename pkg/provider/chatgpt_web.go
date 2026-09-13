@@ -133,6 +133,18 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 	return strings.TrimSpace(out.String())
 }
 
+func isChatGPTRateLimit(statusCode int, body string) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "rate_limit") ||
+		strings.Contains(lower, "too_many_requests") ||
+		strings.Contains(lower, "usage_limit") ||
+		strings.Contains(lower, "reached our limit") ||
+		strings.Contains(lower, "try again later")
+}
+
 func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if a.SessionToken == "" {
 		return nil, fmt.Errorf("%s: %w: no session token configured", a.AdapterID, types.ErrAuthentication)
@@ -150,91 +162,115 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		return nil, fmt.Errorf("%s: sentinel: %w", a.AdapterID, err)
 	}
 
-	a.mu.Lock()
-	convID := a.convID
-	parentID := a.parentMessageID
-	a.mu.Unlock()
+	rotatedConv := false
+	for {
+		a.mu.Lock()
+		convID := a.convID
+		parentID := a.parentMessageID
+		a.mu.Unlock()
 
-	if req.FullContext {
-		a.resetConversation()
-		convID = ""
-		parentID = ""
-	}
-
-	// Continuing a server-side thread: send only the latest user turn.
-	// Fresh thread / FullContext: flatten history once into the first message.
-	prompt := WebBackendPrompt(req, convID != "" && parentID != "")
-	if parentID == "" {
-		parentID = nilParentMessageID
-	}
-
-	messageID := newUUIDv4()
-	payloadMap := map[string]any{
-		"action": "next",
-		"messages": []map[string]any{
-			{
-				"id":     messageID,
-				"author": map[string]string{"role": "user"},
-				"content": map[string]any{
-					"content_type": "text",
-					"parts":        []string{prompt},
-				},
-				"metadata": map[string]any{},
-			},
-		},
-		"parent_message_id":             parentID,
-		"model":                         model,
-		"timezone_offset_min":           -420,
-		"history_and_training_disabled": true,
-		"conversation_mode":             map[string]string{"kind": "primary_assistant"},
-	}
-	if convID != "" {
-		payloadMap["conversation_id"] = convID
-	}
-
-	b, err := json.Marshal(payloadMap)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTConversationURL, bytes.NewReader(b))
-	if err != nil {
-		return nil, fmt.Errorf("%s: build request: %w", a.AdapterID, err)
-	}
-
-	setChatGPTWebHeaders(httpReq, a.SessionToken, accountID, deviceID, true)
-	httpReq.Header.Set("openai-sentinel-chat-requirements-token", sentinel.Requirements)
-	if sentinel.Proof != "" {
-		httpReq.Header.Set("openai-sentinel-proof-token", sentinel.Proof)
-	}
-
-	resp, err := a.client().Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
-	}
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		resp.Body.Close()
-		a.resetConversation()
-		return nil, types.ErrRateLimitReached
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
-		return nil, types.ErrAuthentication
-	}
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		resp.Body.Close()
-		msg := string(bytes.TrimSpace(body))
-		if resp.StatusCode == http.StatusNotFound {
+		if rotatedConv {
 			a.resetConversation()
+			convID = ""
+			parentID = ""
 		}
-		return nil, fmt.Errorf("%s: upstream status %d: %s", a.AdapterID, resp.StatusCode, msg)
-	}
 
-	out := make(chan types.StreamChunk)
-	go streamChatGPTWeb(ctx, a, resp, out)
-	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
+		// Continuing a server-side thread: send only the latest user turn.
+		// Fresh thread / FullContext: flatten history once into the first message.
+		prompt := WebBackendPrompt(req, convID != "" && parentID != "")
+		if parentID == "" {
+			parentID = nilParentMessageID
+		}
+
+		messageID := newUUIDv4()
+		payloadMap := map[string]any{
+			"action": "next",
+			"messages": []map[string]any{
+				{
+					"id":     messageID,
+					"author": map[string]string{"role": "user"},
+					"content": map[string]any{
+						"content_type": "text",
+						"parts":        []string{prompt},
+					},
+					"metadata": map[string]any{},
+				},
+			},
+			"parent_message_id":             parentID,
+			"model":                         model,
+			"timezone_offset_min":           -420,
+			"history_and_training_disabled": true,
+			"conversation_mode":             map[string]string{"kind": "primary_assistant"},
+		}
+		if convID != "" {
+			payloadMap["conversation_id"] = convID
+		}
+
+		b, err := json.Marshal(payloadMap)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTConversationURL, bytes.NewReader(b))
+		if err != nil {
+			return nil, fmt.Errorf("%s: build request: %w", a.AdapterID, err)
+		}
+
+		setChatGPTWebHeaders(httpReq, a.SessionToken, accountID, deviceID, true)
+		httpReq.Header.Set("openai-sentinel-chat-requirements-token", sentinel.Requirements)
+		if sentinel.Proof != "" {
+			httpReq.Header.Set("openai-sentinel-proof-token", sentinel.Proof)
+		}
+
+		resp, err := a.client().Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			resp.Body.Close()
+			return nil, types.ErrAuthentication
+		}
+
+		if isChatGPTRateLimit(resp.StatusCode, "") {
+			resp.Body.Close()
+			if !rotatedConv {
+				rotatedConv = true
+				a.resetConversation()
+				log.Printf("%s: rate limited on current thread — starting a new ChatGPT conversation", a.AdapterID)
+				continue
+			}
+			return nil, types.ErrRateLimitReached
+		}
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+			resp.Body.Close()
+			msg := string(bytes.TrimSpace(body))
+			if isChatGPTRateLimit(resp.StatusCode, msg) {
+				if !rotatedConv {
+					rotatedConv = true
+					a.resetConversation()
+					log.Printf("%s: rate limited on current thread — starting a new ChatGPT conversation", a.AdapterID)
+					continue
+				}
+				return nil, fmt.Errorf("%s: %w: %s", a.AdapterID, types.ErrRateLimitReached, msg)
+			}
+			if resp.StatusCode == http.StatusNotFound {
+				if !rotatedConv {
+					rotatedConv = true
+					a.resetConversation()
+					log.Printf("%s: conversation not found — starting a new ChatGPT conversation", a.AdapterID)
+					continue
+				}
+			}
+			return nil, fmt.Errorf("%s: upstream status %d: %s", a.AdapterID, resp.StatusCode, msg)
+		}
+
+		out := make(chan types.StreamChunk)
+		go streamChatGPTWeb(ctx, a, resp, out)
+		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
+	}
 }
 
 func (a *ChatGPTWebAdapter) resetConversation() {
@@ -314,7 +350,13 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Resp
 			continue
 		}
 		if chunk.Error != nil {
-			sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: error: %v", id, chunk.Error), Done: true})
+			errStr := fmt.Sprintf("%v", chunk.Error)
+			if isChatGPTRateLimit(0, errStr) {
+				a.resetConversation()
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: %w: %s", id, types.ErrRateLimitReached, errStr), Done: true})
+			} else {
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: error: %v", id, chunk.Error), Done: true})
+			}
 			doneSent = true
 			return
 		}

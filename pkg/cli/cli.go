@@ -16,6 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/env"
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/monitor"
@@ -62,11 +63,14 @@ Rotate pool:
   amux pool model <id> M      change provider model (hot-reload)
 
 Add providers:
-  amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq
+  amux oauth <provider>       standalone OAuth (claude, codex, antigravity, agy, kimi, grok)
+  amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq / kimi / grok
   amux api add <name> --endpoint <url> --api-key <key> [--model M] [--priority N]
   amux accounts rm <id>       delete a provider from the list (or use am rm <id>)
   amux doctor providers       1-turn probe each adapter
   amux chat [--provider id]   terminal chat + failover
+  amux btw <message>          inject a note to the agent while it is running
+                              (e.g. "am btw check if README is up to date too")
 
   Codex: after am add codex, token is reused as codex:NN — no extra login.
 
@@ -77,7 +81,7 @@ Monitoring & Utilities:
                             token usage analytics
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude / agy / antigravity) routed through the proxy
+  amux run <tool> [args...]   exec tool (claude) routed through proxy
   amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
                             run/manage proxy daemon (default 127.0.0.1:8787;
                             --public binds 0.0.0.0; -p/--port overrides port)
@@ -142,7 +146,7 @@ func Run(rawArgs []string) {
 		}
 		cmdUpdate(force, quiet)
 
-	case "a", "add":
+	case "add":
 		tool, name := toolAndName(args)
 		cmdAdd(tool, name)
 
@@ -277,6 +281,24 @@ func Run(rawArgs []string) {
 	case "login":
 		ui.CmdLogin(args)
 
+	case "oauth":
+		if len(args) == 0 {
+			fmt.Println("Usage: amux oauth <provider> [custom-name]")
+			fmt.Println("\nSupported standalone OAuth providers (no CLI/IDE installation required):")
+			for _, p := range oauth.SupportedOAuthProviders() {
+				fmt.Printf("  • %s\n", p)
+			}
+			return
+		}
+		target := args[0]
+		customName := ""
+		if len(args) > 1 {
+			customName = args[1]
+		}
+		if err := oauth.InteractiveOAuth(target, customName); err != nil {
+			die("oauth error: %v", err)
+		}
+
 	case "doctor":
 		if len(args) > 0 && (args[0] == "providers" || args[0] == "provider") {
 			ui.CmdDoctorProviders()
@@ -293,6 +315,12 @@ func Run(rawArgs []string) {
 	case "chat":
 		ui.CmdChat(args)
 
+	case "btw":
+		if len(args) == 0 {
+			die("usage: am btw <message>  — inject a note to the agent while it is running")
+		}
+		proxy.CmdBtw(strings.Join(args, " "))
+
 	case "usage":
 		usage.PrintUsageReport(args)
 
@@ -301,6 +329,7 @@ func Run(rawArgs []string) {
 
 	case "run":
 		cmdRun(args)
+
 
 	case "env":
 		if len(args) == 0 || (len(args) == 1 && args[0] == "--public") {
@@ -614,17 +643,8 @@ func cmdAdd(tool, name string) {
 	if !ok {
 		die("unknown tool %q", tool)
 	}
-	if acct := profile.DetectAccount(spec); acct != "" && profile.ProfileNameForAccount(tool, acct) == "" {
-		fmt.Printf("%s is logged in as %s — saving that.\n", tool, acct)
-		pName := profileName(name, acct)
-		if _, err := profile.CmdSave(tool, pName); err != nil {
-			die("save failed: %v", err)
-		}
-		fmt.Printf("\nto add a different account: log into it in %s, then run `amux add %s` again.\n", tool, tool)
-		return
-	}
 	loginHint(tool)
-	fmt.Print("press Enter when you've logged in as the new account… ")
+	fmt.Print("press Enter when you've logged in… ")
 	var ignored string
 	_, _ = fmt.Scanln(&ignored)
 	acct := profile.DetectAccount(spec)
@@ -632,13 +652,23 @@ func cmdAdd(tool, name string) {
 		die("still can't detect a %s login", tool)
 	}
 	if existing := profile.ProfileNameForAccount(tool, acct); existing != "" {
-		fmt.Printf("%s is already saved as %q — nothing to do.\n", acct, existing)
+		pName := existing
+		if name != "" {
+			pName = profile.SanitizeName(name)
+		}
+		fmt.Printf("Account %s already exists — updating saved profile %q…\n", acct, pName)
+		if _, err := profile.CmdSave(tool, pName); err != nil {
+			die("update failed: %v", err)
+		}
+		fmt.Printf("Updated profile %q (%s).\n", pName, acct)
 		return
 	}
 	pName := profileName(name, acct)
+	fmt.Printf("New account %s detected — saving profile %q…\n", acct, pName)
 	if _, err := profile.CmdSave(tool, pName); err != nil {
 		die("save failed: %v", err)
 	}
+	fmt.Printf("Saved new profile %q (%s).\n", pName, acct)
 }
 
 func profileName(name, acct string) string {
@@ -828,24 +858,19 @@ func cmdRun(args []string) {
 			"ANTHROPIC_AUTH_TOKEN=am-proxy",
 			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		)
-	case "agy", "antigravity":
-		target := tool
+	case "codex":
 		var err error
-		bin, err = exec.LookPath(target)
-		if err != nil && tool == "antigravity" {
-			target = "agy"
-			bin, err = exec.LookPath(target)
-		}
+		bin, err = exec.LookPath(tool)
 		if err != nil {
 			die("%v", err)
 		}
-		execArgs = append([]string{target}, rest...)
+		execArgs = append([]string{tool}, rest...)
 		environ = append(os.Environ(),
-			"GEMINI_API_BASE="+base,
-			"GOOGLE_GENAI_BASE_URL="+base,
+			"OPENAI_BASE_URL="+base+"/v1",
+			"OPENAI_API_KEY=am-proxy",
 		)
 	default:
-		die("amux run currently supports: claude, agy, antigravity")
+		die("amux run currently supports: claude, codex (agy/antigravity connects directly to Google Cloud without proxy redirection)")
 	}
 
 	_ = syscall.Exec(bin, execArgs, environ)
@@ -949,7 +974,7 @@ func cmdHookInstall(args []string) {
 		if err := hook.CodexHookInstall(); err != nil {
 			fmt.Printf("warning: codex hook install: %v\n", err)
 		} else {
-			fmt.Printf("installed hooks in %s\n  SessionStart  -> amux hook codex start\n\n", hook.CodexHooksPath())
+			fmt.Printf("installed hooks in %s\n  SessionStart -> amux hook codex start\n  SessionEnd   -> amux hook codex stop\n  Stop         -> amux hook codex stop\n\n", hook.CodexHooksPath())
 			installedCount++
 		}
 	}
@@ -974,7 +999,7 @@ func cmdHookInstall(args []string) {
 	proxyUp := proxy.ProxyUp()
 	hook.SyncLaunchctlEnv(proxyUp, proxy.ProxyBase())
 	if proxyUp {
-		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
+		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL, OPENAI_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
 	} else {
 		fmt.Println("launchctl: cleared gateway vars from macOS session env (proxy not running)")
 	}
@@ -1136,13 +1161,22 @@ func cmdHookStatus(args []string) {
 		fmt.Printf("ANTHROPIC_BASE_URL: %s  (not the proxy)\n", os.Getenv("ANTHROPIC_BASE_URL"))
 	}
 
+	switch os.Getenv("OPENAI_BASE_URL") {
+	case proxy.ProxyBase() + "/v1":
+		fmt.Printf("OPENAI_BASE_URL:    %s\n", proxy.ProxyBase()+"/v1")
+	case "":
+		fmt.Println("OPENAI_BASE_URL:    not set — codex will bypass the proxy unless run via `am run codex`")
+	default:
+		fmt.Printf("OPENAI_BASE_URL:    %s  (not the proxy)\n", os.Getenv("OPENAI_BASE_URL"))
+	}
+
 	switch os.Getenv("GEMINI_API_BASE") {
 	case proxy.ProxyBase():
-		fmt.Printf("GEMINI_API_BASE: %s\n", proxy.ProxyBase())
+		fmt.Printf("GEMINI_API_BASE:    %s\n", proxy.ProxyBase())
 	case "":
-		fmt.Println("GEMINI_API_BASE: not set — agy may bypass the proxy unless run via `am run agy`")
+		fmt.Println("GEMINI_API_BASE:    not set")
 	default:
-		fmt.Printf("GEMINI_API_BASE: %s  (not the proxy)\n", os.Getenv("GEMINI_API_BASE"))
+		fmt.Printf("GEMINI_API_BASE:    %s  (not the proxy)\n", os.Getenv("GEMINI_API_BASE"))
 	}
 
 	if proxy.ProxyUp() {

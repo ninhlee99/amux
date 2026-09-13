@@ -252,11 +252,17 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 				break
 			}
-			log.Printf("router: preferred adapter %s failed (pinned, no failover): %v", a.ID(), err)
-			return nil, fmt.Errorf("%s: %w", a.ID(), err)
+			log.Printf("router: preferred adapter %s failed (%v) — failing over", a.ID(), err)
+			skippedPreferred = true
+			term.LogWarn("preferred %s failed, next: %v", a.ID(), err)
+			errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
+			break
 		}
 		if !skippedPreferred && len(errs) == 0 {
-			return nil, fmt.Errorf("router: preferred adapter %q not in pool", preferredID)
+			log.Printf("router: preferred adapter %q not in pool — clearing preference", preferredID)
+			r.mu.Lock()
+			r.preferred = ""
+			r.mu.Unlock()
 		}
 	}
 
@@ -347,7 +353,7 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 }
 
 // Reload updates the router's rotate-pool adapters and merges them into the
-// addressable directory (keeps existing out-of-pool entries).
+// addressable directory (clearing any stale or disabled adapters).
 func (r *AccountPoolRouter) Reload(adapters []types.ProviderAdapter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -355,10 +361,20 @@ func (r *AccountPoolRouter) Reload(adapters []types.ProviderAdapter) {
 	copy(sorted, adapters)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Priority() < sorted[j].Priority() })
 	r.adapters = sorted
-	if r.directory == nil {
-		r.directory = make(map[string]types.ProviderAdapter)
-	}
+	r.directory = make(map[string]types.ProviderAdapter, len(sorted))
 	for _, a := range sorted {
 		r.directory[a.ID()] = a
+	}
+	if r.preferred != "" {
+		found := false
+		for _, a := range sorted {
+			if a.ID() == r.preferred {
+				found = true
+				break
+			}
+		}
+		if !found {
+			r.preferred = ""
+		}
 	}
 }

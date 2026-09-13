@@ -48,6 +48,10 @@ var CompactPrefixMigrate = map[string]string{
 	"geminicli":  "antigravity",
 	"githubapi":  "github:api",
 	"groqapi":    "groq:api",
+	"kimiapi":    "kimi:api",
+	"moonshot":   "kimi:api",
+	"grokapi":    "grok:api",
+	"xai":        "grok:api",
 }
 
 // MigrateCompactID rewrites one ID from flat prefix form to brand:method form.

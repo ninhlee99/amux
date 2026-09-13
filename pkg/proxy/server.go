@@ -103,6 +103,10 @@ func RunProxy(addr, upstream string) error {
 		pool.SetDirectory(all)
 	}
 
+	// Wire the /btw queue into the bridge so in-flight user notes get
+	// injected into the next outgoing LLM request automatically.
+	bridge.SetBtwDrainer(GetGlobalBtwQueue().Drain)
+
 	rp, err := newReverseProxy(upstream, rot)
 	if err != nil {
 		return err
@@ -236,6 +240,12 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		bridge.HandleChatCompletions(w, r, chatPool)
 	})
+	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		bridge.HandleOpenAIResponses(w, r, chatPool)
+	})
+	mux.HandleFunc("/responses", func(w http.ResponseWriter, r *http.Request) {
+		bridge.HandleOpenAIResponses(w, r, chatPool)
+	})
 	mux.HandleFunc("/v1/models", bridge.HandleModels)
 	mux.HandleFunc("/models", bridge.HandleModels)
 
@@ -307,6 +317,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		})
 	})
 
+	mux.HandleFunc("/_am/btw", HandleBtw)
+
 	mux.HandleFunc("/_am/sync", func(w http.ResponseWriter, r *http.Request) {
 		profile.SyncActiveFromSystem("claude")
 		rot.RefreshFromDisk()
@@ -359,7 +371,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			return
 		}
 
-		if strings.HasSuffix(path, "/chat/completions") || path == "/v1/models" || path == "/models" {
+		if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") || path == "/v1/models" || path == "/models" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -375,6 +387,11 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		}
 		if strings.Contains(path, ":generateContent") || strings.Contains(path, ":streamGenerateContent") {
 			bridge.HandleGeminiGenerateContent(w, r, chatPool)
+			return
+		}
+
+		if strings.HasSuffix(path, "/messages/count_tokens") || strings.HasSuffix(path, "/count_tokens") {
+			bridge.HandleClaudeCountTokens(w, r)
 			return
 		}
 

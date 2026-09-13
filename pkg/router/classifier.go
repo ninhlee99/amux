@@ -40,7 +40,7 @@ var (
 	reCrashOrStackTrace = regexp.MustCompile(`(?i)(?:panic:|Traceback \(most recent call last\):|fatal error:|NullPointerException|SIGSEGV|segmentation fault)`)
 
 	// Explicit pro / reasoning model names requested by client.
-	reProModelName = regexp.MustCompile(`(?i)(?:o1|o3|gemini-(?:3\.1|2\.5|1\.5)-pro|claude-3-7-sonnet|deepseek-r1|\br1\b)`)
+	reProModelName = regexp.MustCompile(`(?i)(?:o1|o3|gemini-(?:3\.1|2\.5|1\.5)-pro|claude-3-7-sonnet|deepseek-r1|\br1\b|kimi-(?:k\d+|latest|thinking|research)[\w.-]*|moonshot-v1(?:-\w+)?|grok-(?:2|3|beta)[\w.-]*)`)
 )
 
 // ClassifyTask evaluates an incoming ChatRequest to determine if it needs

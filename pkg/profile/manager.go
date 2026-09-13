@@ -651,3 +651,24 @@ func PrintLiveLogins() {
 	}
 	w.Flush()
 }
+
+// SaveDirectProfile saves an in-memory credential payload as a managed profile.
+func SaveDirectProfile(tool, name, account string, entries []types.ProfileEntry) error {
+	name = SanitizeName(name)
+	if name == "" {
+		name = SanitizeName(account)
+	}
+	if name == "" {
+		name = fmt.Sprintf("%s-%d", tool, time.Now().Unix())
+	}
+	if err := WriteBundle(tool, name, entries); err != nil {
+		return fmt.Errorf("write bundle: %w", err)
+	}
+	meta := types.ProfileMeta{Name: name, Tool: tool, Account: account, Saved: time.Now()}
+	mb, _ := json.MarshalIndent(meta, "", "  ")
+	if err := WriteFileAtomic(MetaPath(tool, name), mb, 0o600); err != nil {
+		return fmt.Errorf("write meta: %w", err)
+	}
+	WriteActivePointer(tool, name)
+	return nil
+}

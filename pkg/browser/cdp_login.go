@@ -78,6 +78,8 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 	// Stale Singleton* from a prior hung login makes the new Chrome hand off
 	// to a non-debug window — user logs in there, CDP never sees cookies.
 	clearChromiumSingletonLocks(dir)
+	// Clear previous session cookies so the user is required to log in anew
+	clearTargetSessionCookies(dir)
 
 	port, err := pickFreePort()
 	if err != nil {
@@ -101,6 +103,7 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 	defer func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
+		clearTargetSessionCookies(dir)
 	}()
 
 	deadline := time.Now().Add(timeout)
@@ -458,5 +461,27 @@ func cdpCallCookies(wsURL, method string) ([]cdpCookie, error) {
 			return nil, fmt.Errorf("cdp %s: %s", method, msg.Error.Message)
 		}
 		return msg.Result.Cookies, nil
+	}
+}
+
+// clearTargetSessionCookies removes cached cookies and session data
+// so the user is prompted to log in fresh rather than reusing an existing session.
+func clearTargetSessionCookies(profileDir string) {
+	paths := []string{
+		filepath.Join(profileDir, "Default", "Network", "Cookies"),
+		filepath.Join(profileDir, "Default", "Network", "Cookies-journal"),
+		filepath.Join(profileDir, "Default", "Cookies"),
+		filepath.Join(profileDir, "Default", "Cookies-journal"),
+		filepath.Join(profileDir, "Default", "Sessions"),
+		filepath.Join(profileDir, "Default", "Session Storage"),
+		filepath.Join(profileDir, "Default", "Local Storage"),
+		filepath.Join(profileDir, "Default", "IndexedDB"),
+		filepath.Join(profileDir, "Default", "Service Worker"),
+		filepath.Join(profileDir, "Default", "Cache"),
+		filepath.Join(profileDir, "Default", "Code Cache"),
+		filepath.Join(profileDir, "Default", "GPUCache"),
+	}
+	for _, p := range paths {
+		_ = os.RemoveAll(p)
 	}
 }

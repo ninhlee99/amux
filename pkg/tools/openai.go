@@ -104,16 +104,50 @@ func FromOpenAIToolCalls(calls []OpenAIToolCall) []types.ToolCall {
 	return out
 }
 
+func normalizeOpenAIToolChoice(tc any) any {
+	if tc == nil {
+		return nil
+	}
+	if s, ok := tc.(string); ok {
+		return s
+	}
+	if m, ok := tc.(map[string]any); ok {
+		typ, _ := m["type"].(string)
+		switch typ {
+		case "auto":
+			return "auto"
+		case "any":
+			return "required"
+		case "none":
+			return "none"
+		case "tool":
+			if name, ok := m["name"].(string); ok && name != "" {
+				return map[string]any{
+					"type": "function",
+					"function": map[string]string{"name": name},
+				}
+			}
+			return "auto"
+		}
+	}
+	return tc
+}
+
+func isReasoningModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "o1") || strings.Contains(m, "o3") || strings.Contains(m, "reasoning") || strings.Contains(m, "r1") || strings.Contains(m, "gpt-5")
+}
+
 func toOpenAIChatRequest(req *types.ChatRequest) *openAIChatRequest {
 	out := &openAIChatRequest{
 		Model:       req.Model,
 		Stream:      req.Stream,
 		Temperature: req.Temperature,
-		ToolChoice:  req.ToolChoice,
+		ToolChoice:  normalizeOpenAIToolChoice(req.ToolChoice),
 	}
 	if req.ReasoningEffort != "" {
 		out.ReasoningEffort = req.ReasoningEffort
-	} else if req.Thinking {
+	} else if req.Thinking && isReasoningModel(req.Model) {
 		out.ReasoningEffort = "medium"
 	}
 	if len(req.Tools) > 0 {

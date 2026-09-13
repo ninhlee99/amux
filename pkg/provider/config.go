@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,13 @@ var legacyIDPrefix = map[string]string{
 	"google-ai-studio": "gemini:api",
 	"github-models":    "github:api",
 	"groq":             "groq:api",
+	"groqapi":          "groq:api",
+	"kimi":             "kimi:api",
+	"kimiapi":          "kimi:api",
+	"moonshot":         "kimi:api",
+	"grok":             "grok:api",
+	"grokapi":          "grok:api",
+	"xai":              "grok:api",
 }
 
 // poolIDPrefix maps a ProviderConfig.Type to its unified-ID prefix, for the
@@ -155,10 +163,43 @@ func NextIDForPrefix(path, prefix string) (string, error) {
 	return types.FormatID(prefix, maxN+1), nil
 }
 
+// hostMatches parses rawURL and checks whether its hostname exactly matches or
+// is a subdomain of any of the given domains (e.g. "api.x.ai" matches "x.ai").
+func hostMatches(rawURL string, domains ...string) bool {
+	u := strings.TrimSpace(rawURL)
+	if u == "" {
+		return false
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Hostname() == "" {
+		parsed, err = url.Parse("https://" + u)
+		if err != nil {
+			return false
+		}
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, d := range domains {
+		d = strings.ToLower(d)
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsOpenRouterEndpoint reports whether baseURL points at OpenRouter.
 func IsOpenRouterEndpoint(baseURL string) bool {
-	u := strings.ToLower(baseURL)
-	return strings.Contains(u, "openrouter.ai")
+	return hostMatches(baseURL, "openrouter.ai")
+}
+
+// IsKimiEndpoint reports whether baseURL points at Moonshot / Kimi.
+func IsKimiEndpoint(baseURL string) bool {
+	return hostMatches(baseURL, "moonshot.cn", "kimi.ai")
+}
+
+// IsGrokEndpoint reports whether baseURL points at xAI / Grok.
+func IsGrokEndpoint(baseURL string) bool {
+	return hostMatches(baseURL, "x.ai")
 }
 
 // MigrateLegacyIDs rewrites any provider in accounts.json still using one of
@@ -538,6 +579,8 @@ const (
 	PriorityAPIGitHub  = 1
 	PriorityAPIGemini  = 2
 	PriorityAPIGroq    = 3
+	PriorityAPIKimi    = 4
+	PriorityAPIGrok    = 5
 	PriorityAPICustom  = 10
 	PriorityWebChatGPT = 20
 	PriorityWebGemini  = 22

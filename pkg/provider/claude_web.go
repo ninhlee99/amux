@@ -122,12 +122,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	a.mu.Lock()
 	hasThread := a.convUUID != ""
 	a.mu.Unlock()
-	if req.FullContext {
-		// Stateless API mode: don't mix an old Claude.ai thread with Claude Code history.
-		a.resetConversation()
-		hasThread = false
-	}
-	prompt := WebBackendPrompt(req, hasThread && !req.FullContext)
+	prompt := WebBackendPrompt(req, hasThread)
 
 	payloadMap := map[string]any{
 		"prompt":      prompt,
@@ -136,16 +131,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		"attachments": []any{},
 		"files":       []any{},
 	}
-	if req.Thinking {
-		budget := req.ThinkingBudget
-		if budget <= 0 {
-			budget = 2048
-		}
-		payloadMap["thinking"] = map[string]any{
-			"type":          "enabled",
-			"budget_tokens": budget,
-		}
-	}
+
 	b, err := json.Marshal(payloadMap)
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)

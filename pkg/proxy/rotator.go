@@ -388,11 +388,9 @@ func (r *Rotator) TotalProfileCount() int {
 }
 
 // ShouldFailoverToProviderPool is true when every Claude Code profile is
-// cooling or dead. Callers then bridge to the tool failover pool (API→web,
-// As soon as any Claude cooldown expires, this returns
-// false and the next request goes back through Anthropic.
+// cooling, dead, or turned off. Callers then bridge to the provider pool.
 func (r *Rotator) ShouldFailoverToProviderPool() bool {
-	return r.ProfileCount() > 0 && r.AllUnavailable()
+	return r.TotalProfileCount() > 0 && r.AllUnavailable()
 }
 
 // EnsureUsableActive makes sure the active Claude profile is one that is

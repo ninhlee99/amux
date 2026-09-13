@@ -37,12 +37,16 @@ func SyncLaunchctlEnv(proxyUp bool, proxyBase string) {
 	if proxyUp {
 		_ = LaunchctlSetenv("ANTHROPIC_BASE_URL", proxyBase)
 		_ = LaunchctlSetenv("ANTHROPIC_AUTH_TOKEN", "am-proxy")
+		_ = LaunchctlSetenv("OPENAI_BASE_URL", proxyBase+"/v1")
+		_ = LaunchctlSetenv("OPENAI_API_KEY", "am-proxy")
 		_ = LaunchctlSetenv("GEMINI_API_BASE", proxyBase)
 		_ = LaunchctlSetenv("GOOGLE_GENAI_BASE_URL", proxyBase)
 		return
 	}
 	_ = LaunchctlUnsetenv("ANTHROPIC_BASE_URL")
 	_ = LaunchctlUnsetenv("ANTHROPIC_AUTH_TOKEN")
+	_ = LaunchctlUnsetenv("OPENAI_BASE_URL")
+	_ = LaunchctlUnsetenv("OPENAI_API_KEY")
 	_ = LaunchctlUnsetenv("GEMINI_API_BASE")
 	_ = LaunchctlUnsetenv("GOOGLE_GENAI_BASE_URL")
 }

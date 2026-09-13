@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 ### 2. Sử dụng ngay với Claude Code:
 1. Mở `claude` — hook `SessionStart` sẽ tự động khởi động `am proxy up`. Proxy tự động snapshot tài khoản Claude hiện tại vào `~/.am/` (hoặc bạn có thể dùng `am add` thủ công).
 2. Thêm tài khoản phụ: trong Claude Code gõ `/login` với tài khoản mới, sau đó chạy `am add` (hoặc mở một tab mới — proxy sẽ tự động nhận diện và snapshot).
-3. Thêm các provider dự phòng vào pool: `am login chatgpt|claude|gemini|gemini-web|github|groq` hoặc `am api add`.
+3. Thêm các provider dự phòng vào pool: `am login chatgpt|claude|gemini|gemini-web|github|groq|kimi|grok` hoặc `am api add`.
 
 * **Tự động cập nhật:** `am setup --auto-update` (Cài đặt LaunchAgent kiểm tra bản mới định kỳ).
 * **Nâng cấp thủ công:** `am update` (hoặc `am update --force` để build lại từ mã nguồn mới nhất; giữ nguyên toàn bộ dữ liệu tại `~/.am/`).
@@ -90,13 +90,21 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am pool priority <id> <N>` | Đặt độ ưu tiên (số nhỏ ưu tiên gọi trước, tự động nạp lại không cần restart) |
 | `am pool model <id> <model>` | Thay đổi model mặc định của provider (hot-reload thời gian thực) |
 | `am pool set <id> [flags]` | Cấu hình nhanh provider: `--priority N`, `--model M`, `--on`, `--off` |
-| `am login <provider>` | Đăng nhập tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `github`, `groq` |
+| `am oauth <provider> [tên]` | **Standalone OAuth:** Đăng nhập trực tiếp OAuth (`claude`, `codex`, `antigravity`, `kimi`, `grok`) không cần cài đặt CLI gốc |
+| `am login <provider>` | Đăng nhập tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `github`, `groq`, `kimi`, `grok`, `codex`, `antigravity` |
 | `am api add <tên> [flags]` | Thêm OpenAI-compatible endpoint (`--endpoint <url> --api-key <key> [--model M] [--priority N]`) |
 | `am accounts rm <id>` | Xoá hoàn toàn provider khỏi cấu hình |
 | `am doctor providers` | Gửi truy vấn thử nghiệm (1-turn probe) kiểm tra tình trạng kết nối từng adapter |
 | `am chat [--provider <id>]` | Trò chuyện trực tiếp trên terminal kèm khả năng tự động failover |
 
 > **Codex CLI:** Sau khi chạy `am add codex`, token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
+>
+> 💡 **Mẹo cấu hình API Key:** Bạn có thể export sẵn biến môi trường trước khi chạy `am login`:
+> - **Google AI Studio:** `export GOOGLE_AI_STUDIO_KEY="AIzaSy..."` → `am login gemini`
+> - **GitHub Models:** `export GITHUB_TOKEN="ghp_..."` → `am login github`
+> - **Groq:** `export GROQ_API_KEY="gsk_..."` → `am login groq`
+> - **Kimi (Moonshot AI):** `export KIMI_API_KEY="sk-..."` → `am login kimi`
+> - **Grok (xAI):** `export XAI_API_KEY="xai-..."` → `am login grok`
 
 ### Giám Sát, Proxy & Tiện Ích Hệ Thống
 | Lệnh | Mô Tả |
@@ -108,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am usage [day\|week\|month\|all]` | Thống kê token (`-D` chi tiết, `-d YYYY-MM-DD`, `-p PROJECT`) |
 | `am logs [flags]` | Quản lý nhật ký hoạt động: `--count` (thống kê), `--errors` (xem lỗi), `--clean` (dọn dẹp > 7 ngày) |
 | `am proxy [up\|down\|token]` | Điều khiển daemon `:8787`. Hỗ trợ: `--public`, `-b/--addr`, `-p/--port`, `--threshold N` |
-| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`) kèm tự động kết nối và nạp môi trường proxy |
+| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`, `codex`) kèm tự động nạp môi trường proxy |
 | `am env [--public]` | Xuất biến môi trường cho lệnh `eval "$(am env)"` (`--public` sử dụng IP mạng LAN) |
 | `am env [set\|get\|rm\|list]` | Quản lý và lưu trữ cố định các biến môi trường tùy chỉnh cho proxy/công cụ |
 | `am hook [claude\|agy\|codex\|cursor]` | Điều khiển hook vòng đời cho từng công cụ (`start` / `stop`) |
@@ -299,6 +307,22 @@ Bạn có thể tham khảo file mẫu chưa mã hóa tại [`accounts.example.j
       "baseUrl": "https://api.groq.com/openai/v1",
       "apiKey": "env:GROQ_API_KEY",
       "model": "llama-3.3-70b-versatile"
+    },
+    {
+      "id": "kimi:api:01",
+      "type": "openai_compatible",
+      "priority": 4,
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiKey": "env:KIMI_API_KEY",
+      "model": "moonshot-v1-128k"
+    },
+    {
+      "id": "grok:api:01",
+      "type": "openai_compatible",
+      "priority": 5,
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKey": "env:XAI_API_KEY",
+      "model": "grok-2-latest"
     },
     {
       "id": "chatgpt:01",

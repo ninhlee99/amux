@@ -307,3 +307,46 @@ func CmdSwitchProvider(name string) {
 	}
 	fmt.Printf("switched Claude Code traffic to provider %q (no restart needed)\n", name)
 }
+
+// CmdBtw sends a "by-the-way" message to be injected into the next LLM request
+// while an agent is running. Usage: am btw <message text>
+func CmdBtw(text string) {
+	if !ProxyUp() {
+		fmt.Fprintln(os.Stderr, "amux: proxy not running — start a Claude Code session first (am proxy up)")
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		fmt.Fprintln(os.Stderr, "amux: usage: am btw <message>")
+		return
+	}
+
+	payload := `{"text":` + jsonQuote(text) + `}`
+	resp, err := http.Post(ProxyBase()+"/_am/btw", "application/json", strings.NewReader(payload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "amux: btw: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "amux: btw failed: %s\n", strings.TrimSpace(string(b)))
+		return
+	}
+	var res struct {
+		Pending int    `json:"pending"`
+		Queued  string `json:"queued"`
+	}
+	if json.Unmarshal(b, &res) == nil {
+		fmt.Printf("✓ queued (%d pending): %s\n", res.Pending, res.Queued)
+	} else {
+		fmt.Println("✓ message queued")
+	}
+}
+
+// jsonQuote returns a JSON-encoded double-quoted string for simple text.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+

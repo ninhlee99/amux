@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/browser"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
@@ -28,6 +29,7 @@ type loginFlags struct {
 	refresh    string // refresh token when the web session exposes one
 	useBrowser bool   // open Chromium via CDP and capture cookie (default when no token/cookie)
 	noBrowser  bool
+	isOAuth    bool   // trigger standalone OAuth flow
 }
 
 func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []string) {
@@ -61,6 +63,8 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 			f.useBrowser = true
 		case "--no-browser":
 			f.noBrowser = true
+		case "--oauth":
+			f.isOAuth = true
 		default:
 			rest = append(rest, args[i])
 		}
@@ -71,25 +75,48 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 // CmdLogin handles login. Default for chatgpt/claude: open a dedicated browser
 // window, you sign in on the website, we capture the session cookie via CDP
 // (no Keychain). Pass --token/--cookie to skip the browser, or --no-browser
-// to paste manually.
+// to paste manually. Pass --oauth or login codex/antigravity for standalone OAuth.
 func CmdLogin(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: amux login <provider> [--browser] [--token T] [--cookie C] [--refresh R] [--model M]")
-		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq")
+		fmt.Println("Usage: amux login <provider> [--browser] [--token T] [--cookie C] [--refresh R] [--model M] [--oauth]")
+		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok, codex, antigravity")
 		fmt.Println()
 		fmt.Println("  chatgpt / claude / gemini-web  default = open browser, CDP cookie capture")
 		fmt.Println("  gemini (API)                   AI Studio API key")
-		fmt.Println("  --token/--cookie  skip browser, use pasted credentials")
-		fmt.Println("  --no-browser      paste interactively instead of opening a window")
+		fmt.Println("  kimi                           Moonshot Kimi API key (or pass --oauth for device flow)")
+		fmt.Println("  grok                           xAI Grok API key (or pass --oauth for device flow)")
+		fmt.Println("  codex                          OpenAI Codex standalone OAuth (no CLI required)")
+		fmt.Println("  antigravity / agy              Google Antigravity standalone OAuth (no CLI required)")
+		fmt.Println("  --oauth                        trigger standalone OAuth flow directly")
+		fmt.Println("  --token/--cookie               skip browser, use pasted credentials")
+		fmt.Println("  --no-browser                   paste interactively instead of opening a window")
 		return
 	}
 
 	target, flags, _ := parseLoginFlags(args)
 	switch target {
+	case "codex", "codex-cli":
+		if err := oauth.InteractiveOAuth("codex", ""); err != nil {
+			fmt.Printf("Login failed: %v\n", err)
+		}
+	case "agy", "antigravity":
+		if err := oauth.InteractiveOAuth("antigravity", ""); err != nil {
+			fmt.Printf("Login failed: %v\n", err)
+		}
+	case "claude-code", "claude-oauth":
+		if err := oauth.InteractiveOAuth("claude", ""); err != nil {
+			fmt.Printf("Login failed: %v\n", err)
+		}
 	case "chatgpt", "chatgpt-web", "chatgptweb":
 		loginChatGPT(flags)
 	case "claude", "claude-web", "claudeweb":
-		loginClaude(flags)
+		if flags.isOAuth {
+			if err := oauth.InteractiveOAuth("claude", ""); err != nil {
+				fmt.Printf("Login failed: %v\n", err)
+			}
+		} else {
+			loginClaude(flags)
+		}
 	case "gemini-web", "geminiweb":
 		loginGeminiWeb(flags)
 	case "gemini", "google-ai-studio", "geminiapi":
@@ -98,8 +125,24 @@ func CmdLogin(args []string) {
 		loginGitHubModels(flags)
 	case "groq":
 		loginGroq(flags)
+	case "kimi", "moonshot", "kimiapi":
+		if flags.isOAuth {
+			if err := oauth.InteractiveOAuth("kimi", ""); err != nil {
+				fmt.Printf("Login failed: %v\n", err)
+			}
+		} else {
+			loginKimi(flags)
+		}
+	case "grok", "xai", "grokapi":
+		if flags.isOAuth {
+			if err := oauth.InteractiveOAuth("grok", ""); err != nil {
+				fmt.Printf("Login failed: %v\n", err)
+			}
+		} else {
+			loginGrok(flags)
+		}
 	default:
-		fmt.Printf("Unknown provider %q. Supported: chatgpt, claude, gemini, gemini-web, github, groq\n", target)
+		fmt.Printf("Unknown provider %q. Supported: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok, codex, antigravity (or run: am oauth <provider>)\n", target)
 	}
 }
 
@@ -468,17 +511,30 @@ func loginGitHubModels(f loginFlags) {
 	fmt.Printf("Saved GitHub Models as %s.\n", id)
 }
 
-func loginGroq(f loginFlags) {
-	fmt.Println("== Login: Groq ==")
+type openAICompatSpec struct {
+	Name         string
+	EnvVar       string
+	DefaultURL   string
+	DefaultModel string
+	IDPrefix     string
+	Priority     int
+}
+
+func loginOpenAICompat(spec openAICompatSpec, f loginFlags) {
+	fmt.Printf("== Login: %s ==\n", spec.Name)
 	key := strings.TrimSpace(f.token)
 	if key == "" {
-		key = readLinePrompt("Groq API key (Enter = $GROQ_API_KEY): ")
+		key = readLinePrompt(fmt.Sprintf("%s API key (Enter = $%s): ", spec.Name, spec.EnvVar))
 	}
 	if key == "" {
-		key = "env:GROQ_API_KEY"
+		key = "env:" + spec.EnvVar
 	}
-	id, priorityFloor, multi := nextPoolID("groqapi")
-	priority := provider.PriorityAPIGroq
+	model := f.model
+	if model == "" {
+		model = spec.DefaultModel
+	}
+	id, priorityFloor, multi := nextPoolID(spec.IDPrefix)
+	priority := spec.Priority
 	if multi {
 		priority = priorityFloor
 	}
@@ -486,16 +542,49 @@ func loginGroq(f loginFlags) {
 		ID:       id,
 		Type:     "openai_compatible",
 		Priority: priority,
-		BaseURL:  "https://api.groq.com/openai/v1",
+		BaseURL:  spec.DefaultURL,
 		APIKey:   key,
-		Model:    "llama-3.3-70b-versatile",
+		Model:    model,
 	})
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("Saved Groq as %s.\n", id)
+	fmt.Printf("Saved %s as %s (model: %s).\n", spec.Name, id, model)
+}
+
+func loginGroq(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Groq",
+		EnvVar:       "GROQ_API_KEY",
+		DefaultURL:   "https://api.groq.com/openai/v1",
+		DefaultModel: "llama-3.3-70b-versatile",
+		IDPrefix:     "groq:api",
+		Priority:     provider.PriorityAPIGroq,
+	}, f)
+}
+
+func loginKimi(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Kimi (Moonshot AI)",
+		EnvVar:       "KIMI_API_KEY",
+		DefaultURL:   "https://api.moonshot.cn/v1",
+		DefaultModel: "moonshot-v1-128k",
+		IDPrefix:     "kimi:api",
+		Priority:     provider.PriorityAPIKimi,
+	}, f)
+}
+
+func loginGrok(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "Grok (xAI)",
+		EnvVar:       "XAI_API_KEY",
+		DefaultURL:   "https://api.x.ai/v1",
+		DefaultModel: "grok-2-latest",
+		IDPrefix:     "grok:api",
+		Priority:     provider.PriorityAPIGrok,
+	}, f)
 }
 
 // CmdDoctorProviders live-probes every pool adapter with a tiny chat turn and
@@ -805,10 +894,18 @@ func CmdAPI(args []string) {
 		}
 
 		id := name
-		// OpenRouter keys always get openrouter:api:NN so multi-key works.
+		// Known endpoints/names get canonical brand:api:NN prefixes so multi-key works.
 		nameL := strings.ToLower(strings.TrimSpace(name))
 		if provider.IsOpenRouterEndpoint(endpoint) || nameL == "openrouter" || nameL == "openrouter:api" || strings.HasPrefix(nameL, "openrouter:api:") {
 			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "openrouter:api"); err == nil {
+				id = next
+			}
+		} else if provider.IsKimiEndpoint(endpoint) || nameL == "kimi" || nameL == "moonshot" || strings.HasPrefix(nameL, "kimi:api:") {
+			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "kimi:api"); err == nil {
+				id = next
+			}
+		} else if provider.IsGrokEndpoint(endpoint) || nameL == "grok" || nameL == "xai" || strings.HasPrefix(nameL, "grok:api:") {
+			if next, err := provider.NextIDForPrefix(provider.DefaultAccountsPath(), "grok:api"); err == nil {
 				id = next
 			}
 		}
