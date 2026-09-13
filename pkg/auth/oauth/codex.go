@@ -38,16 +38,20 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate PKCE: %w", err)
 	}
-	state := GenerateState()
+	state, err := GenerateState()
+	if err != nil {
+		return "", fmt.Errorf("generate state: %w", err)
+	}
 
-	authURL := fmt.Sprintf("%s?response_type=code&client_id=%s&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&state=%s",
-		CodexAuthURL,
-		url.QueryEscape(CodexClientID),
-		url.QueryEscape(CodexRedirectURI),
-		url.QueryEscape(CodexScope),
-		url.QueryEscape(challenge),
-		url.QueryEscape(state),
-	)
+	vals := url.Values{}
+	vals.Set("response_type", "code")
+	vals.Set("client_id", CodexClientID)
+	vals.Set("redirect_uri", CodexRedirectURI)
+	vals.Set("scope", CodexScope)
+	vals.Set("code_challenge", challenge)
+	vals.Set("code_challenge_method", "S256")
+	vals.Set("state", state)
+	authURL := CodexAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for OpenAI Codex OAuth login…")
 	fmt.Printf("If browser does not open automatically, visit:\n%s\n\n", authURL)
@@ -60,7 +64,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	}
 
 	fmt.Println("Authorization code received. Exchanging for tokens…")
-	tokenResp, err := exchangeCodexCode(code, verifier)
+	tokenResp, err := exchangeCodexCode(ctx, code, verifier)
 	if err != nil {
 		return "", fmt.Errorf("exchange token: %w", err)
 	}
@@ -91,11 +95,12 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		id = "codex:01"
 	}
 	err = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
-		ID:       id,
-		Type:     "codex_cli",
-		Priority: 5,
-		Account:  email,
-		Model:    "gpt-4o",
+		ID:           id,
+		Type:         "codex_cli",
+		Priority:     5,
+		Account:      email,
+		Model:        "gpt-4o",
+		RefreshToken: tokenResp.RefreshToken,
 	})
 	if err != nil {
 		return "", fmt.Errorf("save provider: %w", err)
@@ -105,7 +110,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	return email, nil
 }
 
-func exchangeCodexCode(code, verifier string) (*codexTokenResponse, error) {
+func exchangeCodexCode(ctx context.Context, code, verifier string) (*codexTokenResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("client_id", CodexClientID)
@@ -114,7 +119,7 @@ func exchangeCodexCode(code, verifier string) (*codexTokenResponse, error) {
 	data.Set("code_verifier", verifier)
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, CodexTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, CodexTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}

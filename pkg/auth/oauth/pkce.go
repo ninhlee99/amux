@@ -21,11 +21,13 @@ func GeneratePKCE() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
-// GenerateState generates a random state string to mitigate CSRF attacks.
-func GenerateState() string {
+// GenerateState generates a cryptographically random state string to mitigate CSRF attacks.
+func GenerateState() (string, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // OpenBrowser attempts to open target URL in the user's default browser.

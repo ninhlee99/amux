@@ -42,16 +42,22 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate PKCE: %w", err)
 	}
-	state := GenerateState()
+	state, err := GenerateState()
+	if err != nil {
+		return "", fmt.Errorf("generate state: %w", err)
+	}
 
-	authURL := fmt.Sprintf("%s?response_type=code&client_id=%s&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&state=%s&access_type=offline&prompt=consent",
-		AntigravityAuthURL,
-		url.QueryEscape(AntigravityClientID),
-		url.QueryEscape(AntigravityRedirectURI),
-		url.QueryEscape(AntigravityScope),
-		url.QueryEscape(challenge),
-		url.QueryEscape(state),
-	)
+	vals := url.Values{}
+	vals.Set("response_type", "code")
+	vals.Set("client_id", AntigravityClientID)
+	vals.Set("redirect_uri", AntigravityRedirectURI)
+	vals.Set("scope", AntigravityScope)
+	vals.Set("code_challenge", challenge)
+	vals.Set("code_challenge_method", "S256")
+	vals.Set("state", state)
+	vals.Set("access_type", "offline")
+	vals.Set("prompt", "consent")
+	authURL := AntigravityAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for Google Antigravity OAuth login…")
 	fmt.Printf("If browser does not open automatically, visit:\n%s\n\n", authURL)
@@ -64,7 +70,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	}
 
 	fmt.Println("Authorization code received. Exchanging for tokens…")
-	tokenResp, err := exchangeGoogleCode(code, verifier)
+	tokenResp, err := exchangeGoogleCode(ctx, code, verifier)
 	if err != nil {
 		return "", fmt.Errorf("exchange token: %w", err)
 	}
@@ -113,7 +119,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	return email, nil
 }
 
-func exchangeGoogleCode(code, verifier string) (*googleTokenResponse, error) {
+func exchangeGoogleCode(ctx context.Context, code, verifier string) (*googleTokenResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("client_id", AntigravityClientID)
@@ -123,7 +129,7 @@ func exchangeGoogleCode(code, verifier string) (*googleTokenResponse, error) {
 	data.Set("code_verifier", verifier)
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, AntigravityTokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, AntigravityTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}

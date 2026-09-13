@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -27,8 +28,14 @@ func TestGeneratePKCE(t *testing.T) {
 }
 
 func TestGenerateState(t *testing.T) {
-	s1 := GenerateState()
-	s2 := GenerateState()
+	s1, err1 := GenerateState()
+	if err1 != nil {
+		t.Fatalf("GenerateState failed: %v", err1)
+	}
+	s2, err2 := GenerateState()
+	if err2 != nil {
+		t.Fatalf("GenerateState failed: %v", err2)
+	}
 	if s1 == "" || s2 == "" {
 		t.Errorf("empty state generated")
 	}
@@ -135,5 +142,82 @@ func TestCallbackServer(t *testing.T) {
 	}
 	if gotCode != "sample-auth-code" {
 		t.Errorf("gotCode = %q, want sample-auth-code", gotCode)
+	}
+}
+
+func TestPollDeviceToken(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		responseJSON string
+		wantDone     bool
+		wantSlowDown bool
+		wantErr      bool
+		wantAccess   string
+		wantRefresh  string
+	}{
+		{
+			name:         "pending",
+			responseJSON: `{"error":"authorization_pending"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      false,
+		},
+		{
+			name:         "slow_down",
+			responseJSON: `{"error":"slow_down"}`,
+			wantDone:     false,
+			wantSlowDown: true,
+			wantErr:      false,
+		},
+		{
+			name:         "access_denied",
+			responseJSON: `{"error":"access_denied"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+		},
+		{
+			name:         "success",
+			responseJSON: `{"access_token":"token-abc","refresh_token":"ref-xyz","expires_in":3600}`,
+			wantDone:     true,
+			wantSlowDown: false,
+			wantErr:      false,
+			wantAccess:   "token-abc",
+			wantRefresh:  "ref-xyz",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, tc.responseJSON)
+			}))
+			defer server.Close()
+
+			cfg := DeviceFlowConfig{
+				ProviderLabel: "Test",
+				ClientID:      "test-client",
+				TokenURL:      server.URL,
+			}
+
+			tok, done, slowDown, err := pollDeviceToken(ctx, server.Client(), cfg, "dev-code-123")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if done != tc.wantDone {
+				t.Errorf("done=%v, want %v", done, tc.wantDone)
+			}
+			if slowDown != tc.wantSlowDown {
+				t.Errorf("slowDown=%v, want %v", slowDown, tc.wantSlowDown)
+			}
+			if tc.wantDone {
+				if tok == nil || tok.AccessToken != tc.wantAccess || tok.RefreshToken != tc.wantRefresh {
+					t.Errorf("tok=%+v, want access %q refresh %q", tok, tc.wantAccess, tc.wantRefresh)
+				}
+			}
+		})
 	}
 }

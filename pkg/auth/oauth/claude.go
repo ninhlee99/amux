@@ -29,16 +29,20 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("generate PKCE: %w", err)
 	}
-	state := GenerateState()
+	state, err := GenerateState()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate state: %w", err)
+	}
 
-	authURL := fmt.Sprintf("%s?response_type=code&client_id=%s&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&state=%s",
-		ClaudeAuthURL,
-		url.QueryEscape(ClaudeClientID),
-		url.QueryEscape(ClaudeRedirectURI),
-		url.QueryEscape(ClaudeScope),
-		url.QueryEscape(challenge),
-		url.QueryEscape(state),
-	)
+	vals := url.Values{}
+	vals.Set("response_type", "code")
+	vals.Set("client_id", ClaudeClientID)
+	vals.Set("redirect_uri", ClaudeRedirectURI)
+	vals.Set("scope", ClaudeScope)
+	vals.Set("code_challenge", challenge)
+	vals.Set("code_challenge_method", "S256")
+	vals.Set("state", state)
+	authURL := ClaudeAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for Claude Code OAuth login…")
 	fmt.Printf("If browser does not open automatically, visit:\n%s\n\n", authURL)
@@ -51,12 +55,12 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	}
 
 	fmt.Println("Authorization code received. Exchanging for tokens…")
-	tokenResp, err := exchangeClaudeCode(code, verifier)
+	tokenResp, err := exchangeClaudeCode(ctx, code, verifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("exchange token: %w", err)
 	}
 
-	accountEmail := fetchClaudeUserEmail(tokenResp.AccessToken)
+	accountEmail := fetchClaudeUserEmail(ctx, tokenResp.AccessToken)
 	if accountEmail == "" {
 		accountEmail = fmt.Sprintf("claude-%d", time.Now().Unix())
 	}
@@ -104,7 +108,7 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	return tok, accountEmail, nil
 }
 
-func exchangeClaudeCode(code, verifier string) (*auth.OAuthRefreshResponse, error) {
+func exchangeClaudeCode(ctx context.Context, code, verifier string) (*auth.OAuthRefreshResponse, error) {
 	reqBody, _ := json.Marshal(map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeClientID,
@@ -116,7 +120,7 @@ func exchangeClaudeCode(code, verifier string) (*auth.OAuthRefreshResponse, erro
 	client := &http.Client{Timeout: 15 * time.Second}
 	var lastErr error
 	for _, endpoint := range auth.ClaudeOAuthTokenURLs {
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
 		if err != nil {
 			return nil, err
 		}
@@ -126,13 +130,15 @@ func exchangeClaudeCode(code, verifier string) (*auth.OAuthRefreshResponse, erro
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			lastErr = fmt.Errorf("%s status %d", endpoint, resp.StatusCode)
 			continue
 		}
 		var out auth.OAuthRefreshResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if err != nil {
 			lastErr = err
 			continue
 		}
@@ -145,9 +151,9 @@ func exchangeClaudeCode(code, verifier string) (*auth.OAuthRefreshResponse, erro
 	return nil, fmt.Errorf("token exchange failed: %w", lastErr)
 }
 
-func fetchClaudeUserEmail(accessToken string) string {
+func fetchClaudeUserEmail(ctx context.Context, accessToken string) string {
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, "https://api.anthropic.com/v1/users/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/v1/users/me", nil)
 	if err != nil {
 		return ""
 	}

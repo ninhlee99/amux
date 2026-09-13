@@ -22,9 +22,14 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 	if err != nil {
 		return "", fmt.Errorf("could not listen on %s: %w (is another process using this port?)", addr, err)
 	}
-	defer listener.Close()
 
 	ch := make(chan callbackResult, 1)
+	sendResult := func(res callbackResult) {
+		select {
+		case ch <- res:
+		default:
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
@@ -43,30 +48,33 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, errorHTML, errMsg)
-			ch <- callbackResult{Error: errMsg}
+			sendResult(callbackResult{Error: errMsg})
 			return
 		}
 
-		if expectedState != "" && state != expectedState {
+		if expectedState != "" && (state == "" || state != expectedState) {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, errorHTML, "State parameter mismatch (CSRF token error)")
-			ch <- callbackResult{Error: "state mismatch"}
+			fmt.Fprintf(w, errorHTML, "State parameter mismatch or missing (potential CSRF attempt)")
+			sendResult(callbackResult{Error: "state mismatch"})
 			return
 		}
 
 		if code == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, errorHTML, "Missing authorization code in callback")
-			ch <- callbackResult{Error: "missing code"}
+			sendResult(callbackResult{Error: "missing code"})
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, successHTML)
-		ch <- callbackResult{Code: code, State: state}
+		sendResult(callbackResult{Code: code, State: state})
 	})
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
 	go func() {
 		_ = srv.Serve(listener)
@@ -74,14 +82,15 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 
 	select {
 	case <-ctx.Done():
-		_ = srv.Shutdown(context.Background())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		cancel()
 		return "", ctx.Err()
 	case res := <-ch:
-		// Give the browser a moment to receive the HTML response
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			_ = srv.Shutdown(context.Background())
-		}()
+		// Graceful shutdown after letting browser receive the HTML
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		cancel()
 		if res.Error != "" {
 			return "", fmt.Errorf("oauth error from provider: %s", res.Error)
 		}
