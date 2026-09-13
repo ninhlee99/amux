@@ -103,6 +103,7 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 	defer func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
+		clearTargetSessionCookies(dir)
 	}()
 
 	deadline := time.Now().Add(timeout)
@@ -473,6 +474,12 @@ func clearTargetSessionCookies(profileDir string) {
 		filepath.Join(profileDir, "Default", "Cookies-journal"),
 		filepath.Join(profileDir, "Default", "Sessions"),
 		filepath.Join(profileDir, "Default", "Session Storage"),
+		filepath.Join(profileDir, "Default", "Local Storage"),
+		filepath.Join(profileDir, "Default", "IndexedDB"),
+		filepath.Join(profileDir, "Default", "Service Worker"),
+		filepath.Join(profileDir, "Default", "Cache"),
+		filepath.Join(profileDir, "Default", "Code Cache"),
+		filepath.Join(profileDir, "Default", "GPUCache"),
 	}
 	for _, p := range paths {
 		_ = os.RemoveAll(p)

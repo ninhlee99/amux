@@ -56,10 +56,12 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	vals.Set("code_challenge_method", "S256")
 	vals.Set("state", state)
 	vals.Set("access_type", "offline")
-	vals.Set("prompt", "consent")
+	vals.Set("prompt", "select_account consent")
 	authURL := AntigravityAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for Google Antigravity OAuth login…")
+	fmt.Println("👉 If not signed in: sign in to your Google account.")
+	fmt.Println("👉 If already signed in: select an account or choose 'Use another account' to relogin.")
 	fmt.Printf("If browser does not open automatically, visit:\n%s\n\n", authURL)
 	_ = OpenBrowser(authURL)
 

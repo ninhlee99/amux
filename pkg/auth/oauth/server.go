@@ -44,6 +44,10 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		state := q.Get("state")
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		w.Header().Set("Clear-Site-Data", `"cookies", "storage"`)
 
 		if errParam != "" {
 			errMsg := errParam
@@ -146,7 +150,7 @@ const successHTML = `<!DOCTYPE html>
       border-radius: 1rem;
       border: 1px solid #334155;
       box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
-      max-width: 420px;
+      max-width: 440px;
     }
     .icon {
       font-size: 3rem;
@@ -170,8 +174,13 @@ const successHTML = `<!DOCTYPE html>
   <div class="card">
     <div class="icon">✨</div>
     <h1>Authentication Successful</h1>
-    <p>Your credentials have been securely received.<br>You can now close this tab and return to <strong>amux</strong> in your terminal.</p>
+    <p>Your credentials have been securely received by <strong>amux</strong>.<br>You can now close this tab and return to your terminal.</p>
   </div>
+  <script>
+    setTimeout(function() {
+      window.close();
+    }, 2000);
+  </script>
 </body>
 </html>`
 

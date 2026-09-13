@@ -51,9 +51,12 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	vals.Set("code_challenge", challenge)
 	vals.Set("code_challenge_method", "S256")
 	vals.Set("state", state)
+	vals.Set("prompt", "login")
 	authURL := CodexAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for OpenAI Codex OAuth login…")
+	fmt.Println("👉 If not signed in: sign in to your OpenAI account.")
+	fmt.Println("👉 If already signed in: enter credentials or relogin with the intended account.")
 	fmt.Printf("If browser does not open automatically, visit:\n%s\n\n", authURL)
 	_ = OpenBrowser(authURL)
 

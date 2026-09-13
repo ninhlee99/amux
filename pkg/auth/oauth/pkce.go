@@ -30,7 +30,9 @@ func GenerateState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// OpenBrowser attempts to open target URL in the user's default browser.
+// OpenBrowser opens the authorization URL in the user's default browser:
+// - If the browser is not running, it launches the browser.
+// - If the browser is already open, it opens a new tab.
 func OpenBrowser(target string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -42,4 +44,9 @@ func OpenBrowser(target string) error {
 		cmd = exec.Command("xdg-open", target)
 	}
 	return cmd.Start()
+}
+
+// OpenPrivateBrowser is retained for compatibility and delegates to OpenBrowser.
+func OpenPrivateBrowser(target string) (openedIncognito bool, browserName string, err error) {
+	return false, "Default Browser", OpenBrowser(target)
 }
