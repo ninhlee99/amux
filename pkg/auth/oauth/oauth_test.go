@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -145,42 +147,136 @@ func TestCallbackServer(t *testing.T) {
 	}
 }
 
+func TestCallbackServer_Security(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantErr    string
+	}{
+		{
+			name:       "missing_state",
+			query:      "?code=123",
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "state mismatch",
+		},
+		{
+			name:       "wrong_state",
+			query:      "?code=123&state=attacker-state",
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "state mismatch",
+		},
+		{
+			name:       "missing_code",
+			query:      "?state=valid-state",
+			wantStatus: http.StatusBadRequest,
+			wantErr:    "missing code",
+		},
+	}
+
+	port := 59124
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			port++
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			serverErr := make(chan error, 1)
+			go func() {
+				_, err := listenForCallback(ctx, port, "/callback", "valid-state")
+				serverErr <- err
+			}()
+
+			time.Sleep(50 * time.Millisecond)
+
+			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback%s", port, tc.query))
+			if err != nil {
+				t.Fatalf("GET failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+
+			err = <-serverErr
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("server error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestPollDeviceToken(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
 		name         string
-		responseJSON string
+		statusCode   int
+		responseBody string
 		wantDone     bool
 		wantSlowDown bool
 		wantErr      bool
+		wantTerminal bool
 		wantAccess   string
 		wantRefresh  string
 	}{
 		{
 			name:         "pending",
-			responseJSON: `{"error":"authorization_pending"}`,
+			statusCode:   http.StatusOK,
+			responseBody: `{"error":"authorization_pending"}`,
 			wantDone:     false,
 			wantSlowDown: false,
 			wantErr:      false,
 		},
 		{
 			name:         "slow_down",
-			responseJSON: `{"error":"slow_down"}`,
+			statusCode:   http.StatusOK,
+			responseBody: `{"error":"slow_down"}`,
 			wantDone:     false,
 			wantSlowDown: true,
 			wantErr:      false,
 		},
 		{
 			name:         "access_denied",
-			responseJSON: `{"error":"access_denied"}`,
+			statusCode:   http.StatusBadRequest,
+			responseBody: `{"error":"access_denied"}`,
 			wantDone:     false,
 			wantSlowDown: false,
 			wantErr:      true,
+			wantTerminal: true,
+		},
+		{
+			name:         "expired_token",
+			statusCode:   http.StatusBadRequest,
+			responseBody: `{"error":"expired_token"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: true,
+		},
+		{
+			name:         "server_500",
+			statusCode:   http.StatusInternalServerError,
+			responseBody: `{"error":"internal_server_error"}`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: false,
+		},
+		{
+			name:         "malformed_html",
+			statusCode:   http.StatusOK,
+			responseBody: `<html><head><title>Bad Gateway</title></head></html>`,
+			wantDone:     false,
+			wantSlowDown: false,
+			wantErr:      true,
+			wantTerminal: false,
 		},
 		{
 			name:         "success",
-			responseJSON: `{"access_token":"token-abc","refresh_token":"ref-xyz","expires_in":3600}`,
+			statusCode:   http.StatusOK,
+			responseBody: `{"access_token":"token-abc","refresh_token":"ref-xyz","expires_in":3600}`,
 			wantDone:     true,
 			wantSlowDown: false,
 			wantErr:      false,
@@ -192,8 +288,11 @@ func TestPollDeviceToken(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.statusCode != 0 {
+					w.WriteHeader(tc.statusCode)
+				}
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprint(w, tc.responseJSON)
+				fmt.Fprint(w, tc.responseBody)
 			}))
 			defer server.Close()
 
@@ -206,6 +305,18 @@ func TestPollDeviceToken(t *testing.T) {
 			tok, done, slowDown, err := pollDeviceToken(ctx, server.Client(), cfg, "dev-code-123")
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr && tc.wantTerminal {
+				var termErr *TerminalOAuthError
+				if !errors.As(err, &termErr) {
+					t.Errorf("expected TerminalOAuthError, got: %T (%v)", err, err)
+				}
+			}
+			if tc.wantErr && !tc.wantTerminal {
+				var termErr *TerminalOAuthError
+				if errors.As(err, &termErr) {
+					t.Errorf("expected non-terminal error, got TerminalOAuthError: %v", termErr)
+				}
 			}
 			if done != tc.wantDone {
 				t.Errorf("done=%v, want %v", done, tc.wantDone)

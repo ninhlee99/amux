@@ -136,16 +136,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		"attachments": []any{},
 		"files":       []any{},
 	}
-	if req.Thinking {
-		budget := req.ThinkingBudget
-		if budget <= 0 {
-			budget = 2048
-		}
-		payloadMap["thinking"] = map[string]any{
-			"type":          "enabled",
-			"budget_tokens": budget,
-		}
-	}
+
 	b, err := json.Marshal(payloadMap)
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)

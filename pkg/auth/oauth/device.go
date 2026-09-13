@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,6 +25,20 @@ type DeviceFlowConfig struct {
 	Priority      int
 }
 
+// TerminalOAuthError represents a fatal OAuth error (e.g. access_denied, expired_token)
+// that should terminate the polling loop immediately.
+type TerminalOAuthError struct {
+	Code    string
+	Message string
+}
+
+func (e *TerminalOAuthError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("%s (%s)", e.Code, e.Message)
+	}
+	return e.Code
+}
+
 type deviceAuthResponse struct {
 	DeviceCode              string `json:"device_code"`
 	UserCode                string `json:"user_code"`
@@ -41,7 +56,7 @@ type deviceTokenResponse struct {
 }
 
 // RunDeviceFlow executes RFC 8628 Device Authorization Flow with full compliance
-// (including slow_down dynamic backoff and refresh token preservation).
+// (including slow_down dynamic backoff, capped retry, and refresh token preservation).
 func RunDeviceFlow(ctx context.Context, cfg DeviceFlowConfig, customName string) (string, error) {
 	data := url.Values{}
 	data.Set("client_id", cfg.ClientID)
@@ -106,11 +121,19 @@ func RunDeviceFlow(ctx context.Context, cfg DeviceFlowConfig, customName string)
 		case <-ticker.C:
 			tok, done, slowDown, err := pollDeviceToken(ctx, client, cfg, authRes.DeviceCode)
 			if err != nil {
-				return "", err
+				var termErr *TerminalOAuthError
+				if errors.As(err, &termErr) {
+					return "", fmt.Errorf("authorization failed: %w", termErr)
+				}
+				// Transient network or server hiccup: continue polling until timeout
+				continue
 			}
 			if slowDown {
-				// RFC 8628 §3.5: MUST increase interval by 5 seconds
+				// RFC 8628 §3.5: MUST increase interval by 5 seconds (capped at 60s)
 				interval += 5 * time.Second
+				if interval > 60*time.Second {
+					interval = 60 * time.Second
+				}
 				ticker.Reset(interval)
 				continue
 			}
@@ -159,13 +182,17 @@ func pollDeviceToken(ctx context.Context, client *http.Client, cfg DeviceFlowCon
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, false, err
+		return nil, false, false, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 500 {
+		return nil, false, false, fmt.Errorf("server error %d", resp.StatusCode)
+	}
+
 	var tok deviceTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
-		return nil, false, false, err
+		return nil, false, false, fmt.Errorf("decode error: %w", err)
 	}
 
 	switch tok.Error {
@@ -173,12 +200,16 @@ func pollDeviceToken(ctx context.Context, client *http.Client, cfg DeviceFlowCon
 		return nil, false, false, nil
 	case "slow_down":
 		return nil, false, true, nil
+	case "access_denied":
+		return nil, false, false, &TerminalOAuthError{Code: "access_denied", Message: "user denied authorization"}
+	case "expired_token":
+		return nil, false, false, &TerminalOAuthError{Code: "expired_token", Message: "device code expired, please re-run login"}
 	case "":
 		if tok.AccessToken != "" {
 			return &tok, true, false, nil
 		}
 		return nil, false, false, nil
 	default:
-		return nil, false, false, fmt.Errorf("%s oauth error: %s", cfg.ProviderLabel, tok.Error)
+		return nil, false, false, &TerminalOAuthError{Code: tok.Error, Message: fmt.Sprintf("%s oauth error", cfg.ProviderLabel)}
 	}
 }

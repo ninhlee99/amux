@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,8 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 	}
 
 	ch := make(chan callbackResult, 1)
+	// sendResult drops duplicate incoming results (e.g. browser reload or favicon requests)
+	// without blocking the handler goroutine.
 	sendResult := func(res callbackResult) {
 		select {
 		case ch <- res:
@@ -48,26 +51,40 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, errorHTML, errMsg)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 			sendResult(callbackResult{Error: errMsg})
 			return
 		}
 
-		if expectedState != "" && (state == "" || state != expectedState) {
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, errorHTML, "State parameter mismatch or missing (potential CSRF attempt)")
-			sendResult(callbackResult{Error: "state mismatch"})
-			return
+		if expectedState != "" {
+			if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(expectedState)) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, errorHTML, "State parameter mismatch or missing (potential CSRF attempt)")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				sendResult(callbackResult{Error: "state mismatch"})
+				return
+			}
 		}
 
 		if code == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, errorHTML, "Missing authorization code in callback")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
 			sendResult(callbackResult{Error: "missing code"})
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, successHTML)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		sendResult(callbackResult{Code: code, State: state})
 	})
 
@@ -76,6 +93,7 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Transfer listener ownership to srv.Serve (closes listener on shutdown)
 	go func() {
 		_ = srv.Serve(listener)
 	}()
@@ -87,7 +105,8 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 		cancel()
 		return "", ctx.Err()
 	case res := <-ch:
-		// Graceful shutdown after letting browser receive the HTML
+		// Allow brief moment for TCP buffers to flush to local browser
+		time.Sleep(100 * time.Millisecond)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = srv.Shutdown(shutdownCtx)
 		cancel()
