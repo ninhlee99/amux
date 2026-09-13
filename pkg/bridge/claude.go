@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -171,6 +172,16 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 				text.WriteByte('\n')
 			}
 			text.WriteString("<thinking>[redacted]</thinking>")
+		case "image":
+			if text.Len() > 0 {
+				text.WriteByte('\n')
+			}
+			text.WriteString("[Attached Image]")
+		case "document":
+			if text.Len() > 0 {
+				text.WriteByte('\n')
+			}
+			text.WriteString("[Attached Document]")
 		case "tool_use":
 			var id, name string
 			_ = json.Unmarshal(b["id"], &id)
@@ -191,6 +202,14 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 				ToolCallID: toolUseID,
 				Content:    toolResultBody(b["content"]),
 			})
+		default:
+			var t string
+			if err := json.Unmarshal(b["text"], &t); err == nil && t != "" {
+				if text.Len() > 0 {
+					text.WriteByte('\n')
+				}
+				text.WriteString(t)
+			}
 		}
 	}
 	if text.Len() > 0 || len(toolCalls) > 0 {
@@ -779,3 +798,26 @@ func recordPoolUsage(r *http.Request, pool *router.AccountPoolRouter, model stri
 		Output:  output,
 	})
 }
+
+// HandleClaudeCountTokens handles Anthropic /v1/messages/count_tokens requests.
+func HandleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req, err := ToChatRequest(body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": estimateBytesTokens(body) / 4})
+		return
+	}
+	tokens := estimateInputTokens(req)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": tokens})
+}
+

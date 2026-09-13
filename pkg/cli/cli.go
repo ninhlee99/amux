@@ -69,6 +69,8 @@ Add providers:
   amux accounts rm <id>       delete a provider from the list (or use am rm <id>)
   amux doctor providers       1-turn probe each adapter
   amux chat [--provider id]   terminal chat + failover
+  amux btw <message>          inject a note to the agent while it is running
+                              (e.g. "am btw check if README is up to date too")
 
   Codex: after am add codex, token is reused as codex:NN — no extra login.
 
@@ -313,6 +315,12 @@ func Run(rawArgs []string) {
 	case "chat":
 		ui.CmdChat(args)
 
+	case "btw":
+		if len(args) == 0 {
+			die("usage: am btw <message>  — inject a note to the agent while it is running")
+		}
+		proxy.CmdBtw(strings.Join(args, " "))
+
 	case "usage":
 		usage.PrintUsageReport(args)
 
@@ -321,6 +329,7 @@ func Run(rawArgs []string) {
 
 	case "run":
 		cmdRun(args)
+
 
 	case "env":
 		if len(args) == 0 || (len(args) == 1 && args[0] == "--public") {
