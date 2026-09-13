@@ -32,6 +32,8 @@ type ProfileMeta struct {
 	Saved   time.Time `json:"saved"`
 	// Disabled means auto-rotate and `am sw` skip this profile until `am on`.
 	Disabled bool `json:"disabled,omitempty"`
+	// Proxy specifies an egress proxy URL (http://, https://, socks5://) for this profile.
+	Proxy string `json:"proxy,omitempty"`
 	// ID is a short handle like "claude1", assigned by position when listed.
 	ID string `json:"-"`
 }

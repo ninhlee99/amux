@@ -53,7 +53,7 @@ func stamp() string {
 	return s
 }
 
-// Log writes a tagged realtime line to stderr and persists it for `amux watch`.
+// Log writes a tagged realtime line to stderr and persists it to events.log.
 //
 //	15:04:05  amux  [ROTATE   ]  ninhle → tungnt  (rate-limit)
 func Log(tag, format string, args ...any) {

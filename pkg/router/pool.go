@@ -10,13 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 )
 
 // redactBeforeSend is the universal outbound gate: every adapter path
-// (proxy bridge, am chat, tests) must pass here before network I/O.
+// (proxy bridge, gateway, tests) must pass here before network I/O.
 func redactBeforeSend(req *types.ChatRequest) {
 	if !privacy.Enabled {
 		return
@@ -34,8 +35,8 @@ func redactBeforeSend(req *types.ChatRequest) {
 
 // rateLimitCooldown is how long an adapter sits out after answering with a
 // rate limit, before Send tries it again. Keep short: Claude/ChatGPT web
-// free tiers often return brief 429s; a 30-minute sit-out made interactive
-// `am chat` unusable after one burst.
+// free tiers often return brief 429s; a 30-minute sit-out made proxy requests
+// unusable after one burst.
 const rateLimitCooldown = 2 * time.Minute
 
 // AccountPoolRouter dispatches a ChatRequest to the highest-priority
@@ -121,10 +122,16 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	if a == nil {
 		return nil, fmt.Errorf("provider %q not addressable (see: am accounts)", id)
 	}
-	ch, err := a.SendMessageStream(ctx, req)
-	if err != nil {
+	isWeb := strings.Contains(id, "web") || strings.HasPrefix(id, "chatgpt")
+	if err := guard.Pace(ctx, id, isWeb); err != nil {
 		return nil, err
 	}
+	ch, err := a.SendMessageStream(ctx, req)
+	if err != nil {
+		guard.RecordError(id, err)
+		return nil, err
+	}
+	guard.RecordSuccess(id)
 	r.mu.Lock()
 	r.lastUsed = id
 	r.mu.Unlock()
@@ -222,6 +229,13 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	copy(adapters, r.adapters)
 	r.mu.RUnlock()
 
+	sessionKey := guard.ExtractSessionKey(nil, req)
+	if preferredID == "" && sessionKey != "" {
+		if pinned, ok := guard.GlobalAffinity().GetPinned(sessionKey); ok {
+			preferredID = pinned
+		}
+	}
+
 	var errs []error
 	var skippedPreferred bool
 
@@ -235,15 +249,34 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				errs = append(errs, fmt.Errorf("%s: skip text-only backend (client sent tools)", a.ID()))
 				break
 			}
+			if isQ, remaining, reason := guard.IsQuarantined(a.ID()); isQ {
+				skippedPreferred = true
+				errs = append(errs, fmt.Errorf("%s: quarantined (%s, remaining: %v)", a.ID(), reason, remaining.Round(time.Second)))
+				break
+			}
 			if r.cooling(a.ID()) {
 				skippedPreferred = true
 				errs = append(errs, fmt.Errorf("%s: cooling down", a.ID()))
 				break
 			}
+			isWeb := strings.Contains(a.ID(), "web") || strings.HasPrefix(a.ID(), "chatgpt")
+			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
+				skippedPreferred = true
+				errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
+				break
+			}
 			ch, err := a.SendMessageStream(ctx, req)
 			if err == nil {
+				guard.RecordSuccess(a.ID())
+				if sessionKey != "" {
+					guard.GlobalAffinity().Pin(sessionKey, a.ID())
+				}
 				r.markUsed(a.ID(), true)
 				return ch, nil
+			}
+			guard.RecordError(a.ID(), err)
+			if sessionKey != "" {
+				guard.GlobalAffinity().Unpin(sessionKey)
 			}
 			if errors.Is(err, types.ErrRateLimitReached) {
 				r.setCooldown(a.ID())
@@ -273,11 +306,22 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		if skipTextOnly(a, req) {
 			continue
 		}
+		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+			continue
+		}
 		if r.cooling(a.ID()) {
+			continue
+		}
+		isWeb := strings.Contains(a.ID(), "web") || strings.HasPrefix(a.ID(), "chatgpt")
+		if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
 			continue
 		}
 		ch, err := a.SendMessageStream(ctx, req)
 		if err == nil {
+			guard.RecordSuccess(a.ID())
+			if sessionKey != "" {
+				guard.GlobalAffinity().Pin(sessionKey, a.ID())
+			}
 			// Promote winner so status ● active matches who answered
 			// (covers unpinned pick + rate-limit failover from a pin).
 			was := preferredID
@@ -289,6 +333,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			}
 			return ch, nil
 		}
+		guard.RecordError(a.ID(), err)
 		if errors.Is(err, types.ErrRateLimitReached) {
 			r.setCooldown(a.ID())
 		}
@@ -302,6 +347,9 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 }
 
 func (r *AccountPoolRouter) cooling(id string) bool {
+	if isQ, _, _ := guard.IsQuarantined(id); isQ {
+		return true
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	cd, exists := r.cooldownMap[id]
@@ -336,13 +384,21 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 	for _, a := range r.adapters {
 		cd := r.cooldownMap[a.ID()]
 		cooling := time.Now().Before(cd)
+		report := guard.GlobalHealth().GetReport(a.ID())
 		m := map[string]any{
-			"id":        a.ID(),
-			"priority":  a.Priority(),
-			"cooling":   cooling,
-			"preferred": a.ID() == r.preferred,
-			"last_used": a.ID() == r.lastUsed,
-			"in_pool":   true,
+			"id":            a.ID(),
+			"priority":      a.Priority(),
+			"cooling":       cooling,
+			"preferred":     a.ID() == r.preferred,
+			"last_used":     a.ID() == r.lastUsed,
+			"in_pool":       true,
+			"health_score":  report.Score,
+			"health_status": report.Status,
+		}
+		if isQ, until, reason := guard.IsQuarantined(a.ID()); isQ {
+			m["quarantined"] = true
+			m["quarantine_reason"] = reason
+			m["quarantine_remaining"] = until.Round(time.Second).String()
 		}
 		if cooling {
 			m["cooldown_until"] = cd.Format(time.RFC3339)

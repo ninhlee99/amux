@@ -44,15 +44,9 @@ func TestDetectThemeOverride(t *testing.T) {
 	}
 }
 
-func TestBlockAlignment(t *testing.T) {
+func TestVisibleFormatting(t *testing.T) {
 	Disable()
 	defer Enable()
-	// Top and bottom borders must match body width (blockW).
-	topMid := blockW // '+' + mid + '+' where mid = innerW = blockW-2 → total blockW
-	_ = topMid
-	if innerW() != blockW-2 {
-		t.Fatalf("innerW=%d want %d", innerW(), blockW-2)
-	}
 	s := padVisible("hi", 10)
 	if visibleLen(s) != 10 {
 		t.Fatalf("pad visibleLen=%d", visibleLen(s))

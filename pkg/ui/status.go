@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/proxy"
@@ -15,7 +16,7 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-// proxyStatus is the decoded /_am/status payload (shared by status + watch Dash).
+// proxyStatus is the decoded /_am/status payload.
 type proxyStatus struct {
 	Tool     string `json:"tool"`
 	Switches int    `json:"switches"`
@@ -38,7 +39,8 @@ type proxyStatus struct {
 		AutoSwitches   int      `json:"auto_switches"`
 		ManualSwitches int      `json:"manual_switches"`
 	} `json:"accounts"`
-	Pool []map[string]any `json:"pool"`
+	Pool  []map[string]any `json:"pool"`
+	Guard map[string]any   `json:"guard,omitempty"`
 }
 
 func fetchProxyStatus() (*proxyStatus, error) {
@@ -81,6 +83,9 @@ func printStatusBody() {
 	printProxyKV(s)
 	printClaudeAccountsDetail(s)
 	printPoolDetail(s)
+	if s.Guard != nil {
+		printGuardDetail(s.Guard)
+	}
 	fmt.Println()
 }
 
@@ -294,55 +299,95 @@ func resetSuffix(iso string) string {
 	return "  resets " + t.Format("Jan 02 15:04")
 }
 
-// accountSummaryCounts returns live/off/cool/dead/total for dashboard KPIs.
-func accountSummaryCounts(s *proxyStatus) (live, off, cool, dead, total int) {
-	if s == nil {
+func printGuardDetail(g map[string]any) {
+	if g == nil {
 		return
 	}
-	total = len(s.Accounts)
-	now := time.Now()
-	for _, a := range s.Accounts {
-		switch {
-		case a.Dead:
-			dead++
-		case a.Disabled:
-			off++
-		case a.Cooldown != "":
-			if t, e := time.Parse(time.RFC3339, a.Cooldown); e == nil && now.Before(t) {
-				cool++
-				continue
-			}
-			if a.Active && s.Mode != "provider" {
-				live++
-			}
-		case a.Active && s.Mode != "provider" && !a.Disabled && !a.Dead:
-			live++
+	term.Section("guard · account health & anti-ban")
+	if pins, ok := g["active_pinned_sessions"].(float64); ok && pins > 0 {
+		term.KV("sessions", fmt.Sprintf("%d sticky active", int(pins)))
+	}
+	accts, ok := g["accounts"].(map[string]any)
+	if !ok || len(accts) == 0 {
+		term.Row(term.Green("● All accounts 100/100 healthy") + "  " + term.Dim("no rate-limit or auth anomalies"))
+		term.PanelEnd()
+		return
+	}
+	for id, val := range accts {
+		report, ok := val.(map[string]any)
+		if !ok {
+			continue
+		}
+		score, _ := report["score"].(float64)
+		status, _ := report["status"].(string)
+		badge := term.Badge("ok", "healthy")
+		switch status {
+		case "degraded":
+			badge = term.Badge("warn", "degraded")
+		case "quarantined":
+			badge = term.Badge("err", "quarantined")
+		}
+		scoreStr := fmt.Sprintf("%3.0f/100", score)
+		reason, _ := report["quarantineReason"].(string)
+		if reason != "" {
+			term.Row(fmt.Sprintf("%-20s  %s  %s  %s", term.Bold(id), badge, term.Yellow(scoreStr), term.Dim(reason)))
+		} else {
+			term.Row(fmt.Sprintf("%-20s  %s  %s", term.Bold(id), badge, term.White(scoreStr)))
 		}
 	}
-	return
+	term.PanelEnd()
 }
 
-func poolSummaryCounts(s *proxyStatus) (pin, live, cool, idle, total int) {
-	if s == nil {
+// CmdGuard displays anti-ban protection status or resets account health states.
+func CmdGuard(args []string) {
+	if len(args) > 0 && args[0] == "reset" {
+		target := ""
+		if len(args) > 1 {
+			target = args[1]
+		}
+		if target == "" || target == "all" {
+			guard.ResetAll()
+			term.Success("guard: reset health scores and backoff state for all accounts")
+		} else {
+			guard.GlobalHealth().Reset(target)
+			guard.GlobalPacer().Reset(target)
+			term.Success("guard: reset health score for %s", target)
+		}
 		return
 	}
-	total = len(s.Pool)
-	for _, p := range s.Pool {
-		cooling, _ := p["cooling"].(bool)
-		preferred, _ := p["preferred"].(bool)
-		lastUsed, _ := p["last_used"].(bool)
-		if preferred {
-			pin++
+
+	term.Header("amux guard", "account health · anti-ban · session affinity")
+	if !proxy.ProxyUp() {
+		reports := guard.GlobalHealth().GetAllReports()
+		term.Section("guard (local state)")
+		term.KV("status", term.Dim("proxy daemon not running"))
+		if len(reports) == 0 {
+			term.Row(term.Dim("No accounts tracked yet (run am proxy up to activate)"))
+		} else {
+			for id, rep := range reports {
+				term.Row(fmt.Sprintf("%-20s  score: %3d/100  status: %s", id, rep.Score, rep.Status))
+			}
 		}
-		if cooling {
-			cool++
-			continue
-		}
-		if s.Mode == "provider" && lastUsed {
-			live++
-			continue
-		}
-		idle++
+		term.PanelEnd()
+		fmt.Println()
+		return
 	}
-	return
+
+	resp, err := http.Get(proxy.ProxyBase() + "/_am/guard")
+	if err != nil {
+		term.Error("failed to query guard status: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		term.Error("proxy returned HTTP %d (restart proxy with `am proxy restart` to activate latest features)", resp.StatusCode)
+		return
+	}
+	var g map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&g); err != nil {
+		term.Error("invalid guard payload: %v", err)
+		return
+	}
+	printGuardDetail(g)
+	fmt.Println()
 }
