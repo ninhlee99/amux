@@ -40,6 +40,8 @@ type ProviderConfig struct {
 	Account string `json:"account,omitempty"`
 	// Plan indicates subscription tier ("pro", "plus", "team", "free").
 	Plan string `json:"plan,omitempty"`
+	// Group explicitly overrides the group (e.g. "claude_sub", "codex_sub", "agy_sub", "codex_free", "api_other", etc.)
+	Group string `json:"group,omitempty"`
 
 	// openai_compatible & gemini
 	BaseURL string `json:"baseUrl,omitempty"`
@@ -96,6 +98,8 @@ func (p ProviderConfig) HasCredentials() bool {
 		return strings.TrimSpace(p.Cookies) != "" || ResolveSecret(p.SessionKey) != ""
 	case "codex_cli":
 		return CodexAuthAvailable()
+	case "antigravity", "agy":
+		return AGYAuthAvailable()
 	}
 	return false
 }
@@ -512,6 +516,20 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			HTTPClient:  proxyClient,
 		}, nil
 
+	case "antigravity", "agy":
+		model := p.Model
+		if model == "" {
+			model = DefaultAGYModel
+		}
+		return &AntigravityAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			TargetModel: model,
+			GroupLabel:  p.Group,
+			PlanTier:    p.Plan,
+			HTTPClient:  proxyClient,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", p.Type)
 	}
@@ -615,6 +633,31 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 		}
 	}
 
+	hasAGY := false
+	for _, a := range adapters {
+		if _, ok := a.(*AntigravityAdapter); ok {
+			hasAGY = true
+			break
+		}
+	}
+
+	if !hasAGY {
+		if a := agyPoolAdapter(providers); a != nil {
+			if rotateOnly {
+				adapters = append(adapters, a)
+			} else {
+				adapters = append(adapters, a)
+			}
+		} else if !rotateOnly && AGYAuthAvailable() {
+			for i := range providers {
+				if (providers[i].Type == "antigravity" || providers[i].Type == "agy") && providers[i].Enabled != nil && !*providers[i].Enabled {
+					adapters = append(adapters, &AntigravityAdapter{AdapterID: agyPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group, PlanTier: providers[i].Plan})
+					break
+				}
+			}
+		}
+	}
+
 	return adapters, nil
 }
 
@@ -695,6 +738,68 @@ func codexPoolID() string {
 		return metas[0].ID
 	}
 	return types.FormatID(profile.IDPrefixForTool("codex"), 1)
+}
+
+func agyPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
+	if !AGYAuthAvailable() {
+		return nil
+	}
+
+	priority := 15
+	model := DefaultAGYModel
+	group := "agy_sub"
+	plan := "pro"
+	for i := range providers {
+		if providers[i].Type != "antigravity" && providers[i].Type != "agy" {
+			continue
+		}
+		if providers[i].Enabled != nil && !*providers[i].Enabled {
+			return nil // explicit opt-out
+		}
+		priority = providers[i].Priority
+		if providers[i].Model != "" {
+			model = providers[i].Model
+		}
+		if providers[i].Group != "" {
+			group = providers[i].Group
+		}
+		if providers[i].Plan != "" {
+			plan = providers[i].Plan
+		}
+		break
+	}
+
+	return &AntigravityAdapter{
+		AdapterID:   agyPoolID(),
+		PriorityLvl: priority,
+		TargetModel: model,
+		GroupLabel:  group,
+		PlanTier:    plan,
+	}
+}
+
+// AGYAutoRow returns a synthetic display row for auto-surfaced Antigravity adapter.
+func AGYAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
+	a, ok := agyPoolAdapter(providers).(*AntigravityAdapter)
+	if !ok || a == nil {
+		return ProviderConfig{}, false
+	}
+	return ProviderConfig{ID: a.AdapterID, Type: "antigravity", Priority: a.PriorityLvl, Model: a.TargetModel, Group: a.GroupLabel, Plan: a.PlanTier}, true
+}
+
+func agyPoolID() string {
+	metas := profile.ListProfiles("antigravity")
+	if active := profile.ReadActivePointer("antigravity"); active != "" {
+		for _, m := range metas {
+			if m.Name == active {
+				return m.ID
+			}
+		}
+	}
+	if len(metas) > 0 {
+		return metas[0].ID
+	}
+	return "agy:01"
 }
 
 func LoadConfigFile(path string) (*AccountsFile, error) {
@@ -936,19 +1041,21 @@ func UpdateProviderCookies(path, id, sessionKey, cookies string) error {
 // next process reuses the same thread (empty conv clears → next send creates).
 func UpdateProviderConversation(path, id, orgID, conversationID string) error {
 	return UpdateProviderChatState(path, id, ChatState{
-		OrgID:          orgID,
-		ConversationID: conversationID,
+		OrgID:             orgID,
+		ConversationID:    conversationID,
+		ClearConversation: conversationID == "",
 	})
 }
 
 // ChatState is the persisted multi-turn thread for web providers.
 type ChatState struct {
-	OrgID           string
-	ConversationID  string
-	ParentMessageID string
-	MetadataJSON    string
-	ClearParent     bool // when true, wipe ParentMessageID even if empty
-	ClearMetadata   bool
+	OrgID             string
+	ConversationID    string
+	ParentMessageID   string
+	MetadataJSON      string
+	ClearConversation bool
+	ClearParent       bool // when true, wipe ParentMessageID even if empty
+	ClearMetadata     bool
 }
 
 // UpdateProviderChatState merges conversation continuity fields for web adapters.
@@ -961,8 +1068,12 @@ func UpdateProviderChatState(path, id string, st ChatState) error {
 		if p.ID != id {
 			continue
 		}
-		f.Providers[i].OrgID = st.OrgID
-		f.Providers[i].ConversationID = st.ConversationID
+		if st.OrgID != "" {
+			f.Providers[i].OrgID = st.OrgID
+		}
+		if st.ConversationID != "" || st.ClearConversation {
+			f.Providers[i].ConversationID = st.ConversationID
+		}
 		if st.ParentMessageID != "" || st.ClearParent {
 			f.Providers[i].ParentMessageID = st.ParentMessageID
 		}

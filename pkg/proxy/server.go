@@ -308,6 +308,18 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		_ = json.NewEncoder(w).Encode(guard.Status())
 	})
 
+	mux.HandleFunc("/_am/guard/reset", func(w http.ResponseWriter, r *http.Request) {
+		target := r.URL.Query().Get("target")
+		if target == "" || target == "all" {
+			guard.ResetAll()
+		} else {
+			guard.GlobalHealth().Reset(target)
+			guard.GlobalPacer().Reset(target)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "target": target})
+	})
+
 	mux.HandleFunc("/_am/switch", func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("to")
 		if name == "" {
@@ -463,6 +475,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 					body = redacted
 					privacy.LogHits(r, res, "claude")
 				}
+				r.Header.Set("X-Amux-Redacted", "1")
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
@@ -593,6 +606,10 @@ func anthropicRequestHasTools(body []byte) bool {
 // before httputil.ReverseProxy dials the upstream. Safe to call repeatedly.
 func redactOutboundBody(r *http.Request) {
 	if r == nil || r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return
+	}
+	if r.Header.Get("X-Amux-Redacted") == "1" {
+		r.Header.Del("X-Amux-Redacted")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))

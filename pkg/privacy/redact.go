@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -32,9 +33,8 @@ type Result struct {
 }
 
 // Enabled gates outbound redact at proxy/bridge/pool call sites.
-// Tests call Redact* directly and ignore this flag.
-// Off: raw payload to web/API so Claude Code tool loop can be tested.
-var Enabled = false
+// Default: true (always on for privacy security). Can be disabled via AM_PRIVACY_REDACT=0.
+var Enabled = true
 
 // Len returns total replacement occurrences across kinds.
 func (r Result) Len() int {
@@ -158,6 +158,9 @@ var knownSamples = map[string]struct{}{
 var rules []rule
 
 func init() {
+	if v := os.Getenv("AM_PRIVACY_REDACT"); v == "0" || strings.EqualFold(v, "false") || strings.EqualFold(v, "off") {
+		Enabled = false
+	}
 	rules = []rule{
 		// ── Cryptographic material / account takeover ──────────────────
 		{
@@ -883,7 +886,12 @@ func redactJSON(body []byte) ([]byte, Result, error) {
 
 func skipJSONRedactKey(k string) bool {
 	switch strings.ToLower(strings.TrimSpace(k)) {
-	case "tools", "input_schema", "parameters", "function":
+	case "tools", "input_schema", "parameters", "function", "functions",
+		"tool_choice", "toolchoice", "tool_calls",
+		"id", "tool_use_id", "tool_call_id",
+		"name", "type", "role",
+		"functioncall", "functionresponse", "functiondeclarations",
+		"function_call", "function_response":
 		return true
 	default:
 		return false
@@ -900,9 +908,21 @@ func redactAny(v *any) Result {
 		*v = s
 		return r
 	case map[string]any:
-		// Anthropic tool_use / tool_result blocks carry cwd, argv, file
-		// bytes the local agent must execute unchanged.
+		// 1. Anthropic tool_use / tool_result blocks carry cwd, argv, file
+		// bytes, MCP inputs/outputs the local agent must execute unchanged.
 		if typ, _ := t["type"].(string); typ == "tool_use" || typ == "tool_result" {
+			return Result{}
+		}
+		// 2. OpenAI tool result message: {"role": "tool", "content": "..."}
+		if role, _ := t["role"].(string); role == "tool" {
+			return Result{}
+		}
+		// 3. OpenAI tool call in assistant message: {"type": "function", ...}
+		if typ, _ := t["type"].(string); typ == "function" {
+			return Result{}
+		}
+		// 4. Gemini functionCall or functionResponse
+		if t["functionCall"] != nil || t["functionResponse"] != nil {
 			return Result{}
 		}
 		merged := Result{}
@@ -950,6 +970,10 @@ func RedactChatRequest(req *types.ChatRequest) Result {
 
 	for i := range req.Messages {
 		m := &req.Messages[i]
+		if m.Role == "tool" {
+			// tool results carry file contents / bash output that should not be mangled
+			continue
+		}
 		if m.Content != "" {
 			s, r := RedactString(m.Content)
 			m.Content = s

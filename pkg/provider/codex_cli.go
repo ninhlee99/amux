@@ -251,7 +251,7 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 	}
 
 	model := codexDefaultModel
-	if a.TargetModel != "" {
+	if a.TargetModel != "" && isCodexCompatibleModel(a.TargetModel) {
 		model = a.TargetModel
 	}
 	if req.Model != "" && req.Model != "default" && isCodexCompatibleModel(req.Model) {

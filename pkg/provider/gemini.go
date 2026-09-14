@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 const (
 	googleAIStudioBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-	DefaultGeminiFlashModel = "gemini-3.8-flash"
+	DefaultGeminiFlashModel = "gemini-3.6-flash"
 	DefaultGeminiProModel   = "gemini-3.1-pro-preview"
 )
 
@@ -99,7 +100,20 @@ func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 		TargetModel: selectedModel,
 		HTTPClient:  a.HTTPClient,
 	}
-	return adapter.SendMessageStream(ctx, req)
+	ch, err := adapter.SendMessageStream(ctx, req)
+	if err != nil && (errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "thought_signature")) && selectedModel != a.FlashModel && a.FlashModel != "" {
+		// Pro model quota exceeded, limit 0, or thought_signature required on free tier — retry with Flash model instead of failing the adapter!
+		fallbackAdapter := &OpenAICompatibleAdapter{
+			AdapterID:   a.AdapterID,
+			PriorityLvl: a.PriorityLvl,
+			BaseURL:     googleAIStudioBaseURL,
+			APIKey:      a.APIKey,
+			TargetModel: a.FlashModel,
+			HTTPClient:  a.HTTPClient,
+		}
+		return fallbackAdapter.SendMessageStream(ctx, req)
+	}
+	return ch, err
 }
 
 // geminiModelsResponse is the subset of v1beta/models we need to pick a

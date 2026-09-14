@@ -199,7 +199,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			"parent_message_id":             parentID,
 			"model":                         model,
 			"timezone_offset_min":           -420,
-			"history_and_training_disabled": true,
+			"history_and_training_disabled": false,
 			"conversation_mode":             map[string]string{"kind": "primary_assistant"},
 		}
 		if convID != "" {
@@ -279,7 +279,8 @@ func (a *ChatGPTWebAdapter) resetConversation() {
 	a.parentMessageID = ""
 	a.mu.Unlock()
 	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ClearParent: true,
+		ClearConversation: true,
+		ClearParent:       true,
 	})
 	log.Printf("%s: cleared ChatGPT conversation (will open a new thread next turn)", a.AdapterID)
 }

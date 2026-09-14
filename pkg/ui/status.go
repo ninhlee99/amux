@@ -345,6 +345,13 @@ func CmdGuard(args []string) {
 		if len(args) > 1 {
 			target = args[1]
 		}
+		if proxy.ProxyUp() {
+			reqURL := proxy.ProxyBase() + "/_am/guard/reset"
+			if target != "" {
+				reqURL += "?target=" + target
+			}
+			_, _ = http.Get(reqURL)
+		}
 		if target == "" || target == "all" {
 			guard.ResetAll()
 			term.Success("guard: reset health scores and backoff state for all accounts")
