@@ -65,6 +65,27 @@ func TestHandler_SessionRejectsMissingPID(t *testing.T) {
 	}
 }
 
+func TestHasCallerCredential_RecognizesLocalProxyPlaceholder(t *testing.T) {
+	for _, header := range []struct {
+		name, value string
+	}{
+		{"X-Api-Key", "am-proxy"},
+		{"Authorization", "Bearer am-proxy"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set(header.name, header.value)
+		if hasCallerCredential(req, "") {
+			t.Fatalf("%s placeholder was treated as upstream credential", header.name)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-Api-Key", "sk-real-key")
+	if !hasCallerCredential(req, "") {
+		t.Fatal("real caller credential was not detected")
+	}
+}
+
 func TestHandler_SessionRejectsZeroPID(t *testing.T) {
 	h := newTestHandler(t)
 	req := httptest.NewRequest(http.MethodPost, "/_am/session?pid=0&event=start", nil)
@@ -265,9 +286,9 @@ func TestHandler_SingleClaudeCoolingFailsOverToPool(t *testing.T) {
 // All Claude Code accounts on cooldown → provider pool (API→web).
 func TestHandler_AllClaudeCoolingFailsOverToPool(t *testing.T) {
 	rot := &Rotator{
-		tool:   "claude",
-		order:  []string{"a", "b"},
-		tokens: map[string]*types.Token{"a": {Access: "tok-a"}, "b": {Access: "tok-b"}},
+		tool:     "claude",
+		order:    []string{"a", "b"},
+		tokens:   map[string]*types.Token{"a": {Access: "tok-a"}, "b": {Access: "tok-b"}},
 		accounts: map[string]string{},
 		cooldown: map[string]time.Time{
 			"a": time.Now().Add(time.Hour),
@@ -497,10 +518,10 @@ func TestHandler_AllProfilesDisabledUsesPoolNeverSubscription(t *testing.T) {
 // After a Claude cooldown expires, next request returns to Anthropic reverse-proxy.
 func TestHandler_ClaudeResetSwitchesBackFromPool(t *testing.T) {
 	rot := &Rotator{
-		tool:   "claude",
-		order:  []string{"a", "b"},
-		idx:    0,
-		tokens: map[string]*types.Token{"a": {Access: "tok-a"}, "b": {Access: "tok-b"}},
+		tool:     "claude",
+		order:    []string{"a", "b"},
+		idx:      0,
+		tokens:   map[string]*types.Token{"a": {Access: "tok-a"}, "b": {Access: "tok-b"}},
 		accounts: map[string]string{},
 		cooldown: map[string]time.Time{
 			"a": time.Now().Add(time.Hour), // still cooling
@@ -557,3 +578,24 @@ func TestHandler_ResponsesEndpointRoutesToPool(t *testing.T) {
 	}
 }
 
+func TestDynamicProxyRoundTripper_WhitespaceProxyURLDoesNotPanic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	t.Setenv("AM_EGRESS_PROXY", "   ")
+	d := &dynamicProxyRoundTripper{}
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := d.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}

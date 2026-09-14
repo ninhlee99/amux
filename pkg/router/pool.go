@@ -206,11 +206,28 @@ func adapterSupportsTools(a types.ProviderAdapter) bool {
 	return true
 }
 
-// skipWebWhenTools: off while testing Claude Code against chatgpt/claude/gemini web.
-const skipWebWhenTools = false
+// Client tool loops require native structured tool calls. Web adapters can
+// generate text that resembles a call but cannot preserve execution semantics.
+const skipWebWhenTools = true
 
-func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest) bool {
-	return skipWebWhenTools && req != nil && len(req.Tools) > 0 && !adapterSupportsTools(a)
+func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) bool {
+	return skipWebWhenTools && nativeAvailable && req != nil && len(req.Tools) > 0 && !adapterSupportsTools(a)
+}
+
+func (r *AccountPoolRouter) usableToolBackend(adapters []types.ProviderAdapter) bool {
+	for _, a := range adapters {
+		if !adapterSupportsTools(a) {
+			continue
+		}
+		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+			continue
+		}
+		if r.cooling(a.ID()) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // Send tries adapters in priority order. With a preferred pin (`am sw`):
@@ -220,8 +237,10 @@ func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest) bool {
 // failover, and any failover winner is promoted to preferred.
 //
 // Client tool loops (Claude Code / Cursor / Codex) send tools[]. Text-only
-// web backends cannot emit tool_use — skip them unless the caller pinned
-// via SendNamed (X-Provider).
+// backends cannot emit native tool_use — skip them in Send when a usable
+// API/native adapter exists. If the pool is web-only (or every native
+// backend is cooling/quarantined), last-resort is web + MaybeWrapWebStream.
+// SendNamed (X-Provider) always pins, including Codex CLI / web.
 func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -242,6 +261,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		}
 	}
 
+	nativeAvailable := r.usableToolBackend(adapters)
 	var errs []error
 	var skippedPreferred bool
 
@@ -250,7 +270,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if a.ID() != preferredID {
 				continue
 			}
-			if skipTextOnly(a, req) {
+			if skipTextOnly(a, req, nativeAvailable) {
 				skippedPreferred = true
 				errs = append(errs, fmt.Errorf("%s: skip text-only backend (client sent tools)", a.ID()))
 				break
@@ -343,7 +363,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if preferredID != "" && a.ID() == preferredID {
 				continue
 			}
-			if skipTextOnly(a, req) {
+			if skipTextOnly(a, req, nativeAvailable) {
 				continue
 			}
 			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {

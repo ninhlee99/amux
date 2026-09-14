@@ -120,9 +120,46 @@ func TestAccountPoolRouter_SkipTextOnlyWhenTools(t *testing.T) {
 	for chunk := range ch {
 		text += chunk.Content
 	}
-	// skipWebWhenTools is off for web-proxy testing — preferred web answers.
-	if text != "run this yourself:\ngit diff" {
-		t.Fatalf("want web preferred, got %q", text)
+	if text != "ok" {
+		t.Fatalf("want native tool backend, got %q", text)
+	}
+}
+
+func TestAccountPoolRouter_WebOnlyToolsUsesWeb(t *testing.T) {
+	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "web-fallback"}}
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web})
+
+	ch, err := r.Send(context.Background(), &types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "review readme"}},
+		Tools:    []types.ToolDef{{Name: "Bash"}},
+	})
+	if err != nil {
+		t.Fatalf("web-only pool must still serve tools, got %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		text += chunk.Content
+	}
+	if text != "web-fallback" {
+		t.Fatalf("want web last-resort, got %q", text)
+	}
+}
+
+func TestAccountPoolRouter_SendNamedAllowsTextOnlyPin(t *testing.T) {
+	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "pinned"}}
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web})
+	ch, err := r.SendNamed(context.Background(), "chatgpt:01", &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+	})
+	if err != nil {
+		t.Fatalf("X-Provider pin must still reach text-only backend, got %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		text += chunk.Content
+	}
+	if text != "pinned" {
+		t.Fatalf("want pinned web backend, got %q", text)
 	}
 }
 

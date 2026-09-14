@@ -154,6 +154,12 @@ func RunProxy(addr, upstream string) error {
 func hasCallerCredential(r *http.Request, proxyToken string) bool {
 	key := strings.TrimSpace(r.Header.Get("X-Api-Key"))
 	if key != "" {
+		// Local Claude/Codex hook uses this fixed placeholder to authenticate
+		// against amux. It is never an upstream credential, even on loopback
+		// where proxyToken is intentionally empty.
+		if key == "am-proxy" {
+			return false
+		}
 		if proxyToken == "" || subtle.ConstantTimeCompare([]byte(key), []byte(proxyToken)) != 1 {
 			return true
 		}
@@ -162,6 +168,9 @@ func hasCallerCredential(r *http.Request, proxyToken string) bool {
 	if strings.HasPrefix(auth, "Bearer ") {
 		bearer := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		if bearer != "" {
+			if bearer == "am-proxy" {
+				return false
+			}
 			if proxyToken == "" || subtle.ConstantTimeCompare([]byte(bearer), []byte(proxyToken)) != 1 {
 				return true
 			}
@@ -253,12 +262,14 @@ func (d *dynamicProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 	if proxyURL == "" {
 		proxyURL = os.Getenv("AM_EGRESS_PROXY")
 	}
+	proxyURL = strings.TrimSpace(proxyURL)
 	if proxyURL != "" {
-		t, err := guard.NewProxyTransport(proxyURL)
-		if err == nil {
-			return t.RoundTrip(req)
+		client, err := guard.GetClientForProxy(proxyURL)
+		if err != nil {
+			log.Printf("guard: egress proxy failed for %q: %v", proxyURL, err)
+		} else if client != nil && client.Transport != nil {
+			return client.Transport.RoundTrip(req)
 		}
-		log.Printf("guard: egress proxy failed for %q: %v", proxyURL, err)
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
@@ -339,10 +350,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		name := r.URL.Query().Get("to")
 		chatPool.SetPreferred(name)
 		toolPool.SetPreferred(name)
-		// Drop stale web threads so the next Claude Code / Codex turn
-		// flattens full client history into a fresh chat (context handoff).
-		chatPool.ResetConversations()
-		toolPool.ResetConversations()
+		// Keep each provider's persisted conversation. A manual provider switch
+		// must not burn a new web conversation; adapters reset only on a stale
+		// thread or provider-confirmed usage limit.
 		mode.Set("provider")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"active": name, "mode": "provider"})

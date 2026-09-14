@@ -40,11 +40,30 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		return
 	}
 
+	var initialFlusher http.Flusher
+	if req.Stream {
+		var ok bool
+		initialFlusher, ok = beginSSE(w)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	ctx := r.Context()
 	started := time.Now()
-	stream, err := poolSend(r, pool, req)
+	var stream <-chan types.StreamChunk
+	if req.Stream {
+		stream, err = poolSendStreaming(w, r, pool, req, initialFlusher, nil)
+	} else {
+		stream, err = poolSend(r, pool, req)
+	}
 	if err != nil {
 		logChatRequest(r, pool, req, "", "", err.Error(), 0, 0, started, nil)
+		if req.Stream {
+			writeResponsesStreamError(w, initialFlusher, err, "")
+			return
+		}
 		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -54,15 +73,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	inputTokens := estimateInputTokens(req)
 
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-			return
-		}
+		flusher := initialFlusher
 
 		// Initial response.created event
 		createdJSON, _ := json.Marshal(map[string]any{
@@ -84,22 +95,19 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		finishReason := "stop"
 		textPartStarted := false
 		itemID := fmt.Sprintf("item_%d", time.Now().UnixNano())
+		ping := time.NewTicker(streamKeepaliveInterval)
+		defer ping.Stop()
 
-		for chunk := range stream {
-			if ctx.Err() != nil {
+		for {
+			chunk, ok, recvErr := recvStreamChunk(ctx, stream, ping.C, commentKeepalive(w, flusher))
+			if recvErr != nil {
 				return
 			}
+			if !ok {
+				break
+			}
 			if chunk.Error != nil {
-				errJSON, _ := json.Marshal(map[string]any{
-					"type": "response.failed",
-					"response": map[string]any{
-						"id":     respID,
-						"status": "failed",
-						"error":  map[string]string{"message": chunk.Error.Error()},
-					},
-				})
-				fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", errJSON)
-				flusher.Flush()
+				writeResponsesStreamError(w, flusher, chunk.Error, respID)
 				return
 			}
 
@@ -540,4 +548,18 @@ func parseResponsesTools(raw json.RawMessage) []types.ToolDef {
 		}
 	}
 	return out
+}
+
+func writeResponsesStreamError(w http.ResponseWriter, flusher http.Flusher, err error, respID string) {
+	resp := map[string]any{
+		"status": "failed",
+		"error":  map[string]string{"message": err.Error()},
+	}
+	if respID != "" {
+		resp["id"] = respID
+	}
+	errJSON, _ := json.Marshal(map[string]any{"type": "response.failed", "response": resp})
+	fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", errJSON)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
