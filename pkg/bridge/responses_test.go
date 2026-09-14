@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +86,24 @@ func TestHandleOpenAIResponses_Streaming(t *testing.T) {
 	}
 	if len(backend.req.Messages) != 1 || backend.req.Messages[0].Content != "Say hello" {
 		t.Errorf("unexpected messages: %+v", backend.req.Messages)
+	}
+}
+
+func TestHandleOpenAIResponses_StreamErrorEndsWithDone(t *testing.T) {
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
+		&failSendAdapter{id: "fail:01", err: errors.New("upstream down")},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(
+		`{"model":"gpt-5-codex","input":"hello","stream":true}`,
+	))
+	rec := httptest.NewRecorder()
+	bridge.HandleOpenAIResponses(rec, req, pool)
+	body := rec.Body.String()
+	if !strings.Contains(body, "response.failed") {
+		t.Fatalf("missing response.failed: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("stream error omitted [DONE]: %s", body)
 	}
 }
 
@@ -170,8 +189,8 @@ func TestHandleOpenAIResponses_ToolCalls(t *testing.T) {
 		"stream": true,
 		"tools": []map[string]any{
 			{
-				"type": "function",
-				"name": "exec_command",
+				"type":        "function",
+				"name":        "exec_command",
 				"description": "Run shell command",
 				"parameters": map[string]any{
 					"type": "object",

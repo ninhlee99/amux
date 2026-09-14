@@ -42,11 +42,30 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		return
 	}
 
+	var initialFlusher http.Flusher
+	if req.Stream {
+		var ok bool
+		initialFlusher, ok = beginSSE(w)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	ctx := r.Context()
 	started := time.Now()
-	stream, err := poolSend(r, pool, req)
+	var stream <-chan types.StreamChunk
+	if req.Stream {
+		stream, err = poolSendStreaming(w, r, pool, req, initialFlusher, nil)
+	} else {
+		stream, err = poolSend(r, pool, req)
+	}
 	if err != nil {
 		logChatRequest(r, pool, req, "", "", err.Error(), 0, 0, started, nil)
+		if req.Stream {
+			writeOpenAIStreamError(w, initialFlusher, err)
+			return
+		}
 		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -56,31 +75,25 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	inputTokens := estimateInputTokens(req)
 
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-			return
-		}
+		flusher := initialFlusher
 
 		var fullContent strings.Builder
 		var toolCalls []types.ToolCall
 		var logText string
 		finishReason := "stop"
 		stopSent := false
-		for chunk := range stream {
-			if ctx.Err() != nil {
+		ping := time.NewTicker(streamKeepaliveInterval)
+		defer ping.Stop()
+		for {
+			chunk, ok, recvErr := recvStreamChunk(ctx, stream, ping.C, commentKeepalive(w, flusher))
+			if recvErr != nil {
 				return
 			}
+			if !ok {
+				break
+			}
 			if chunk.Error != nil {
-				errJSON, _ := json.Marshal(map[string]any{
-					"error": map[string]string{"message": chunk.Error.Error()},
-				})
-				fmt.Fprintf(w, "data: %s\n\n", errJSON)
-				flusher.Flush()
+				writeOpenAIStreamError(w, flusher, chunk.Error)
 				return
 			}
 
@@ -398,4 +411,10 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func writeOpenAIStreamError(w http.ResponseWriter, flusher http.Flusher, err error) {
+	fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", err.Error())
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }

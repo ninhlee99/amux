@@ -172,4 +172,84 @@ func TestProxyEgress(t *testing.T) {
 	if err != nil || emptyClient != nil {
 		t.Errorf("expected nil client for empty proxy url")
 	}
+
+	wsClient, err := GetClientForProxy("   ")
+	if err != nil || wsClient != nil {
+		t.Errorf("expected nil client for whitespace proxy url")
+	}
+}
+
+func TestNewProxyTransport_AllowsSlowFirstByte(t *testing.T) {
+	transport, err := NewProxyTransport("http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatalf("NewProxyTransport: %v", err)
+	}
+	if transport.ResponseHeaderTimeout < 5*time.Minute {
+		t.Fatalf("ResponseHeaderTimeout = %v, want at least 5m", transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestHealthTracker_TransientErrorsDoNotQuarantine(t *testing.T) {
+	ht := NewHealthTracker()
+	acc := "gemini:api:01"
+	for i := 0; i < 12; i++ {
+		ht.RecordError(acc, errors.New("dial tcp: i/o timeout"))
+	}
+	if q, _, reason := ht.IsQuarantined(acc); q {
+		t.Fatalf("timeout must not quarantine API, got %q", reason)
+	}
+	rep := ht.GetReport(acc)
+	if rep.Status == StatusQuarantined {
+		t.Fatalf("status=%s score=%d, want degraded not quarantined", rep.Status, rep.Score)
+	}
+	if rep.Score >= 80 {
+		t.Fatalf("expected score drop after timeouts, got %d", rep.Score)
+	}
+}
+
+func TestHealthTracker_FalseHTTPCodeInMessageIsNotAuth(t *testing.T) {
+	ht := NewHealthTracker()
+	ht.RecordError("groq:01", errors.New("upstream timeout after 4032ms"))
+	ht.RecordError("groq:01", errors.New("waited 401ms then reset"))
+	if q, _, reason := ht.IsQuarantined("groq:01"); q {
+		t.Fatalf("substring 401/403 must not count as auth: %s", reason)
+	}
+	rep := ht.GetReport("groq:01")
+	if rep.ConsecutiveAuthErr != 0 {
+		t.Fatalf("consecutiveAuthErr=%d, want 0", rep.ConsecutiveAuthErr)
+	}
+}
+
+func TestHealthTracker_IgnoresCancel(t *testing.T) {
+	ht := NewHealthTracker()
+	ht.RecordError("openai:01", context.Canceled)
+	ht.RecordError("openai:01", context.DeadlineExceeded)
+	ht.RecordError("openai:01", errors.New("net/http: request canceled"))
+	rep := ht.GetReport("openai:01")
+	if rep.Score != 100 || rep.ConsecutiveErrors != 0 {
+		t.Fatalf("cancel must not hit health, score=%d errs=%d", rep.Score, rep.ConsecutiveErrors)
+	}
+}
+
+func TestHealthTracker_RealAuthStillQuarantines(t *testing.T) {
+	ht := NewHealthTracker()
+	ht.RecordError("groq:01", errors.New("403 forbidden"))
+	ht.RecordError("groq:01", errors.New("401 unauthorized"))
+	if q, _, _ := ht.IsQuarantined("groq:01"); !q {
+		t.Fatal("real 401/403 must still quarantine")
+	}
+}
+
+func TestGuardRecordError_PacerOnlyOnRateLimit(t *testing.T) {
+	ResetAll()
+	t.Cleanup(ResetAll)
+
+	RecordError("api:01", errors.New("connection reset by peer"))
+	if in, _ := GlobalPacer().InBackoff("api:01"); in {
+		t.Fatal("pacer backoff on generic error")
+	}
+	RecordError("api:01", types.ErrRateLimitReached)
+	if in, _ := GlobalPacer().InBackoff("api:01"); !in {
+		t.Fatal("pacer should backoff on ErrRateLimitReached")
+	}
 }

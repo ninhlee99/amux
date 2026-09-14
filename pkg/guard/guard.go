@@ -2,9 +2,7 @@ package guard
 
 import (
 	"context"
-	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"amux-accounts/pkg/types"
@@ -53,7 +51,7 @@ func RecordError(accountID string, err error) {
 		return
 	}
 	globalHealth.RecordError(accountID, err)
-	if errors.Is(err, types.ErrRateLimitReached) || strings.Contains(strings.ToLower(err.Error()), "429") {
+	if classifyError(err) == classRateLimit {
 		globalPacer.RecordRateLimit(accountID, 0)
 	}
 }

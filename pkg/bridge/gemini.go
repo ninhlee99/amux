@@ -241,41 +241,54 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		return
 	}
 
+	var initialFlusher http.Flusher
+	if req.Stream {
+		var ok bool
+		initialFlusher, ok = beginSSE(w)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	ctx := r.Context()
 	started := time.Now()
-	streamChan, err := poolSend(r, pool, req)
+	var streamChan <-chan types.StreamChunk
+	if req.Stream {
+		streamChan, err = poolSendStreaming(w, r, pool, req, initialFlusher, nil)
+	} else {
+		streamChan, err = poolSend(r, pool, req)
+	}
 	if err != nil {
 		logChatRequest(r, pool, req, "", "", err.Error(), 0, 0, started, nil)
+		if req.Stream {
+			writeGeminiStreamError(w, initialFlusher, err)
+			return
+		}
 		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
 		return
 	}
 
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-			return
-		}
+		flusher := initialFlusher
 
 		var fullContent strings.Builder
 		var toolCalls []types.ToolCall
 		var logText string
 		finishReason := "STOP"
+		ping := time.NewTicker(streamKeepaliveInterval)
+		defer ping.Stop()
 
-		for chunk := range streamChan {
-			if ctx.Err() != nil {
+		for {
+			chunk, ok, recvErr := recvStreamChunk(ctx, streamChan, ping.C, commentKeepalive(w, flusher))
+			if recvErr != nil {
 				return
 			}
+			if !ok {
+				break
+			}
 			if chunk.Error != nil {
-				errJSON, _ := json.Marshal(map[string]any{
-					"error": map[string]string{"message": chunk.Error.Error()},
-				})
-				fmt.Fprintf(w, "data: %s\n\n", errJSON)
-				flusher.Flush()
+				writeGeminiStreamError(w, flusher, chunk.Error)
 				return
 			}
 			if chunk.LogText != "" {
@@ -487,3 +500,14 @@ func HandleGeminiModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func writeGeminiStreamError(w http.ResponseWriter, flusher http.Flusher, err error) {
+	payload, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    502,
+			"message": err.Error(),
+			"status":  "UNAVAILABLE",
+		},
+	})
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+	flusher.Flush()
+}

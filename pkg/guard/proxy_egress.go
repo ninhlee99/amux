@@ -32,7 +32,9 @@ func NewProxyTransport(proxyURL string) (*http.Transport, error) {
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 10
 	t.IdleConnTimeout = 90 * time.Second
-	t.ResponseHeaderTimeout = 90 * time.Second
+	// Generation providers may legitimately take several minutes before first
+	// SSE bytes (reasoning, sentinel and upstream queueing).
+	t.ResponseHeaderTimeout = 5 * time.Minute
 	return t, nil
 }
 

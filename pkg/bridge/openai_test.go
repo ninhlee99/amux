@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,5 +123,34 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	}
 	if resp.Choices[0].FinishReason != "stop" {
 		t.Errorf("unexpected finish_reason: %s", resp.Choices[0].FinishReason)
+	}
+}
+
+type failSendAdapter struct {
+	id  string
+	err error
+}
+
+func (m *failSendAdapter) ID() string    { return m.id }
+func (m *failSendAdapter) Priority() int { return 1 }
+func (m *failSendAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return nil, m.err
+}
+
+func TestHandleChatCompletions_StreamErrorEndsWithDone(t *testing.T) {
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
+		&failSendAdapter{id: "fail:01", err: errors.New("upstream down")},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(
+		`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+	))
+	rec := httptest.NewRecorder()
+	bridge.HandleChatCompletions(rec, req, pool)
+	body := rec.Body.String()
+	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "upstream down") {
+		t.Fatalf("missing stream error: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("stream error omitted [DONE]: %s", body)
 	}
 }

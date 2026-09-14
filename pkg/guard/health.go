@@ -1,8 +1,10 @@
 package guard
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -10,13 +12,67 @@ import (
 	"amux-accounts/pkg/types"
 )
 
+type errorClass int
+
+const (
+	classIgnore errorClass = iota
+	classRateLimit
+	classAuth
+	classServer
+)
+
+var (
+	reHTTP429 = regexp.MustCompile(`(?i)\b(429|too many requests)\b`)
+	reHTTP401 = regexp.MustCompile(`(?i)\b401\b`)
+	reHTTP403 = regexp.MustCompile(`(?i)\b403\b`)
+)
+
+func classifyError(err error) errorClass {
+	if err == nil {
+		return classIgnore
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return classIgnore
+	}
+	if errors.Is(err, types.ErrRateLimitReached) {
+		return classRateLimit
+	}
+	if errors.Is(err, types.ErrAuthentication) {
+		return classAuth
+	}
+
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "request canceled") {
+		return classIgnore
+	}
+	if strings.Contains(errStr, "context_length") || strings.Contains(errStr, "context length") ||
+		strings.Contains(errStr, "reduce the length") || strings.Contains(errStr, "exceeds this model's context") ||
+		strings.Contains(errStr, "not supported when using codex") {
+		return classIgnore
+	}
+	if strings.Contains(errStr, "cloudflare") || strings.Contains(errStr, "challenge-platform") ||
+		strings.Contains(errStr, "cf_chl") || strings.Contains(errStr, "turnstile") {
+		return classRateLimit
+	}
+	if reHTTP429.MatchString(errStr) || strings.Contains(errStr, "rate limit") {
+		return classRateLimit
+	}
+	if reHTTP401.MatchString(errStr) || strings.Contains(errStr, "unauthorized") {
+		return classAuth
+	}
+	if reHTTP403.MatchString(errStr) || strings.Contains(errStr, "forbidden") {
+		return classAuth
+	}
+	return classServer
+}
+
 // HealthStatus represents the categoric health of an account.
 type HealthStatus string
 
 const (
 	StatusHealthy     HealthStatus = "healthy"     // Score 80-100
 	StatusDegraded    HealthStatus = "degraded"    // Score 40-79
-	StatusQuarantined HealthStatus = "quarantined" // Score < 40 or critical repeated auth/ban flags
+	StatusQuarantined HealthStatus = "quarantined" // locked out: repeated 429 or auth failures
 )
 
 const (
@@ -156,53 +212,31 @@ func (h *HealthTracker) RecordServerError(id string, code int, msg string) {
 	if e.score < 0 {
 		e.score = 0
 	}
-	if e.score < 40 {
-		e.quarantinedUntil = time.Now().Add(15 * time.Minute)
-		e.quarantineReason = "repeated upstream server errors"
-	}
+	// Transient 5xx / timeouts already failover in the router. Do not lock
+	// the adapter out of rotation — that looked like a rate-limit countdown
+	// after ordinary network errors.
 }
 
 // RecordError automatically categorizes an error and logs health impact.
 func (h *HealthTracker) RecordError(id string, err error) {
-	if err == nil {
+	switch classifyError(err) {
+	case classIgnore:
 		return
-	}
-	if errors.Is(err, types.ErrRateLimitReached) {
-		h.RecordRateLimit(id, 0)
-		return
-	}
-	if errors.Is(err, types.ErrAuthentication) {
+	case classRateLimit:
+		retryAfter := time.Duration(0)
+		if err != nil {
+			low := strings.ToLower(err.Error())
+			if strings.Contains(low, "cloudflare") || strings.Contains(low, "turnstile") ||
+				strings.Contains(low, "challenge-platform") || strings.Contains(low, "cf_chl") {
+				retryAfter = 5 * time.Minute
+			}
+		}
+		h.RecordRateLimit(id, retryAfter)
+	case classAuth:
 		h.RecordAuthError(id, err.Error())
-		return
+	default:
+		h.RecordServerError(id, http.StatusInternalServerError, err.Error())
 	}
-
-	errStr := strings.ToLower(err.Error())
-
-	// Payload-specific limits (context length / token limit / model support) are client/request mismatches,
-	// NOT account health degradations.
-	if strings.Contains(errStr, "context_length") || strings.Contains(errStr, "context length") ||
-		strings.Contains(errStr, "reduce the length") || strings.Contains(errStr, "exceeds this model's context") ||
-		strings.Contains(errStr, "not supported when using codex") {
-		return
-	}
-
-	// Cloudflare / Turnstile challenges are anti-bot / rate-limiting barriers, not invalid credentials
-	if strings.Contains(errStr, "cloudflare") || strings.Contains(errStr, "challenge-platform") ||
-		strings.Contains(errStr, "cf_chl") || strings.Contains(errStr, "turnstile") {
-		h.RecordRateLimit(id, 5*time.Minute)
-		return
-	}
-
-	if strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") {
-		h.RecordRateLimit(id, 0)
-		return
-	}
-	if strings.Contains(errStr, "401") || strings.Contains(errStr, "403") ||
-		strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "forbidden") {
-		h.RecordAuthError(id, err.Error())
-		return
-	}
-	h.RecordServerError(id, http.StatusInternalServerError, err.Error())
 }
 
 // IsQuarantined reports whether an account is quarantined, remaining time, and the reason.
@@ -252,10 +286,8 @@ func (h *HealthTracker) GetReport(id string) HealthReport {
 		status = StatusQuarantined
 	} else if e.score >= 80 {
 		status = StatusHealthy
-	} else if e.score >= 40 {
-		status = StatusDegraded
 	} else {
-		status = StatusQuarantined
+		status = StatusDegraded
 	}
 
 	return HealthReport{

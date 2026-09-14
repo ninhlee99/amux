@@ -18,7 +18,9 @@ var defaultHTTPClient = &http.Client{
 	// No total Timeout: ChatGPT/Claude web SSE often exceeds 2 minutes
 	// (sentinel + PoW + generation). A 120s cap killed the body mid-stream
 	// and Claude Code showed "Waiting for API response / check your network".
-	// Headers still bound via ResponseHeaderTimeout on the transport.
+	// Keep a finite first-byte bound so dead peers do not occupy a slot forever,
+	// but allow slow reasoning / web sentinel flows. Once headers arrive, stream
+	// lifetime is governed only by request context.
 	Timeout:   0,
 	Transport: newDefaultTransport(),
 }
@@ -28,6 +30,6 @@ func newDefaultTransport() *http.Transport {
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 10
 	t.IdleConnTimeout = 90 * time.Second
-	t.ResponseHeaderTimeout = 90 * time.Second
+	t.ResponseHeaderTimeout = 5 * time.Minute
 	return t
 }

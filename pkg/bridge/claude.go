@@ -336,7 +336,14 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		}
 	}
 
-	stream, err := poolSend(r, pool, req)
+	var stream <-chan types.StreamChunk
+	if req.Stream {
+		stream, err = poolSendStreaming(w, r, pool, req, flusher, func() {
+			writeAnthropicSSEPing(w, flusher)
+		})
+	} else {
+		stream, err = poolSend(r, pool, req)
+	}
 	if err != nil {
 		logChatRequest(r, pool, req, "", "", err.Error(), 0, 0, started, nil)
 		if req.Stream && flusher != nil {
@@ -820,4 +827,3 @@ func HandleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": tokens})
 }
-

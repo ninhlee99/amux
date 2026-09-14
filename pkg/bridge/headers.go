@@ -1,13 +1,107 @@
 package bridge
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
 )
+
+var streamKeepaliveInterval = 15 * time.Second
+
+// beginSSE commits an SSE response before provider setup. Browser-backed
+// providers can spend minutes on a challenge or queue before their first
+// token; committing and flushing here prevents clients from mistaking that
+// wait for a dead proxy connection.
+func beginSSE(w http.ResponseWriter) (http.Flusher, bool) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	fmt.Fprint(w, ": amux stream connected\n\n")
+	flusher.Flush()
+	return flusher, true
+}
+
+func commentKeepalive(w http.ResponseWriter, flusher http.Flusher) func() {
+	return func() {
+		fmt.Fprint(w, ": amux upstream pending\n\n")
+		flusher.Flush()
+	}
+}
+
+func drainStream(stream <-chan types.StreamChunk) {
+	if stream == nil {
+		return
+	}
+	go func() {
+		for range stream {
+		}
+	}()
+}
+
+// recvStreamChunk waits for the next upstream chunk while emitting keepalives
+// so downstream SSE clients do not treat a quiet generation gap as a dead proxy.
+func recvStreamChunk(ctx context.Context, stream <-chan types.StreamChunk, ping <-chan time.Time, onPing func()) (types.StreamChunk, bool, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return types.StreamChunk{}, false, ctx.Err()
+		case <-ping:
+			if onPing != nil {
+				onPing()
+			}
+		case chunk, ok := <-stream:
+			return chunk, ok, nil
+		}
+	}
+}
+
+// poolSendStreaming keeps downstream SSE alive while an upstream adapter is
+// still connecting or waiting for its first token. Only handler goroutine
+// writes ResponseWriter; worker goroutine only performs provider setup.
+// keepalive may be nil (SSE comments). On client cancel, the worker is waited
+// and any unused stream is drained so producers cannot block forever.
+func poolSendStreaming(w http.ResponseWriter, r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRequest, flusher http.Flusher, keepalive func()) (<-chan types.StreamChunk, error) {
+	if keepalive == nil {
+		keepalive = commentKeepalive(w, flusher)
+	}
+	type result struct {
+		stream <-chan types.StreamChunk
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		stream, err := poolSend(r, pool, req)
+		resultCh <- result{stream: stream, err: err}
+	}()
+
+	ticker := time.NewTicker(streamKeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case res := <-resultCh:
+			return res.stream, res.err
+		case <-ticker.C:
+			keepalive()
+		case <-r.Context().Done():
+			res := <-resultCh
+			drainStream(res.stream)
+			if res.err != nil {
+				return nil, res.err
+			}
+			return nil, r.Context().Err()
+		}
+	}
+}
 
 // btwDrainer is a pluggable func so tests and the real proxy can provide
 // different implementations. The proxy sets this via SetBtwDrainer on startup.
@@ -56,7 +150,6 @@ func injectBtwMessages(req *types.ChatRequest) {
 	})
 }
 
-
 // explicitProviderHeaders reads optional routing overrides:
 //
 //	X-Provider — pool account id (works even when removed from rotate pool)
@@ -94,4 +187,3 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 	}
 	return pool.Send(r.Context(), req)
 }
-

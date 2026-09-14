@@ -3,6 +3,7 @@ package bridge_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +170,24 @@ func TestHandleGeminiGenerateContent_Streaming(t *testing.T) {
 	}
 }
 
+func TestHandleGeminiGenerateContent_StreamErrorUsesGeminiShape(t *testing.T) {
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
+		&failSendAdapter{id: "fail:01", err: errors.New("upstream down")},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", bytes.NewBufferString(
+		`{"contents":[{"role":"user","parts":[{"text":"Hi"}]}]}`,
+	))
+	rec := httptest.NewRecorder()
+	bridge.HandleGeminiGenerateContent(rec, req, pool)
+	body := rec.Body.String()
+	if !strings.Contains(body, `"status":"UNAVAILABLE"`) || !strings.Contains(body, `"code":502`) {
+		t.Fatalf("want Gemini error object, got: %s", body)
+	}
+	if strings.Contains(body, `"error":{"message"`) && !strings.Contains(body, `"status"`) {
+		t.Fatalf("openai-shaped error leaked into gemini stream: %s", body)
+	}
+}
+
 func TestGeminiBodyToChatRequest_ParallelFIFOToolCallMapping(t *testing.T) {
 	body := `{
 		"contents": [
@@ -278,4 +297,3 @@ func TestHandleGeminiModels(t *testing.T) {
 		t.Errorf("expected gemini-3.8-flash in models list: %+v", resp.Models)
 	}
 }
-
