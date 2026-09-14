@@ -8,6 +8,6 @@ package tools
 const (
 	DialectClaude = "claude" // Claude Code — Anthropic /v1/messages
 	DialectCursor = "cursor" // Cursor — OpenAI /v1/chat/completions
-	DialectCodex  = "codex"  // Codex — OpenAI /v1/chat/completions
+	DialectCodex  = "codex"  // Codex — /v1/responses + /v1/chat/completions
 	DialectGemini = "gemini" // Antigravity / Gemini function calling
 )

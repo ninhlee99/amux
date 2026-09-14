@@ -246,3 +246,100 @@ func TestClaudeBridge_StreamEmitsStartAndPing(t *testing.T) {
 		t.Fatalf("missing message_stop: %s", out)
 	}
 }
+
+type recordingToolAdapter struct {
+	id  string
+	req *types.ChatRequest
+}
+
+func (m *recordingToolAdapter) ID() string          { return m.id }
+func (m *recordingToolAdapter) Priority() int       { return 1 }
+func (m *recordingToolAdapter) SupportsTools() bool { return true }
+func (m *recordingToolAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	m.req = req
+	name := "unknown"
+	if len(req.Tools) > 0 {
+		name = req.Tools[0].Name
+	}
+	ch := make(chan types.StreamChunk, 2)
+	ch <- types.StreamChunk{
+		ID: m.id,
+		ToolCalls: []types.ToolCall{{
+			ID:        "call_1",
+			Name:      name,
+			Arguments: `{"x":1}`,
+		}},
+		FinishReason: "tool_calls",
+		Done:         true,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func TestProxyTools_ClientDialectsConvertForLocalExecution(t *testing.T) {
+	t.Run("claude client → pool backend → tool_use", func(t *testing.T) {
+		backend := &recordingToolAdapter{id: "codex:01"}
+		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		body := []byte(`{
+			"model":"claude-sonnet-4-20250514",
+			"stream":false,
+			"tools":[{"name":"Bash","description":"shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
+			"messages":[{"role":"user","content":"ls"}]
+		}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		if err := bridge.HandleClaudeMessages(rec, req, pool, body); err != nil {
+			t.Fatal(err)
+		}
+		if backend.req == nil || len(backend.req.Tools) != 1 || backend.req.Tools[0].Name != "Bash" {
+			t.Fatalf("canonical tools=%+v", backend.req)
+		}
+		if !strings.Contains(rec.Body.String(), `"type":"tool_use"`) || !strings.Contains(rec.Body.String(), `"name":"Bash"`) {
+			t.Fatalf("claude wire=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("codex client → pool backend → function_call", func(t *testing.T) {
+		backend := &recordingToolAdapter{id: "agy:01"}
+		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		body := []byte(`{
+			"model":"gpt-5-codex",
+			"stream":false,
+			"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}],
+			"input":[{"role":"user","content":"status"}]
+		}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		bridge.HandleOpenAIResponses(rec, req, pool)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d %s", rec.Code, rec.Body.String())
+		}
+		if backend.req == nil || len(backend.req.Tools) != 1 || backend.req.Tools[0].Name != "exec_command" {
+			t.Fatalf("canonical tools=%+v", backend.req)
+		}
+		if !strings.Contains(rec.Body.String(), `"type":"function_call"`) || !strings.Contains(rec.Body.String(), `"name":"exec_command"`) {
+			t.Fatalf("codex wire=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("agy client → pool backend → functionCall", func(t *testing.T) {
+		backend := &recordingToolAdapter{id: "codex:01"}
+		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		body := []byte(`{
+			"contents":[{"role":"user","parts":[{"text":"status"}]}],
+			"tools":[{"functionDeclarations":[{"name":"run_command","parameters":{"type":"object"}}]}]
+		}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		bridge.HandleGeminiGenerateContent(rec, req, pool)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d %s", rec.Code, rec.Body.String())
+		}
+		if backend.req == nil || len(backend.req.Tools) != 1 || backend.req.Tools[0].Name != "run_command" {
+			t.Fatalf("canonical tools=%+v", backend.req)
+		}
+		if !strings.Contains(rec.Body.String(), `"functionCall"`) || !strings.Contains(rec.Body.String(), `"run_command"`) {
+			t.Fatalf("agy wire=%s", rec.Body.String())
+		}
+	})
+}

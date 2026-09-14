@@ -398,9 +398,9 @@ func responsesBodyToChatRequest(body []byte) (*types.ChatRequest, error) {
 		})
 	}
 
-	// 1. Parse Tools
+	// 1. Parse Tools (flat Responses + nested Chat Completions)
 	if len(wrap.Tools) > 0 && string(wrap.Tools) != "null" {
-		req.Tools = parseResponsesTools(wrap.Tools)
+		req.Tools = tools.ParseCodexResponsesTools(wrap.Tools)
 	}
 
 	// 2. Parse Input or Messages
@@ -509,45 +509,6 @@ func parseResponsesInput(raw json.RawMessage) ([]types.ChatMessage, error) {
 	}
 
 	return msgs, nil
-}
-
-func parseResponsesTools(raw json.RawMessage) []types.ToolDef {
-	var list []map[string]any
-	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil
-	}
-
-	var out []types.ToolDef
-	for _, t := range list {
-		// Responses API format: {"type": "function", "name": "...", "description": "...", "parameters": {...}}
-		// OR Chat Completions format: {"type": "function", "function": {"name": "...", ...}}
-		name, _ := t["name"].(string)
-		desc, _ := t["description"].(string)
-		var params json.RawMessage
-
-		if fn, ok := t["function"].(map[string]any); ok {
-			if fnName, ok := fn["name"].(string); ok && fnName != "" {
-				name = fnName
-			}
-			if fnDesc, ok := fn["description"].(string); ok && fnDesc != "" {
-				desc = fnDesc
-			}
-			if p, ok := fn["parameters"]; ok {
-				params, _ = json.Marshal(p)
-			}
-		} else if p, ok := t["parameters"]; ok {
-			params, _ = json.Marshal(p)
-		}
-
-		if name != "" {
-			out = append(out, types.ToolDef{
-				Name:        name,
-				Description: desc,
-				InputSchema: params,
-			})
-		}
-	}
-	return out
 }
 
 func writeResponsesStreamError(w http.ResponseWriter, flusher http.Flusher, err error, respID string) {

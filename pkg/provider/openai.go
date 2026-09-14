@@ -32,6 +32,10 @@ func (a *OpenAICompatibleAdapter) ID() string    { return a.AdapterID }
 func (a *OpenAICompatibleAdapter) Priority() int { return a.PriorityLvl }
 func (a *OpenAICompatibleAdapter) Group() string { return a.GroupLabel }
 
+// SupportsTools is true: OpenAI-compatible upstreams (including AGY) speak
+// native function tools. Claude / Codex catalogs are converted in pkg/tools.
+func (a *OpenAICompatibleAdapter) SupportsTools() bool { return true }
+
 func (a *OpenAICompatibleAdapter) client() *http.Client {
 	if a.HTTPClient != nil {
 		return a.HTTPClient
@@ -257,4 +261,3 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 		sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Done: true})
 	}
 }
-

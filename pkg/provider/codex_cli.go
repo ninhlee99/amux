@@ -48,8 +48,9 @@ func (a *CodexCLIAdapter) ID() string    { return a.AdapterID }
 func (a *CodexCLIAdapter) Priority() int { return a.PriorityLvl }
 func (a *CodexCLIAdapter) Group() string { return a.GroupLabel }
 
-// SupportsTools is false: Codex backend is a flattened text prompt.
-func (a *CodexCLIAdapter) SupportsTools() bool { return false }
+// SupportsTools is true: Codex Responses API accepts native function tools.
+// Claude / AGY client catalogs are converted via pkg/tools before POST.
+func (a *CodexCLIAdapter) SupportsTools() bool { return true }
 
 func (a *CodexCLIAdapter) client() *http.Client {
 	if a.HTTPClient != nil {
@@ -215,31 +216,29 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 		}
 	}
 
-	var inputList []map[string]any
-	if len(req.Tools) > 0 || req.FullContext {
-		prompt := WebBackendPrompt(req, false)
-		if prompt == "" {
-			prompt = "Hello"
+	model := codexDefaultModel
+	if a.TargetModel != "" && isCodexCompatibleModel(a.TargetModel) {
+		model = a.TargetModel
+	}
+	if req.Model != "" && req.Model != "default" && isCodexCompatibleModel(req.Model) {
+		model = req.Model
+	}
+
+	var b []byte
+	if len(req.Tools) > 0 {
+		slim := *req
+		slim.Model = model
+		slim.Stream = true
+		slim.Messages = slimWebMessages(req.Messages)
+		encoded, err := tools.MarshalCodexResponsesRequest(&slim)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
 		}
-		inputList = []map[string]any{
-			{
-				"role":    "user",
-				"content": prompt,
-			},
-		}
+		b = encoded
 	} else {
-		for _, m := range req.Messages {
-			role := m.Role
-			if role == "" || role == "tool" {
-				role = "user"
-			}
-			inputList = append(inputList, map[string]any{
-				"role":    role,
-				"content": m.Content,
-			})
-		}
-		if len(inputList) == 0 {
-			prompt := BuildConcatenatedPrompt(req.Messages)
+		var inputList []map[string]any
+		if req.FullContext {
+			prompt := WebBackendPrompt(req, false)
 			if prompt == "" {
 				prompt = "Hello"
 			}
@@ -249,25 +248,41 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 					"content": prompt,
 				},
 			}
+		} else {
+			for _, m := range req.Messages {
+				role := m.Role
+				if role == "" || role == "tool" {
+					role = "user"
+				}
+				inputList = append(inputList, map[string]any{
+					"role":    role,
+					"content": m.Content,
+				})
+			}
+			if len(inputList) == 0 {
+				prompt := BuildConcatenatedPrompt(req.Messages)
+				if prompt == "" {
+					prompt = "Hello"
+				}
+				inputList = []map[string]any{
+					{
+						"role":    "user",
+						"content": prompt,
+					},
+				}
+			}
 		}
-	}
-
-	model := codexDefaultModel
-	if a.TargetModel != "" && isCodexCompatibleModel(a.TargetModel) {
-		model = a.TargetModel
-	}
-	if req.Model != "" && req.Model != "default" && isCodexCompatibleModel(req.Model) {
-		model = req.Model
-	}
-	payload := map[string]any{
-		"model":  model,
-		"input":  inputList,
-		"store":  false,
-		"stream": true,
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
+		payload := map[string]any{
+			"model":  model,
+			"input":  inputList,
+			"store":  false,
+			"stream": true,
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
+		}
+		b = encoded
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesURL, bytes.NewReader(b))
@@ -322,8 +337,7 @@ func isCodexCompatibleModel(m string) bool {
 }
 
 // streamCodexResponses parses the Responses-API SSE event shape
-// (response.output_text.delta / response.completed / ...), unlike
-// streamChatGPTWeb's message.content.parts shape.
+// (response.output_text.delta / function_call items / response.completed).
 func streamCodexResponses(ctx context.Context, id string, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
@@ -331,7 +345,21 @@ func streamCodexResponses(ctx context.Context, id string, resp *http.Response, o
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 2<<20)
 
+	acc := newCodexCallAcc()
 	doneSent := false
+	finish := func() {
+		if doneSent {
+			return
+		}
+		calls := acc.flush()
+		fr := ""
+		if len(calls) > 0 {
+			fr = "tool_calls"
+		}
+		sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Done: true})
+		doneSent = true
+	}
+
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -342,16 +370,11 @@ func streamCodexResponses(ctx context.Context, id string, resp *http.Response, o
 			continue
 		}
 		if payload == "[DONE]" {
-			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
-			doneSent = true
+			finish()
 			return
 		}
 
-		var evt struct {
-			Type  string `json:"type"`
-			Delta string `json:"delta"`
-			Error any    `json:"error"`
-		}
+		var evt codexResponsesEvent
 		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
 			continue
 		}
@@ -368,9 +391,18 @@ func streamCodexResponses(ctx context.Context, id string, resp *http.Response, o
 					return
 				}
 			}
+		case "response.output_item.added", "response.output_item.done":
+			acc.observeItem(evt.Item)
+		case "response.function_call_arguments.delta":
+			acc.appendArgs(evt.CallID, evt.Delta)
+		case "response.function_call_arguments.done":
+			acc.setArgs(evt.CallID, evt.Arguments)
+			acc.observeName(evt.CallID, evt.Name)
 		case "response.completed", "response.failed", "response.incomplete":
-			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
-			doneSent = true
+			if evt.Response != nil {
+				acc.observeOutput(evt.Response.Output)
+			}
+			finish()
 			return
 		}
 	}
@@ -379,6 +411,132 @@ func streamCodexResponses(ctx context.Context, id string, resp *http.Response, o
 		return
 	}
 	if !doneSent && ctx.Err() == nil {
-		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
+		finish()
 	}
+}
+
+type codexResponsesEvent struct {
+	Type      string              `json:"type"`
+	Delta     string              `json:"delta"`
+	CallID    string              `json:"call_id"`
+	Arguments string              `json:"arguments"`
+	Name      string              `json:"name"`
+	Error     any                 `json:"error"`
+	Item      *codexResponsesItem `json:"item"`
+	Response  *struct {
+		Output []codexResponsesItem `json:"output"`
+	} `json:"response"`
+}
+
+type codexResponsesItem struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	CallID    string `json:"call_id"`
+	Arguments string `json:"arguments"`
+	Status    string `json:"status"`
+}
+
+type codexCallAcc struct {
+	order []string
+	byID  map[string]*types.ToolCall
+}
+
+func newCodexCallAcc() *codexCallAcc {
+	return &codexCallAcc{byID: map[string]*types.ToolCall{}}
+}
+
+func (a *codexCallAcc) key(callID, fallback string) string {
+	if strings.TrimSpace(callID) != "" {
+		return callID
+	}
+	return fallback
+}
+
+func (a *codexCallAcc) get(callID, fallback, name string) *types.ToolCall {
+	id := a.key(callID, fallback)
+	if id == "" {
+		if name == "" {
+			return nil
+		}
+		id = name
+	}
+	tc, ok := a.byID[id]
+	if !ok {
+		tc = &types.ToolCall{ID: id}
+		a.byID[id] = tc
+		a.order = append(a.order, id)
+	}
+	if name != "" {
+		tc.Name = name
+	}
+	return tc
+}
+
+func (a *codexCallAcc) observeItem(item *codexResponsesItem) {
+	if item == nil || item.Type != "function_call" {
+		return
+	}
+	tc := a.get(item.CallID, item.ID, item.Name)
+	if tc == nil {
+		return
+	}
+	if item.Arguments != "" {
+		tc.Arguments = item.Arguments
+	}
+}
+
+func (a *codexCallAcc) observeOutput(items []codexResponsesItem) {
+	for i := range items {
+		a.observeItem(&items[i])
+	}
+}
+
+func (a *codexCallAcc) appendArgs(callID, delta string) {
+	if callID == "" || delta == "" {
+		return
+	}
+	tc := a.get(callID, "", "")
+	if tc == nil {
+		return
+	}
+	tc.Arguments += delta
+}
+
+func (a *codexCallAcc) setArgs(callID, args string) {
+	if callID == "" {
+		return
+	}
+	tc := a.get(callID, "", "")
+	if tc == nil {
+		return
+	}
+	if args != "" {
+		tc.Arguments = args
+	}
+}
+
+func (a *codexCallAcc) observeName(callID, name string) {
+	if callID == "" || name == "" {
+		return
+	}
+	a.get(callID, "", name)
+}
+
+func (a *codexCallAcc) flush() []types.ToolCall {
+	if len(a.order) == 0 {
+		return nil
+	}
+	out := make([]types.ToolCall, 0, len(a.order))
+	for _, id := range a.order {
+		tc := a.byID[id]
+		if tc == nil || strings.TrimSpace(tc.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(tc.Arguments) == "" {
+			tc.Arguments = "{}"
+		}
+		out = append(out, *tc)
+	}
+	return out
 }
