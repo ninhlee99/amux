@@ -26,7 +26,7 @@ func TestIsCodexCompatibleModel(t *testing.T) {
 		{"kimi-k1.5", false},
 		{"grok-2", false},
 		{"gpt-5.6-terra", true},
-		{"gpt-4o", true},
+		{"gpt-4o", false},
 		{"o1-preview", true},
 		{"o3-mini", true},
 		{"o4", true},

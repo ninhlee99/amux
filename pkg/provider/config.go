@@ -38,10 +38,13 @@ type ProviderConfig struct {
 	// recognize re-logins of the same person so credentials update in place
 	// under a stable ID like "claude:web:ninhle".
 	Account string `json:"account,omitempty"`
-	// Plan indicates subscription tier ("pro", "plus", "team", "free").
+	// Plan indicates subscription tier ("pro", "plus", "max", "team", "free").
 	Plan string `json:"plan,omitempty"`
 	// Group explicitly overrides the group (e.g. "claude_sub", "codex_sub", "agy_sub", "codex_free", "api_other", etc.)
 	Group string `json:"group,omitempty"`
+	// IDE names the product this account belongs to: "claude" | "codex" | "agy" | "api" | "web".
+	// When that IDE is the client, this account is main; for every other IDE it is failover proxy.
+	IDE string `json:"ide,omitempty"`
 
 	// openai_compatible & gemini
 	BaseURL string `json:"baseUrl,omitempty"`
@@ -104,7 +107,54 @@ func (p ProviderConfig) HasCredentials() bool {
 	return false
 }
 
+// InferIDE maps a stored provider onto the IDE that owns it.
+func InferIDE(providerType, group, id string) string {
+	t := strings.ToLower(strings.TrimSpace(providerType))
+	g := strings.ToLower(strings.TrimSpace(group))
+	ident := strings.ToLower(id)
+	switch {
+	case t == "claude_web" || g == "claude_web" || strings.Contains(ident, "claude:web"):
+		return "web"
+	case t == "chatgpt_web" || g == "chatgpt_web" || (strings.Contains(ident, "chatgpt") && !strings.Contains(ident, "codex")):
+		return "web"
+	case t == "gemini_web" || g == "gemini_web" || strings.Contains(ident, "gemini:web"):
+		return "web"
+	case t == "codex_cli" || strings.HasPrefix(g, "codex") || strings.HasPrefix(ident, "codex"):
+		return "codex"
+	case t == "antigravity" || t == "agy" || strings.HasPrefix(g, "agy") || strings.HasPrefix(ident, "agy") || strings.HasPrefix(ident, "antigravity"):
+		return "agy"
+	case t == "claude_code" || strings.HasPrefix(g, "claude") || strings.HasPrefix(ident, "claude"):
+		return "claude"
+	default:
+		return "api"
+	}
+}
+
+// Normalize fills ide so older accounts.json rows match the current schema.
+func (p *ProviderConfig) Normalize() {
+	if p == nil {
+		return
+	}
+	if strings.TrimSpace(p.IDE) == "" {
+		p.IDE = InferIDE(p.Type, p.Group, p.ID)
+	}
+}
+
+func NormalizeAccountsFile(f *AccountsFile) {
+	if f == nil {
+		return
+	}
+	if f.Version == 0 {
+		f.Version = 2
+	}
+	for i := range f.Providers {
+		f.Providers[i].Normalize()
+	}
+}
+
 type AccountsFile struct {
+	// Version 2 = ide/group/plan on each provider. Missing/0 is treated as 2 on load.
+	Version   int              `json:"version,omitempty"`
 	Providers []ProviderConfig `json:"providers"`
 }
 
@@ -452,6 +502,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			APIKey:      ResolveSecret(p.APIKey),
 			TargetModel: model,
 			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
 		}, nil
 
 	case "gemini":
@@ -514,6 +565,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			PriorityLvl: p.Priority,
 			TargetModel: model,
 			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
 		}, nil
 
 	case "antigravity", "agy":
@@ -577,6 +629,7 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 	if err == nil {
 		var f AccountsFile
 		if err := json.Unmarshal(b, &f); err == nil {
+			NormalizeAccountsFile(&f)
 			providers = f.Providers
 			for _, p := range f.Providers {
 				// A disabled ("am off") provider is never addressable, in
@@ -626,7 +679,7 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 			// Out-of-pool codex still addressable via X-Provider.
 			for i := range providers {
 				if providers[i].Type == "codex_cli" && providers[i].Enabled != nil && !*providers[i].Enabled {
-					adapters = append(adapters, &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model})
+					adapters = append(adapters, &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group})
 					break
 				}
 			}
@@ -690,6 +743,7 @@ func codexPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 
 	priority := PriorityWebCodex // web-session tier; after API keys
 	model := codexDefaultModel
+	group := ""
 	for i := range providers {
 		if providers[i].Type != "codex_cli" {
 			continue
@@ -701,10 +755,11 @@ func codexPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 		if providers[i].Model != "" {
 			model = providers[i].Model
 		}
+		group = providers[i].Group
 		break
 	}
 
-	return &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: priority, TargetModel: model}
+	return &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: priority, TargetModel: model, GroupLabel: group}
 }
 
 // CodexAutoRow returns a synthetic display row for the auto-surfaced Codex
@@ -718,7 +773,7 @@ func CodexAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
 	if !ok || a == nil {
 		return ProviderConfig{}, false
 	}
-	return ProviderConfig{ID: a.AdapterID, Type: "codex_cli", Priority: a.PriorityLvl, Model: a.TargetModel}, true
+	return ProviderConfig{ID: a.AdapterID, Type: "codex_cli", Priority: a.PriorityLvl, Model: a.TargetModel, Group: a.GroupLabel}, true
 }
 
 // codexPoolID resolves the unified ID of the currently active codex
@@ -811,11 +866,13 @@ func LoadConfigFile(path string) (*AccountsFile, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, err
 	}
+	NormalizeAccountsFile(&f)
 	return &f, nil
 }
 
 func SaveConfigFile(path string, f *AccountsFile) error {
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
+	NormalizeAccountsFile(f)
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

@@ -78,9 +78,10 @@ Monitoring & Utilities:
                             update amux to latest version from github (keeps all accounts)
   amux usage [day|week|month|all] [-D|--detail] [-d YYYY-MM-DD] [-p PROJECT]
                             token usage analytics
+  amux statusline             session tokens · 5h / 7d remaining (Claude · AGY)
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude) routed through proxy
+  amux run <tool> [args...]   exec tool (claude, codex, agy) routed through proxy
   amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
                             run/manage proxy daemon (default 127.0.0.1:8787;
                             --public binds 0.0.0.0; -p/--port overrides port)
@@ -258,6 +259,9 @@ func Run(rawArgs []string) {
 
 	case "status", "st":
 		ui.CmdStatus()
+
+	case "statusline":
+		ui.CmdStatusline()
 
 	case "guard":
 		ui.CmdGuard(args)
@@ -883,8 +887,28 @@ func cmdRun(args []string) {
 			"OPENAI_BASE_URL="+base+"/v1",
 			"OPENAI_API_KEY=am-proxy",
 		)
+	case "agy", "antigravity":
+		var err error
+		bin, err = exec.LookPath("agy")
+		if err != nil {
+			bin, err = exec.LookPath("antigravity")
+		}
+		if err != nil {
+			die("agy/antigravity not found on PATH")
+		}
+		execArgs = append([]string{bin}, rest...)
+		environ = append(os.Environ(),
+			"GEMINI_API_BASE="+base,
+			"GOOGLE_GENAI_BASE_URL="+base,
+			"GOOGLE_GEMINI_BASE_URL="+base,
+			"GEMINI_API_KEY=am-proxy",
+			"GOOGLE_GENAI_API_KEY=am-proxy",
+			// AGY prefers GOOGLE_API_KEY over GEMINI_API_KEY when both exist.
+			// Process-only so gcloud/Maps in the parent shell stay clean.
+			"GOOGLE_API_KEY=am-proxy",
+		)
 	default:
-		die("amux run currently supports: claude, codex (agy/antigravity connects directly to Google Cloud without proxy redirection)")
+		die("amux run currently supports: claude, codex, agy")
 	}
 
 	_ = syscall.Exec(bin, execArgs, environ)

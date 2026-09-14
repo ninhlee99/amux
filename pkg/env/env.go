@@ -54,7 +54,12 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 		fmt.Printf("export OPENAI_API_KEY=am-proxy\n")
 		fmt.Printf("export GEMINI_API_BASE=%s\n", proxyBase)
 		fmt.Printf("export GOOGLE_GENAI_BASE_URL=%s\n", proxyBase)
+		fmt.Printf("export GOOGLE_GEMINI_BASE_URL=%s\n", proxyBase)
+		fmt.Printf("export GEMINI_API_KEY=am-proxy\n")
+		fmt.Printf("export GOOGLE_GENAI_API_KEY=am-proxy\n")
 		fmt.Printf("alias codex='am run codex'\n")
+		fmt.Printf("alias agy='am run agy'\n")
+		fmt.Printf("alias antigravity='am run agy'\n")
 	} else {
 		// A shell that already ran `eval "$(am env)"` while the proxy was up
 		// has these exported in its live session. Omitting the line here
@@ -80,7 +85,24 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 		if _, ok := m["GOOGLE_GENAI_BASE_URL"]; !ok {
 			fmt.Printf("unset GOOGLE_GENAI_BASE_URL\n")
 		}
+		if _, ok := m["GOOGLE_GEMINI_BASE_URL"]; !ok {
+			fmt.Printf("unset GOOGLE_GEMINI_BASE_URL\n")
+		}
+		if _, ok := m["GEMINI_API_KEY"]; !ok {
+			fmt.Printf("unset GEMINI_API_KEY\n")
+		}
+		if _, ok := m["GOOGLE_GENAI_API_KEY"]; !ok {
+			fmt.Printf("unset GOOGLE_GENAI_API_KEY\n")
+		}
+		// Older `am env` exported GOOGLE_API_KEY=am-proxy for the whole
+		// shell (Maps/gcloud/Vertex then auth as the dummy). Always unset
+		// unless the user set their own via `am env set`.
+		if _, ok := m["GOOGLE_API_KEY"]; !ok {
+			fmt.Printf("unset GOOGLE_API_KEY\n")
+		}
 		fmt.Printf("unalias codex 2>/dev/null || true\n")
+		fmt.Printf("unalias agy 2>/dev/null || true\n")
+		fmt.Printf("unalias antigravity 2>/dev/null || true\n")
 	}
 
 	names := make([]string, 0, len(m))
@@ -90,7 +112,7 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 	sort.Strings(names)
 	for _, k := range names {
 		// Don't override the gateway token we just set for the live proxy.
-		if proxyUp && (k == "ANTHROPIC_AUTH_TOKEN" || k == "ANTHROPIC_BASE_URL" || k == "OPENAI_BASE_URL" || k == "OPENAI_API_KEY" || k == "GEMINI_API_BASE" || k == "GOOGLE_GENAI_BASE_URL") {
+		if proxyUp && (k == "ANTHROPIC_AUTH_TOKEN" || k == "ANTHROPIC_BASE_URL" || k == "OPENAI_BASE_URL" || k == "OPENAI_API_KEY" || k == "GEMINI_API_BASE" || k == "GOOGLE_GENAI_BASE_URL" || k == "GOOGLE_GEMINI_BASE_URL" || k == "GEMINI_API_KEY" || k == "GOOGLE_GENAI_API_KEY") {
 			continue
 		}
 		fmt.Printf("export %s=%s\n", k, ShellQuote(m[k]))

@@ -53,7 +53,10 @@ func WrapUsageCapture(resp *http.Response, account string) {
 		return
 	}
 	path := resp.Request.URL.Path
-	if !strings.HasSuffix(path, "/messages") && !strings.HasSuffix(path, "/chat/completions") {
+	if !strings.HasSuffix(path, "/messages") &&
+		!strings.HasSuffix(path, "/chat/completions") &&
+		!strings.HasSuffix(path, "/responses") &&
+		!strings.Contains(path, "generateContent") {
 		return
 	}
 
@@ -145,6 +148,10 @@ func applyUsageJSON(b []byte, e *types.UsageEntry) {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+		} `json:"usageMetadata"`
 	}
 	if json.Unmarshal(b, &v) != nil {
 		return
@@ -175,5 +182,11 @@ func applyUsageJSON(b []byte, e *types.UsageEntry) {
 	}
 	if v.Usage.CompletionTokens > 0 {
 		e.Output = v.Usage.CompletionTokens
+	}
+	if v.UsageMetadata.PromptTokenCount > 0 {
+		e.Input = v.UsageMetadata.PromptTokenCount
+	}
+	if v.UsageMetadata.CandidatesTokenCount > 0 {
+		e.Output = v.UsageMetadata.CandidatesTokenCount
 	}
 }

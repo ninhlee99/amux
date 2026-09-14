@@ -25,10 +25,12 @@ type OpenAICompatibleAdapter struct {
 	APIKey      string
 	TargetModel string
 	HTTPClient  *http.Client
+	GroupLabel  string
 }
 
 func (a *OpenAICompatibleAdapter) ID() string    { return a.AdapterID }
 func (a *OpenAICompatibleAdapter) Priority() int { return a.PriorityLvl }
+func (a *OpenAICompatibleAdapter) Group() string { return a.GroupLabel }
 
 func (a *OpenAICompatibleAdapter) client() *http.Client {
 	if a.HTTPClient != nil {

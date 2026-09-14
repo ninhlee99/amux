@@ -509,14 +509,15 @@ func loginGitHubModels(f loginFlags) {
 	if model == "" {
 		model = "gpt-5.6-terra"
 	}
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+	cfg := provider.ProviderConfig{
 		ID:       id,
 		Type:     "openai_compatible",
 		Priority: priority,
 		BaseURL:  "https://models.github.ai/inference",
 		APIKey:   tok,
 		Model:    model,
-	})
+	}
+	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -552,14 +553,15 @@ func loginOpenAICompat(spec openAICompatSpec, f loginFlags) {
 	if multi {
 		priority = priorityFloor
 	}
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+	cfg := provider.ProviderConfig{
 		ID:       id,
 		Type:     "openai_compatible",
 		Priority: priority,
 		BaseURL:  spec.DefaultURL,
 		APIKey:   key,
 		Model:    model,
-	})
+	}
+	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return

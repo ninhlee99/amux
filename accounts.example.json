@@ -1,8 +1,11 @@
 {
+  "version": 2,
   "providers": [
     {
       "id": "github:api:01",
       "type": "openai_compatible",
+      "ide": "api",
+      "group": "api_other",
       "priority": 1,
       "baseUrl": "https://models.github.ai/inference",
       "apiKey": "env:GITHUB_MODELS_TOKEN",
@@ -11,14 +14,18 @@
     {
       "id": "gemini:api:01",
       "type": "openai_compatible",
+      "ide": "api",
+      "group": "api_other",
       "priority": 2,
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
       "apiKey": "env:GOOGLE_AI_STUDIO_KEY",
-      "model": "gemini-3.6-flash"
+      "model": "gemini-2.5-flash"
     },
     {
       "id": "groq:api:01",
       "type": "openai_compatible",
+      "ide": "api",
+      "group": "api_other",
       "priority": 3,
       "baseUrl": "https://api.groq.com/openai/v1",
       "apiKey": "env:GROQ_API_KEY",
@@ -27,6 +34,8 @@
     {
       "id": "kimi:api:01",
       "type": "openai_compatible",
+      "ide": "api",
+      "group": "api_other",
       "priority": 4,
       "baseUrl": "https://api.moonshot.cn/v1",
       "apiKey": "env:KIMI_API_KEY",
@@ -35,21 +44,45 @@
     {
       "id": "grok:api:01",
       "type": "openai_compatible",
+      "ide": "api",
+      "group": "api_other",
       "priority": 5,
       "baseUrl": "https://api.x.ai/v1",
       "apiKey": "env:XAI_API_KEY",
       "model": "grok-2-latest"
     },
     {
+      "id": "codex:01",
+      "type": "codex_cli",
+      "ide": "codex",
+      "group": "codex_sub",
+      "plan": "plus",
+      "priority": 2,
+      "model": "gpt-5-codex"
+    },
+    {
+      "id": "agy:01",
+      "type": "antigravity",
+      "ide": "agy",
+      "group": "agy_sub",
+      "plan": "pro",
+      "priority": 3,
+      "model": "gemini-2.5-pro"
+    },
+    {
       "id": "chatgpt:01",
       "type": "chatgpt_web",
-      "priority": 5,
+      "ide": "web",
+      "group": "chatgpt_web",
+      "priority": 8,
       "sessionToken": "env:CHATGPT_SESSION_TOKEN"
     },
     {
       "id": "claude:web:01",
       "type": "claude_web",
-      "priority": 6,
+      "ide": "web",
+      "group": "claude_web",
+      "priority": 9,
       "sessionKey": "env:CLAUDE_SESSION_KEY",
       "model": "claude-3-5-sonnet-20241022"
     }

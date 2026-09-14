@@ -179,6 +179,7 @@ func HookInstall() error {
 	AddHook(m, "SessionStart", fmt.Sprintf("%q hook claude start", self))
 	AddHook(m, "SessionEnd", fmt.Sprintf("%q hook claude stop", self))
 	AddHook(m, "Stop", fmt.Sprintf("%q hook claude stop", self))
+	InstallStatusLine(m, fmt.Sprintf("%q statusline", self))
 	return SaveClaudeSettings(m)
 }
 
@@ -210,6 +211,10 @@ func HookUninstall() (int, error) {
 			delete(m, "hooks")
 		}
 	}
+	if IsOurStatusLine(m) {
+		delete(m, "statusLine")
+		n++
+	}
 	return n, SaveClaudeSettings(m)
 }
 
@@ -226,6 +231,38 @@ func HookInstalled() bool {
 		}
 	}
 	return false
+}
+
+// InstallStatusLine writes Claude Code's statusLine command. Does not
+// overwrite a custom statusline the user already set (unless it is ours).
+func InstallStatusLine(m map[string]any, command string) {
+	if m == nil {
+		return
+	}
+	if existing, ok := m["statusLine"].(map[string]any); ok {
+		cmd, _ := existing["command"].(string)
+		if cmd != "" && !statusLineCommandIsOurs(cmd) {
+			return
+		}
+	}
+	m["statusLine"] = map[string]any{
+		"type":    "command",
+		"command": command,
+	}
+}
+
+func IsOurStatusLine(m map[string]any) bool {
+	sl, _ := m["statusLine"].(map[string]any)
+	if sl == nil {
+		return false
+	}
+	cmd, _ := sl["command"].(string)
+	return statusLineCommandIsOurs(cmd)
+}
+
+func statusLineCommandIsOurs(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	return strings.HasSuffix(cmd, " statusline") || strings.Contains(cmd, "\" statusline")
 }
 
 // InstalledEvents returns the hook events we currently own an entry in,
@@ -378,16 +415,24 @@ func GeminiHookInstall() error {
 			},
 		},
 	}
-	return SaveGeminiHooks(m)
+	if err := SaveGeminiHooks(m); err != nil {
+		return err
+	}
+	return installAGYStatusLine(self)
 }
 
 func GeminiHookUninstall() (int, error) {
+	n := 0
 	m := LoadGeminiHooks()
 	if _, ok := m["amux-proxy"]; ok {
 		delete(m, "amux-proxy")
-		return 1, SaveGeminiHooks(m)
+		if err := SaveGeminiHooks(m); err != nil {
+			return n, err
+		}
+		n++
 	}
-	return 0, nil
+	k, err := uninstallAGYStatusLine()
+	return n + k, err
 }
 
 func GeminiHookInstalled() bool {
@@ -449,7 +494,10 @@ func CodexHookInstall() error {
 	AddHook(m, "SessionStart", fmt.Sprintf("%q hook codex start", self))
 	AddHook(m, "SessionEnd", fmt.Sprintf("%q hook codex stop", self))
 	AddHook(m, "Stop", fmt.Sprintf("%q hook codex stop", self))
-	return SaveCodexHooks(m)
+	if err := SaveCodexHooks(m); err != nil {
+		return err
+	}
+	return installCodexStatusLine()
 }
 
 func CodexHookUninstall() (int, error) {
@@ -481,7 +529,11 @@ func CodexHookUninstall() (int, error) {
 			}
 		}
 	}
-	return n, SaveCodexHooks(m)
+	if err := SaveCodexHooks(m); err != nil {
+		return n, err
+	}
+	_ = uninstallCodexStatusLine()
+	return n, nil
 }
 
 func CodexHookInstalled() bool {

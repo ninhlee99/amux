@@ -578,6 +578,110 @@ func TestHandler_ResponsesEndpointRoutesToPool(t *testing.T) {
 	}
 }
 
+func TestHandler_AnthropicModelsPassthroughWhenCredentialPresent(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("X-Api-Key", "sk-test-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("Claude Code /v1/models should reverse-proxy, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_OpenAIModelsStaysLocal(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("OpenAI /v1/models should be local list, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"list"`) {
+		t.Errorf("expected OpenAI models list, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_AnthropicModelsFallbackWithoutUpstream(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pool-only Anthropic /v1/models should use local catalog, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"model"`) {
+		t.Errorf("expected Anthropic model catalog, got: %s", rec.Body.String())
+	}
+}
+
+func TestHandler_CountTokensPassthroughWhenCredentialPresent(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(
+		`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("X-Api-Key", "sk-test-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("count_tokens with Claude credential should reverse-proxy, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_CountTokensLocalEstimateWithoutUpstream(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(
+		`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pool-only count_tokens should estimate locally, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"input_tokens"`) {
+		t.Errorf("expected input_tokens estimate, got: %s", rec.Body.String())
+	}
+}
+
+func TestIsAnthropicClient(t *testing.T) {
+	anthropic := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	anthropic.Header.Set("anthropic-version", "2023-06-01")
+	if !isAnthropicClient(anthropic) {
+		t.Fatal("anthropic-version should mark Anthropic client")
+	}
+
+	claudeUA := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	claudeUA.Header.Set("User-Agent", "claude-cli/1.0")
+	if !isAnthropicClient(claudeUA) {
+		t.Fatal("claude-cli User-Agent should mark Anthropic client")
+	}
+
+	openai := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	openai.Header.Set("User-Agent", "OpenAI/Python")
+	if isAnthropicClient(openai) {
+		t.Fatal("OpenAI SDK must not be treated as Anthropic client")
+	}
+}
+
+func TestShouldObserveUpstream(t *testing.T) {
+	messages := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	if !shouldObserveUpstream(&http.Response{Request: messages}) {
+		t.Fatal("POST /v1/messages must Observe (quota)")
+	}
+
+	count := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	if shouldObserveUpstream(&http.Response{StatusCode: 429, Request: count}) {
+		t.Fatal("count_tokens 429 must not Observe/quarantine")
+	}
+
+	catalog := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	if shouldObserveUpstream(&http.Response{StatusCode: 401, Request: catalog}) {
+		t.Fatal("GET /v1/models must not Observe")
+	}
+}
+
 func TestDynamicProxyRoundTripper_WhitespaceProxyURLDoesNotPanic(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

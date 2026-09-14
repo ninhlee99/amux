@@ -74,3 +74,22 @@ func readSettingsEnv(t *testing.T) map[string]any {
 	}
 	return env
 }
+
+func TestInstallStatusLine_DoesNotOverwriteCustom(t *testing.T) {
+	m := map[string]any{
+		"statusLine": map[string]any{"type": "command", "command": "~/.claude/my-bar.sh"},
+	}
+	InstallStatusLine(m, `"/usr/bin/am" statusline`)
+	sl := m["statusLine"].(map[string]any)
+	if sl["command"] != "~/.claude/my-bar.sh" {
+		t.Fatalf("must not overwrite custom statusline, got %v", sl["command"])
+	}
+}
+
+func TestInstallStatusLine_WritesOurs(t *testing.T) {
+	m := map[string]any{}
+	InstallStatusLine(m, `"/usr/local/bin/am" statusline`)
+	if !IsOurStatusLine(m) {
+		t.Fatal("expected our statusline")
+	}
+}

@@ -31,6 +31,7 @@ type CodexCLIAdapter struct {
 	PriorityLvl int
 	TargetModel string
 	HTTPClient  *http.Client
+	GroupLabel  string
 }
 
 const (
@@ -45,6 +46,7 @@ const (
 
 func (a *CodexCLIAdapter) ID() string    { return a.AdapterID }
 func (a *CodexCLIAdapter) Priority() int { return a.PriorityLvl }
+func (a *CodexCLIAdapter) Group() string { return a.GroupLabel }
 
 // SupportsTools is false: Codex backend is a flattened text prompt.
 func (a *CodexCLIAdapter) SupportsTools() bool { return false }
@@ -307,6 +309,11 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 
 func isCodexCompatibleModel(m string) bool {
 	lower := strings.ToLower(m)
+	// ChatGPT Codex backend rejects GPT-4 class ids ("gpt-4o is not
+	// supported when using Codex with a ChatGPT account").
+	if strings.HasPrefix(lower, "gpt-4") {
+		return false
+	}
 	return strings.HasPrefix(lower, "gpt-") ||
 		strings.HasPrefix(lower, "o1") ||
 		strings.HasPrefix(lower, "o3") ||

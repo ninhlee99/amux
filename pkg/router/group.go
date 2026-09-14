@@ -43,6 +43,67 @@ var GroupPriority = []string{
 	GroupGeminiWeb,
 }
 
+// Client IDE that owns the inbound request. Native-IDE accounts are tried
+// first (main); every other group is failover proxy for that session.
+const (
+	IDEClaude = "claude"
+	IDECodex  = "codex"
+	IDEAGY    = "agy"
+)
+
+// IDEFromClientDialect maps a ChatRequest.ClientDialect (claude/codex/gemini/cursor)
+// onto the IDE whose subscription accounts should be main.
+func IDEFromClientDialect(dialect string) string {
+	switch strings.ToLower(strings.TrimSpace(dialect)) {
+	case "claude", "anthropic":
+		return IDEClaude
+	case "codex":
+		return IDECodex
+	case "gemini", "agy", "antigravity":
+		return IDEAGY
+	default:
+		// Cursor / generic OpenAI: no native subscription group — keep
+		// the global GroupPriority order.
+		return ""
+	}
+}
+
+// NativeGroups are the main (same-IDE) groups for an inbound client.
+func NativeGroups(ide string) []string {
+	switch ide {
+	case IDEClaude:
+		return []string{GroupClaudeSub, GroupClaudeFree}
+	case IDECodex:
+		return []string{GroupCodexSub, GroupCodexFree}
+	case IDEAGY:
+		return []string{GroupAGYSub, GroupAGYFree}
+	default:
+		return nil
+	}
+}
+
+// GroupPriorityForIDE puts this IDE's subscription/free groups first, then
+// every other group in the default order (those are proxy/failover).
+func GroupPriorityForIDE(ide string) []string {
+	native := NativeGroups(ide)
+	if len(native) == 0 {
+		return GroupPriority
+	}
+	seen := make(map[string]bool, len(native))
+	out := make([]string, 0, len(GroupPriority))
+	for _, g := range native {
+		out = append(out, g)
+		seen[g] = true
+	}
+	for _, g := range GroupPriority {
+		if seen[g] {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
 // GroupDisplayName returns a clean human-readable name for each group.
 func GroupDisplayName(group string) string {
 	switch group {

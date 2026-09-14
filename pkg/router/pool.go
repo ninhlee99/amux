@@ -332,18 +332,13 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		groupBuckets[grp] = append(groupBuckets[grp], a)
 	}
 
-	// Iterate group by group in standard priority order:
-	// 1. Claude subscription
-	// 2. Codex subscription
-	// 3. AGY subscription
-	// 4. Claude free
-	// 5. Codex free
-	// 6. AGY free
-	// 7. API other
-	// 8. Claude web
-	// 9. ChatGPT web
-	// 10. Gemini web
-	for _, grpKey := range GroupPriority {
+	// Native-IDE groups first (main), then every other group as failover
+	// proxy. Empty dialect keeps the global GroupPriority order.
+	ide := ""
+	if req != nil {
+		ide = IDEFromClientDialect(req.ClientDialect)
+	}
+	for _, grpKey := range GroupPriorityForIDE(ide) {
 		grpAdapters := groupBuckets[grpKey]
 		if len(grpAdapters) == 0 {
 			continue
