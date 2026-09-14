@@ -51,7 +51,9 @@ type AccountPoolRouter struct {
 	adapters     []types.ProviderAdapter
 	directory    map[string]types.ProviderAdapter
 	preferred    string
+	manualPin    bool // true only after `am sw` / SetPreferred — auto leftover must not steal new sessions
 	lastUsed     string
+	sessionRR    int // round-robin cursor for new-session load balance
 	mu           sync.RWMutex
 	cooldownMap  map[string]time.Time
 	groupIndices map[string]int
@@ -144,12 +146,29 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	return ch, nil
 }
 
-// SetPreferred sets the active/pinned adapter shown in status and tried
-// first by Send. Auto-failover also calls this so status tracks reality.
+// SetPreferred sets a MANUAL pin (`am sw <provider>`). New sessions stick
+// to this adapter until cleared or failed over. Auto-failover leftovers
+// must not call this — use markUsed(promote) which clears manualPin.
 func (r *AccountPoolRouter) SetPreferred(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.preferred = id
+	r.manualPin = strings.TrimSpace(id) != ""
+}
+
+// ClearPreferred drops the manual pin so session load-balance resumes.
+func (r *AccountPoolRouter) ClearPreferred() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.preferred = ""
+	r.manualPin = false
+}
+
+// ManualPin reports whether preferred came from `am sw` (not auto-switch).
+func (r *AccountPoolRouter) ManualPin() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.manualPin
 }
 
 // ConversationResetter is implemented by web adapters that keep a
@@ -230,17 +249,20 @@ func (r *AccountPoolRouter) usableToolBackend(adapters []types.ProviderAdapter) 
 	return false
 }
 
-// Send tries adapters in priority order. With a preferred pin (`am sw`):
-// try that adapter first; on rate-limit only, fail over and promote the
-// winner to preferred so status shows the auto-switch. Other errors stay
-// pinned (no silent jump to Gemini). Without a pin: normal priority
-// failover, and any failover winner is promoted to preferred.
+// Send tries adapters in priority order.
 //
-// Client tool loops (Claude Code / Cursor / Codex) send tools[]. Text-only
-// backends cannot emit native tool_use — skip them in Send when a usable
-// API/native adapter exists. If the pool is web-only (or every native
-// backend is cooling/quarantined), last-resort is web + MaybeWrapWebStream.
-// SendNamed (X-Provider) always pins, including Codex CLI / web.
+// Routing precedence:
+//  1. Session affinity pin (same tool-loop stays on one account)
+//  2. Manual `am sw` preferred pin
+//  3. New-session round-robin across living proxy layers (codex / AGY /
+//     claude-web / chatgpt-web / gemini-web, then API) — never Claude sub
+//  4. Group failover order (Claude IDE skips Claude subscription groups)
+//
+// Auto-switch leftovers update status preferred but do NOT steal new
+// sessions (manualPin=false). SendNamed (X-Provider) always pins.
+//
+// Client tool loops send tools[]. Text-only backends are skipped when a
+// usable native adapter exists; otherwise last-resort is web + MaybeWrapWebStream.
 func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -250,18 +272,41 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 
 	r.mu.RLock()
 	preferredID := r.preferred
+	manual := r.manualPin
 	adapters := make([]types.ProviderAdapter, len(r.adapters))
 	copy(adapters, r.adapters)
 	r.mu.RUnlock()
 
 	sessionKey := guard.ExtractSessionKey(nil, req)
-	if preferredID == "" && sessionKey != "" {
+	nativeAvailable := r.usableToolBackend(adapters)
+
+	// 1. Affinity wins for an in-flight session (unless account is dead).
+	if sessionKey != "" {
 		if pinned, ok := guard.GlobalAffinity().GetPinned(sessionKey); ok {
-			preferredID = pinned
+			if alive := r.adapterAlive(adapters, pinned, req, nativeAvailable); alive != nil {
+				preferredID = pinned
+				manual = true // treat affinity as sticky for this request
+			} else {
+				guard.GlobalAffinity().Unpin(sessionKey)
+			}
 		}
 	}
 
-	nativeAvailable := r.usableToolBackend(adapters)
+	// 2. Manual `am sw` pin only — auto leftover preferred is ignored for new sessions.
+	if !manual {
+		preferredID = ""
+	}
+
+	// 3. New session WITH a session key: round-robin assign a living proxy
+	// account and pin it. Anonymous requests (no session) keep group-order
+	// failover below so existing priority behavior stays intact.
+	if preferredID == "" && sessionKey != "" {
+		if a := r.pickSessionAdapter(adapters, req, nativeAvailable); a != nil {
+			preferredID = a.ID()
+			guard.GlobalAffinity().Pin(sessionKey, preferredID)
+		}
+	}
+
 	var errs []error
 	var skippedPreferred bool
 
@@ -297,7 +342,8 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				if sessionKey != "" {
 					guard.GlobalAffinity().Pin(sessionKey, a.ID())
 				}
-				r.markUsed(a.ID(), true)
+				// Preferred hit: keep manualPin as-is (am sw stays sticky).
+				r.markUsed(a.ID(), false)
 				return ch, nil
 			}
 			guard.RecordError(a.ID(), err)
@@ -319,9 +365,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		}
 		if !skippedPreferred && len(errs) == 0 {
 			log.Printf("router: preferred adapter %q not in pool — clearing preference", preferredID)
-			r.mu.Lock()
-			r.preferred = ""
-			r.mu.Unlock()
+			r.ClearPreferred()
 		}
 	}
 
@@ -332,13 +376,11 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		groupBuckets[grp] = append(groupBuckets[grp], a)
 	}
 
-	// Native-IDE groups first (main), then every other group as failover
-	// proxy. Empty dialect keeps the global GroupPriority order.
 	ide := ""
 	if req != nil {
 		ide = IDEFromClientDialect(req.ClientDialect)
 	}
-	for _, grpKey := range GroupPriorityForIDE(ide) {
+	for _, grpKey := range ProxyGroupsForClient(ide) {
 		grpAdapters := groupBuckets[grpKey]
 		if len(grpAdapters) == 0 {
 			continue
@@ -377,17 +419,18 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				if sessionKey != "" {
 					guard.GlobalAffinity().Pin(sessionKey, a.ID())
 				}
-				// Advance round-robin index within this group for subsequent turns
 				r.mu.Lock()
 				r.groupIndices[grpKey] = (currIdx + 1) % len(grpAdapters)
 				r.mu.Unlock()
 
 				was := preferredID
-				r.markUsed(a.ID(), was != "")
+				// Failover from a manual pin promotes status preferred but
+				// clears manualPin so the next NEW session re-balances.
+				r.markUsed(a.ID(), was != "" && manual)
 				if was != "" && was != a.ID() {
-					term.LogPool("auto-switch %s → %s [%s]", was, a.ID(), GroupDisplayName(grpKey))
+					term.LogPool("auto-switch %s → %s [%s · %s]", was, a.ID(), GroupDisplayName(grpKey), RoleForGroup(grpKey))
 				} else if was == "" {
-					term.LogPool("active provider → %s [%s]", a.ID(), GroupDisplayName(grpKey))
+					term.LogPool("active provider → %s [%s · %s]", a.ID(), GroupDisplayName(grpKey), RoleForGroup(grpKey))
 				}
 				return ch, nil
 			}
@@ -403,6 +446,39 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		return nil, fmt.Errorf("router: no adapters configured, or all in cooldown")
 	}
 	return nil, errors.Join(errs...)
+}
+
+func (r *AccountPoolRouter) adapterAlive(adapters []types.ProviderAdapter, id string, req *types.ChatRequest, nativeAvailable bool) types.ProviderAdapter {
+	for _, a := range adapters {
+		if a.ID() != id {
+			continue
+		}
+		if skipTextOnly(a, req, nativeAvailable) {
+			return nil
+		}
+		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+			return nil
+		}
+		if r.cooling(a.ID()) {
+			return nil
+		}
+		return a
+	}
+	return nil
+}
+
+// pickSessionAdapter returns the next living proxy-layer adapter for a new
+// session (round-robin). Nil when the pool is empty / all cooling.
+func (r *AccountPoolRouter) pickSessionAdapter(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) types.ProviderAdapter {
+	living := r.livingForSessionBalance(adapters, req, nativeAvailable)
+	if len(living) == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	idx := r.sessionRR % len(living)
+	r.sessionRR++
+	r.mu.Unlock()
+	return living[idx]
 }
 
 func (r *AccountPoolRouter) cooling(id string) bool {
@@ -424,14 +500,16 @@ func (r *AccountPoolRouter) setCooldown(id string) {
 	r.cooldownMap[id] = time.Now().Add(rateLimitCooldown)
 }
 
-// markUsed records lastUsed; when promote is true also sets preferred so
-// `am status` shows the auto-switched adapter as active.
+// markUsed records lastUsed; when promote is true also updates preferred
+// for status display and CLEARS manualPin so auto leftovers do not steal
+// the next new session (only `am sw` / SetPreferred sets manualPin).
 func (r *AccountPoolRouter) markUsed(id string, promote bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastUsed = id
 	if promote {
 		r.preferred = id
+		r.manualPin = false
 	}
 }
 
@@ -450,8 +528,10 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 			"priority":      a.Priority(),
 			"group":         grp,
 			"group_display": GroupDisplayName(grp),
+			"role":          RoleForGroup(grp),
 			"cooling":       cooling,
 			"preferred":     a.ID() == r.preferred,
+			"manual_pin":    a.ID() == r.preferred && r.manualPin,
 			"last_used":     a.ID() == r.lastUsed,
 			"in_pool":       true,
 			"health_score":  report.Score,
@@ -496,6 +576,7 @@ func (r *AccountPoolRouter) Reload(adapters []types.ProviderAdapter) {
 		}
 		if !found {
 			r.preferred = ""
+			r.manualPin = false
 		}
 	}
 }

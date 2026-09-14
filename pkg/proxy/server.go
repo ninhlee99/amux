@@ -355,7 +355,15 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	})
 
 	mux.HandleFunc("/_am/switch-provider", func(w http.ResponseWriter, r *http.Request) {
-		name := r.URL.Query().Get("to")
+		name := strings.TrimSpace(r.URL.Query().Get("to"))
+		if name == "" {
+			chatPool.ClearPreferred()
+			toolPool.ClearPreferred()
+			mode.Set("provider")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"active": "", "mode": "provider", "pin": "cleared"})
+			return
+		}
 		chatPool.SetPreferred(name)
 		toolPool.SetPreferred(name)
 		// Keep each provider's persisted conversation. A manual provider switch

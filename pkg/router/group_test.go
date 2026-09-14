@@ -28,7 +28,7 @@ func (m *mockGroupAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		return nil, types.ErrRateLimitReached
 	}
 	ch := make(chan types.StreamChunk, 1)
-	ch <- types.StreamChunk{Content: fmt.Sprintf("response from %s", m.id), Done: true}
+	ch <- types.StreamChunk{ID: m.id, Content: fmt.Sprintf("response from %s", m.id), Done: true}
 	close(ch)
 	return ch, nil
 }
@@ -204,21 +204,27 @@ func TestIDEFromClientDialect(t *testing.T) {
 	}
 }
 
-func TestAccountPoolRouter_ClaudeDialectPrefersClaudeSub(t *testing.T) {
+func TestAccountPoolRouter_ClaudeDialectSkipsClaudeSubProxy(t *testing.T) {
+	// Claude IDE client must use other accounts as proxy — never Claude subscription.
 	codex := &mockGroupAdapter{id: "codex:dialect:01", priority: 1, group: GroupCodexSub}
 	claude := &mockGroupAdapter{id: "claude:dialect:01", priority: 9, group: GroupClaudeSub}
 	r := NewAccountPoolRouter([]types.ProviderAdapter{codex, claude})
 	req := &types.ChatRequest{
 		ClientDialect: "claude",
+		SessionID:     "claude-ide-skip-sub",
 		Messages:      []types.ChatMessage{{Role: "user", Content: "hi"}},
 	}
+	guard.GlobalAffinity().Unpin(req.SessionID)
 	ch, err := r.Send(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	chunk := <-ch
-	if chunk.Content != "response from claude:dialect:01" {
-		t.Fatalf("claude IDE should use claude_sub first, got %s", chunk.Content)
+	if chunk.Content != "response from codex:dialect:01" {
+		t.Fatalf("claude IDE must proxy via non-subscription account, got %s", chunk.Content)
+	}
+	if claude.callCount != 0 {
+		t.Fatalf("claude subscription must not be called as pool proxy, calls=%d", claude.callCount)
 	}
 }
 

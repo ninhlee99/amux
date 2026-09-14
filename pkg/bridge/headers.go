@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
@@ -182,6 +183,11 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 		}
 	}
 	injectBtwMessages(req)
+	if req != nil && strings.TrimSpace(req.SessionID) == "" {
+		if sk := guard.ExtractSessionKey(r, req); sk != "" {
+			req.SessionID = sk
+		}
+	}
 	if id := explicitProviderHeaders(r, req); id != "" {
 		return pool.SendNamed(r.Context(), id, req)
 	}
