@@ -38,6 +38,8 @@ type ProviderConfig struct {
 	// recognize re-logins of the same person so credentials update in place
 	// under a stable ID like "claude:web:ninhle".
 	Account string `json:"account,omitempty"`
+	// Plan indicates subscription tier ("pro", "plus", "team", "free").
+	Plan string `json:"plan,omitempty"`
 
 	// openai_compatible & gemini
 	BaseURL string `json:"baseUrl,omitempty"`
@@ -451,7 +453,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 	case "gemini":
 		model := p.Model
 		if model == "" {
-			model = "gemini-3.6-flash"
+			model = "gemini-3.8-flash"
 		}
 		g := NewGeminiAdapter(p.ID, p.Priority, ResolveSecret(p.APIKey), model)
 		if proxyClient != nil {
@@ -496,6 +498,18 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			HTTPClient:   proxyClient,
 			cid:          p.ConversationID,
 			metadataJSON: p.MetadataJSON,
+		}, nil
+
+	case "codex_cli":
+		model := p.Model
+		if model == "" {
+			model = codexDefaultModel
+		}
+		return &CodexCLIAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			TargetModel: model,
+			HTTPClient:  proxyClient,
 		}, nil
 
 	default:
@@ -572,21 +586,31 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 		}
 	}
 
-	if a := codexPoolAdapter(providers); a != nil {
-		if rotateOnly {
-			adapters = append(adapters, a)
-		} else {
-			// Always include codex when credentials exist unless explicit opt-out
-			// and rotateOnly — for addressable, include even if disabled? If
-			// Enabled:false, codexPoolAdapter returns nil. Build manually:
-			adapters = append(adapters, a)
+	hasCodex := false
+	for _, a := range adapters {
+		if _, ok := a.(*CodexCLIAdapter); ok {
+			hasCodex = true
+			break
 		}
-	} else if !rotateOnly && CodexAuthAvailable() {
-		// Out-of-pool codex still addressable via X-Provider.
-		for i := range providers {
-			if providers[i].Type == "codex_cli" && providers[i].Enabled != nil && !*providers[i].Enabled {
-				adapters = append(adapters, &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: providers[i].Priority})
-				break
+	}
+
+	if !hasCodex {
+		if a := codexPoolAdapter(providers); a != nil {
+			if rotateOnly {
+				adapters = append(adapters, a)
+			} else {
+				// Always include codex when credentials exist unless explicit opt-out
+				// and rotateOnly — for addressable, include even if disabled? If
+				// Enabled:false, codexPoolAdapter returns nil. Build manually:
+				adapters = append(adapters, a)
+			}
+		} else if !rotateOnly && CodexAuthAvailable() {
+			// Out-of-pool codex still addressable via X-Provider.
+			for i := range providers {
+				if providers[i].Type == "codex_cli" && providers[i].Enabled != nil && !*providers[i].Enabled {
+					adapters = append(adapters, &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model})
+					break
+				}
 			}
 		}
 	}
@@ -622,6 +646,7 @@ func codexPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 	}
 
 	priority := PriorityWebCodex // web-session tier; after API keys
+	model := codexDefaultModel
 	for i := range providers {
 		if providers[i].Type != "codex_cli" {
 			continue
@@ -630,10 +655,13 @@ func codexPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 			return nil // explicit opt-out
 		}
 		priority = providers[i].Priority
+		if providers[i].Model != "" {
+			model = providers[i].Model
+		}
 		break
 	}
 
-	return &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: priority}
+	return &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: priority, TargetModel: model}
 }
 
 // CodexAutoRow returns a synthetic display row for the auto-surfaced Codex
@@ -647,7 +675,7 @@ func CodexAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
 	if !ok || a == nil {
 		return ProviderConfig{}, false
 	}
-	return ProviderConfig{ID: a.AdapterID, Type: "codex_cli", Priority: a.PriorityLvl}, true
+	return ProviderConfig{ID: a.AdapterID, Type: "codex_cli", Priority: a.PriorityLvl, Model: a.TargetModel}, true
 }
 
 // codexPoolID resolves the unified ID of the currently active codex
@@ -837,6 +865,7 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 	}
 
 	updated := false
+	// 1. Match by exact ID
 	for i, existing := range f.Providers {
 		if existing.ID == p.ID {
 			f.Providers[i] = p
@@ -844,9 +873,42 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 			break
 		}
 	}
+
+	// 2. Match by Account identity (same provider type + same account email)
+	if !updated && strings.TrimSpace(p.Account) != "" {
+		for i, existing := range f.Providers {
+			if existing.Type == p.Type && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
+				targetID := existing.ID
+				p.ID = targetID
+				f.Providers[i] = p
+				updated = true
+				break
+			}
+		}
+	}
+
 	if !updated {
 		f.Providers = append(f.Providers, p)
 	}
+
+	// 3. Deduplicate: ensure only one row exists per (Type, Account)
+	var unique []ProviderConfig
+	seen := map[string]bool{}
+	for _, row := range f.Providers {
+		key := ""
+		if strings.TrimSpace(row.Account) != "" {
+			key = row.Type + ":" + strings.ToLower(strings.TrimSpace(row.Account))
+		}
+		if key != "" {
+			if seen[key] {
+				continue // deduplicate redundant entry
+			}
+			seen[key] = true
+		}
+		unique = append(unique, row)
+	}
+	f.Providers = unique
+
 	return SaveConfigFile(path, f)
 }
 

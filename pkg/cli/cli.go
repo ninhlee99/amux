@@ -648,6 +648,23 @@ func cmdAdd(tool, name string) {
 	if acct == "" {
 		die("still can't detect a %s login", tool)
 	}
+	plan := profile.DetectPlan(spec)
+	if tool == "claude" {
+		if plan == "free" {
+			fmt.Printf("⚠️ Account %s appears to be a FREE tier account (not Claude Pro/Team).\n", acct)
+			fmt.Printf("   Note: Official Claude Code CLI requires a paid subscription.\n")
+			fmt.Printf("   👉 To use this free account via amux proxy, use: am login claude\n")
+		} else {
+			fmt.Printf("✨ Detected Claude Pro/Team subscription for %s.\n", acct)
+		}
+	} else if tool == "codex" {
+		if plan == "pro" {
+			fmt.Printf("✨ Detected OpenAI ChatGPT Subscription (Plus/Pro/Team) for %s.\n", acct)
+		} else {
+			fmt.Printf("ℹ️ Detected OpenAI Free tier for %s.\n", acct)
+		}
+	}
+
 	if existing := profile.ProfileNameForAccount(tool, acct); existing != "" {
 		pName := existing
 		if name != "" {
@@ -657,7 +674,7 @@ func cmdAdd(tool, name string) {
 		if _, err := profile.CmdSave(tool, pName); err != nil {
 			die("update failed: %v", err)
 		}
-		fmt.Printf("Updated profile %q (%s).\n", pName, acct)
+		fmt.Printf("Updated profile %q (%s, plan: %s).\n", pName, acct, plan)
 		return
 	}
 	pName := profileName(name, acct)
@@ -665,7 +682,7 @@ func cmdAdd(tool, name string) {
 	if _, err := profile.CmdSave(tool, pName); err != nil {
 		die("save failed: %v", err)
 	}
-	fmt.Printf("Saved new profile %q (%s).\n", pName, acct)
+	fmt.Printf("Saved new profile %q (%s, plan: %s).\n", pName, acct, plan)
 }
 
 func profileName(name, acct string) string {

@@ -26,17 +26,6 @@ amux/
 │
 ├── commands/                       # Slash command templates cho Claude Code
 │   └── feedback.md                 # Template lệnh /am:feedback
-│
-├── docs/                           # Tài liệu thiết kế chuyên sâu & báo cáo
-│   ├── token-compression.md        # Thiết kế lớp nén ngữ cảnh và tối ưu hóa token
-│   └── reports/                    # Báo cáo đối chiếu và inventory công cụ
-│       ├── index.html              # Báo cáo tổng hợp
-│       ├── inventory.html / .md    # Danh mục tính năng & adapters
-│       ├── claude-code-tools.html  # Phân tích công cụ Claude Code
-│       ├── antigravity-tools.html  # Phân tích công cụ Antigravity (AGY)
-│       ├── codex-tools.html        # Phân tích công cụ Codex CLI
-│       └── cursor-tools.html       # Phân tích công cụ Cursor IDE
-│
 └── pkg/
     ├── cli/                        # [ENTRYPOINT] Bộ phân phối lệnh CLI
     │   ├── cli.go                  # Dispatcher chính, flags, setup, run, proxy, logs...

@@ -381,7 +381,7 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 
 	models := []string{
 		"gpt-4o", "gpt-4o-mini", "o1", "o1-mini",
-		"gemini-3.6-flash", "gemini-2.5-pro", "gemini-2.5-flash",
+		"gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-pro", "gemini-2.5-flash",
 		"claude-3-5-sonnet-20241022", "claude-3-haiku-20240307",
 		"llama-3.3-70b-versatile", "mixtral-8x7b-32768",
 	}

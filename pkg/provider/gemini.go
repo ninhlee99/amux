@@ -15,7 +15,7 @@ import (
 const (
 	googleAIStudioBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-	DefaultGeminiFlashModel = "gemini-2.5-flash"
+	DefaultGeminiFlashModel = "gemini-3.8-flash"
 	DefaultGeminiProModel   = "gemini-3.1-pro-preview"
 )
 

@@ -13,9 +13,10 @@ import (
 // ClaudeAccount is the useful subset of GET https://claude.ai/api/account.
 type ClaudeAccount struct {
 	Email string
+	Plan  string // "pro" | "free"
 }
 
-// FetchClaudeAccount loads the signed-in account email from claude.ai using
+// FetchClaudeAccount loads the signed-in account email and plan from claude.ai using
 // a sessionKey (and optional full Cookie header for Cloudflare jars).
 func FetchClaudeAccount(sessionKey, cookieHeader string) (*ClaudeAccount, error) {
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -56,10 +57,47 @@ func FetchClaudeAccount(sessionKey, cookieHeader string) (*ClaudeAccount, error)
 	if email == "" {
 		return nil, fmt.Errorf("no email in account response")
 	}
-	return &ClaudeAccount{Email: email}, nil
+	plan := parseClaudeAccountPlan(body)
+	return &ClaudeAccount{Email: email, Plan: plan}, nil
+}
+
+func parseClaudeAccountPlan(body []byte) string {
+	var doc struct {
+		Memberships []struct {
+			Organization struct {
+				BillingType               string `json:"billing_type"`
+				AnalyticsSubscriptionPlan string `json:"analytics_subscription_plan"`
+			} `json:"organization"`
+		} `json:"memberships"`
+	}
+	if err := json.Unmarshal(body, &doc); err == nil {
+		for _, m := range doc.Memberships {
+			plan := strings.ToLower(m.Organization.AnalyticsSubscriptionPlan)
+			billing := strings.ToLower(m.Organization.BillingType)
+			if plan == "claude_pro" || plan == "claude_team" || plan == "claude_enterprise" {
+				return "pro"
+			}
+			if strings.Contains(billing, "stripe") && !strings.Contains(plan, "free") {
+				return "pro"
+			}
+		}
+	}
+	return "free"
 }
 
 func parseClaudeAccountEmail(body []byte) string {
+	var top struct {
+		EmailAddress string `json:"email_address"`
+		Email        string `json:"email"`
+	}
+	if err := json.Unmarshal(body, &top); err == nil {
+		if e := strings.TrimSpace(top.EmailAddress); e != "" {
+			return e
+		}
+		if e := strings.TrimSpace(top.Email); e != "" {
+			return e
+		}
+	}
 	var flat struct {
 		Email string `json:"email"`
 	}
@@ -84,3 +122,4 @@ func parseClaudeAccountEmail(body []byte) string {
 	}
 	return ""
 }
+

@@ -34,6 +34,8 @@ type ProfileMeta struct {
 	Disabled bool `json:"disabled,omitempty"`
 	// Proxy specifies an egress proxy URL (http://, https://, socks5://) for this profile.
 	Proxy string `json:"proxy,omitempty"`
+	// Plan indicates subscription tier ("pro", "team", "free").
+	Plan string `json:"plan,omitempty"`
 	// ID is a short handle like "claude1", assigned by position when listed.
 	ID string `json:"-"`
 }

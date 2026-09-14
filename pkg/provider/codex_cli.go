@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
 
@@ -28,6 +29,7 @@ import (
 type CodexCLIAdapter struct {
 	AdapterID   string // e.g. "codexcli:01" — the active codex profile's unified ID
 	PriorityLvl int
+	TargetModel string
 	HTTPClient  *http.Client
 }
 
@@ -37,7 +39,7 @@ const (
 	// Public client_id Codex CLI itself uses for its device/refresh OAuth
 	// flow — not a secret, it's baked into the open-source codex binary.
 	codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexDefaultModel  = "gpt-5-codex"
+	codexDefaultModel  = "gpt-5.6-terra"
 	codexRefreshLead   = 2 * time.Minute
 )
 
@@ -211,10 +213,54 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 		}
 	}
 
-	prompt := BuildConcatenatedPrompt(req.Messages)
+	var inputList []map[string]any
+	if len(req.Tools) > 0 || req.FullContext {
+		prompt := WebBackendPrompt(req, false)
+		if prompt == "" {
+			prompt = "Hello"
+		}
+		inputList = []map[string]any{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		}
+	} else {
+		for _, m := range req.Messages {
+			role := m.Role
+			if role == "" || role == "tool" {
+				role = "user"
+			}
+			inputList = append(inputList, map[string]any{
+				"role":    role,
+				"content": m.Content,
+			})
+		}
+		if len(inputList) == 0 {
+			prompt := BuildConcatenatedPrompt(req.Messages)
+			if prompt == "" {
+				prompt = "Hello"
+			}
+			inputList = []map[string]any{
+				{
+					"role":    "user",
+					"content": prompt,
+				},
+			}
+		}
+	}
+
+	model := codexDefaultModel
+	if a.TargetModel != "" {
+		model = a.TargetModel
+	}
+	if req.Model != "" && req.Model != "default" && isCodexCompatibleModel(req.Model) {
+		model = req.Model
+	}
 	payload := map[string]any{
-		"model":  codexDefaultModel,
-		"input":  prompt,
+		"model":  model,
+		"input":  inputList,
+		"store":  false,
 		"stream": true,
 	}
 	b, err := json.Marshal(payload)
@@ -256,7 +302,16 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 
 	out := make(chan types.StreamChunk)
 	go streamCodexResponses(ctx, a.AdapterID, resp, out)
-	return out, nil
+	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
+}
+
+func isCodexCompatibleModel(m string) bool {
+	lower := strings.ToLower(m)
+	return strings.HasPrefix(lower, "gpt-") ||
+		strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3") ||
+		strings.HasPrefix(lower, "o4") ||
+		strings.HasPrefix(lower, "codex")
 }
 
 // streamCodexResponses parses the Responses-API SSE event shape
