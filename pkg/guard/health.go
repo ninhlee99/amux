@@ -177,6 +177,22 @@ func (h *HealthTracker) RecordError(id string, err error) {
 	}
 
 	errStr := strings.ToLower(err.Error())
+
+	// Payload-specific limits (context length / token limit / model support) are client/request mismatches,
+	// NOT account health degradations.
+	if strings.Contains(errStr, "context_length") || strings.Contains(errStr, "context length") ||
+		strings.Contains(errStr, "reduce the length") || strings.Contains(errStr, "exceeds this model's context") ||
+		strings.Contains(errStr, "not supported when using codex") {
+		return
+	}
+
+	// Cloudflare / Turnstile challenges are anti-bot / rate-limiting barriers, not invalid credentials
+	if strings.Contains(errStr, "cloudflare") || strings.Contains(errStr, "challenge-platform") ||
+		strings.Contains(errStr, "cf_chl") || strings.Contains(errStr, "turnstile") {
+		h.RecordRateLimit(id, 5*time.Minute)
+		return
+	}
+
 	if strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") {
 		h.RecordRateLimit(id, 0)
 		return

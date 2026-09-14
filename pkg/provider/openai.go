@@ -48,9 +48,10 @@ func (a *OpenAICompatibleAdapter) SendMessageStream(ctx context.Context, req *ty
 
 	// Auto-escalation for Google AI Studio / Gemini endpoint when heavy/analytical task is detected
 	if strings.Contains(a.BaseURL, "generativelanguage.googleapis.com") {
-		if strings.EqualFold(req.TargetTier, "pro") || req.Thinking {
+		// Only escalate to Pro if no client tools are active (Google's OpenAI endpoint enforces thought_signature on Pro function calls)
+		if (strings.EqualFold(req.TargetTier, "pro") || req.Thinking) && len(req.Tools) == 0 {
 			if strings.Contains(body.Model, "flash") || strings.Contains(body.Model, "claude") {
-				body.Model = "gemini-3.1-pro-preview"
+				body.Model = DefaultGeminiProModel
 				log.Printf("%s: heavy/analytical task -> auto-switched Gemini model from %s to %s", a.AdapterID, a.TargetModel, body.Model)
 			}
 		}

@@ -190,8 +190,12 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		}
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
-			if text != "" {
-				out <- types.StreamChunk{ID: id, Content: text, LogText: text}
+			cleanText := text
+			if strings.Contains(text, "<tool_call>") || strings.Contains(text, "[tool_call") || strings.Contains(text, "<<<AMUX_TOOL") {
+				cleanText = StripWebToolMarkup(text)
+			}
+			if cleanText != "" {
+				out <- types.StreamChunk{ID: id, Content: cleanText, LogText: text}
 			}
 			out <- types.StreamChunk{ID: id, Done: true, LogText: text}
 			return
@@ -677,6 +681,47 @@ func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
 	return out
 }
 
+func repairJSON(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s) + 64)
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			sb.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			sb.WriteByte(c)
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			sb.WriteByte(c)
+			continue
+		}
+		if inString {
+			if c == '\n' {
+				sb.WriteString(`\n`)
+				continue
+			}
+			if c == '\r' {
+				sb.WriteString(`\r`)
+				continue
+			}
+			if c == '\t' {
+				sb.WriteString(`\t`)
+				continue
+			}
+		}
+		sb.WriteByte(c)
+	}
+	return sb.String()
+}
+
 func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	raw = reTrailComma.ReplaceAllString(raw, "$1")
@@ -687,7 +732,27 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 		Input     json.RawMessage `json:"input"`
 	}
 	if json.Unmarshal([]byte(raw), &probe) != nil || probe.Name == "" {
-		return "", "", "", false
+		repaired := repairJSON(raw)
+		repaired = reTrailComma.ReplaceAllString(repaired, "$1")
+		if json.Unmarshal([]byte(repaired), &probe) != nil || probe.Name == "" {
+			// Fallback: extract name, id, and command/args via regex
+			reName := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
+			if m := reName.FindStringSubmatch(raw); len(m) > 1 {
+				name = m[1]
+				reID := regexp.MustCompile(`"id"\s*:\s*"([^"]+)"`)
+				if mid := reID.FindStringSubmatch(raw); len(mid) > 1 {
+					id = mid[1]
+				}
+				reCmd := regexp.MustCompile(`(?s)"command"\s*:\s*"(.*?)"\s*\}*\s*\}*$`)
+				if mcmd := reCmd.FindStringSubmatch(raw); len(mcmd) > 1 {
+					cmd := mcmd[1]
+					b, _ := json.Marshal(map[string]string{"command": cmd})
+					return name, id, string(b), true
+				}
+				return name, id, "{}", true
+			}
+			return "", "", "", false
+		}
 	}
 	a := probe.Arguments
 	if len(a) == 0 {

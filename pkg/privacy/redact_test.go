@@ -327,3 +327,128 @@ func TestPrivateIPPreserved(t *testing.T) {
 		t.Fatalf("expected test-net sample: %s", out)
 	}
 }
+
+func TestRedactBytes_PreservesMCPToolsAndSkills(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-3-7-sonnet-20250219",
+		"system": "You are Claude Code with skill /Users/ninh.le/.claude/skills/antigravity and MCP tools.",
+		"messages": [
+			{"role": "user", "content": "Please query supabase db using mcp. My key is sk-ant-api03-SECRETKEY1234567890abcdef and token ghp_ABCDEF1234567890abcdefghij at /Users/ninh.le/project"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01mcp123", "name": "mcp__supabase__list_tables", "input": {"schema": "public"}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01mcp123", "content": "table: users (id int, email text)"}
+			]}
+		],
+		"tools": [
+			{
+				"name": "mcp__supabase__list_tables",
+				"description": "Lists tables from Supabase database",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"schema": {"type": "string", "description": "Database schema"}
+					}
+				}
+			},
+			{
+				"name": "Bash",
+				"description": "Execute local shell command",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"command": {"type": "string"}
+					}
+				}
+			}
+		]
+	}`)
+
+	if !json.Valid(body) {
+		t.Fatal("invalid test json fixture")
+	}
+
+	out, res := RedactBytes(body)
+	if !json.Valid(out) {
+		t.Fatalf("redacted json is invalid: %s", out)
+	}
+
+	s := string(out)
+
+	// Secrets must be redacted
+	if strings.Contains(s, "SECRETKEY1234567890") || strings.Contains(s, "ghp_ABCDEF") {
+		t.Fatalf("secret leaked in redacted payload: %s", s)
+	}
+	if res.Len() == 0 {
+		t.Fatal("expected secret redactions in user content")
+	}
+
+	// MCP tool definitions must NOT be mutated
+	if !strings.Contains(s, `"name":"mcp__supabase__list_tables"`) {
+		t.Fatalf("mcp tool definition mutated: %s", s)
+	}
+	if !strings.Contains(s, `"name":"Bash"`) {
+		t.Fatalf("native tool definition mutated: %s", s)
+	}
+
+	// Tool call and tool result must NOT be mutated
+	if !strings.Contains(s, `"id":"toolu_01mcp123"`) || !strings.Contains(s, `"tool_use_id":"toolu_01mcp123"`) {
+		t.Fatalf("tool IDs mutated: %s", s)
+	}
+	if !strings.Contains(s, "table: users (id int, email text)") {
+		t.Fatalf("tool_result content mutated: %s", s)
+	}
+
+	// Skill path and workspace path must NOT be broken
+	if !strings.Contains(s, "/Users/ninh.le/.claude/skills/antigravity") {
+		t.Fatalf("skill path corrupted: %s", s)
+	}
+	if !strings.Contains(s, "/Users/ninh.le/project") {
+		t.Fatalf("workspace path corrupted: %s", s)
+	}
+}
+
+func TestRedactChatRequest_OpenAIToolFormat(t *testing.T) {
+	req := &types.ChatRequest{
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "Run tool with secret sk-ant-api03-SECRETKEY1234567890abcdef at /Users/ninh.le/code"},
+			{
+				Role: "assistant",
+				ToolCalls: []types.ToolCall{
+					{ID: "call_mcp_1", Name: "mcp__github__search_issues", Arguments: `{"query":"repo:amux"}`},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_mcp_1", Content: `[{"issue": 1, "title": "password reset bug"}]`},
+		},
+		Tools: []types.ToolDef{
+			{
+				Name:        "mcp__github__search_issues",
+				Description: "Search GitHub issues",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}
+
+	res := RedactChatRequest(req)
+	if res.Len() == 0 {
+		t.Fatal("expected secret redaction")
+	}
+
+	// User secret is redacted
+	if strings.Contains(req.Messages[0].Content, "SECRETKEY1234567890") {
+		t.Fatalf("secret leaked: %s", req.Messages[0].Content)
+	}
+	// Path is preserved
+	if !strings.Contains(req.Messages[0].Content, "/Users/ninh.le/code") {
+		t.Fatalf("path lost: %s", req.Messages[0].Content)
+	}
+	// Tool call args and MCP tool call are intact
+	if req.Messages[1].ToolCalls[0].Arguments != `{"query":"repo:amux"}` {
+		t.Fatalf("tool call args altered: %s", req.Messages[1].ToolCalls[0].Arguments)
+	}
+	// Role tool content intact
+	if req.Messages[2].Content != `[{"issue": 1, "title": "password reset bug"}]` {
+		t.Fatalf("role tool content altered: %s", req.Messages[2].Content)
+	}
+}

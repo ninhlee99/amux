@@ -171,11 +171,11 @@ func (a *GeminiWebAdapter) loadMetadata() []string {
 }
 
 func (a *GeminiWebAdapter) persistMetadata(meta []string) {
-	a.mu.Lock()
-	cid := ""
-	if len(meta) > 0 {
-		cid = meta[0]
+	if len(meta) == 0 || meta[0] == "" {
+		return
 	}
+	a.mu.Lock()
+	cid := meta[0]
 	a.cid = cid
 	b, _ := json.Marshal(meta)
 	a.metadataJSON = string(b)
@@ -184,7 +184,6 @@ func (a *GeminiWebAdapter) persistMetadata(meta []string) {
 	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
 		ConversationID: cid,
 		MetadataJSON:   metaJSON,
-		ClearMetadata:  metaJSON == "" || metaJSON == "null",
 	})
 }
 
@@ -194,7 +193,8 @@ func (a *GeminiWebAdapter) resetConversation() {
 	a.metadataJSON = ""
 	a.mu.Unlock()
 	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ClearMetadata: true,
+		ClearConversation: true,
+		ClearMetadata:     true,
 	})
 }
 
@@ -292,8 +292,10 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 				continue
 			}
 			t, meta := geminiParseEnvelope(env)
-			if len(meta) > len(bestMeta) {
-				bestMeta = meta
+			if len(meta) > 0 && meta[0] != "" {
+				if len(bestMeta) == 0 || bestMeta[0] == "" || len(meta) >= len(bestMeta) {
+					bestMeta = meta
+				}
 			}
 			if len(t) >= len(bestText) {
 				bestText = t
@@ -438,6 +440,14 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 	if len(content) > 4 {
 		if candidates, ok := content[4].([]any); ok && len(candidates) > 0 {
 			if cand, ok := candidates[0].([]any); ok {
+				if len(cand) > 0 {
+					if rcid, ok := cand[0].(string); ok && rcid != "" {
+						for len(meta) < 3 {
+							meta = append(meta, "")
+						}
+						meta[2] = rcid
+					}
+				}
 				if len(cand) > 1 {
 					if parts, ok := cand[1].([]any); ok && len(parts) > 0 {
 						if s, ok := parts[0].(string); ok {

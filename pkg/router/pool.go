@@ -48,12 +48,13 @@ const rateLimitCooldown = 2 * time.Minute
 // directory holds every addressable adapter (including out-of-pool) for
 // explicit X-Provider routing via SendNamed.
 type AccountPoolRouter struct {
-	adapters    []types.ProviderAdapter
-	directory   map[string]types.ProviderAdapter
-	preferred   string
-	lastUsed    string
-	mu          sync.RWMutex
-	cooldownMap map[string]time.Time
+	adapters     []types.ProviderAdapter
+	directory    map[string]types.ProviderAdapter
+	preferred    string
+	lastUsed     string
+	mu           sync.RWMutex
+	cooldownMap  map[string]time.Time
+	groupIndices map[string]int
 }
 
 // NewAccountPoolRouter builds a router over adapters, sorted once by
@@ -66,7 +67,12 @@ func NewAccountPoolRouter(adapters []types.ProviderAdapter) *AccountPoolRouter {
 	for _, a := range sorted {
 		dir[a.ID()] = a
 	}
-	return &AccountPoolRouter{adapters: sorted, directory: dir, cooldownMap: make(map[string]time.Time)}
+	return &AccountPoolRouter{
+		adapters:     sorted,
+		directory:    dir,
+		cooldownMap:  make(map[string]time.Time),
+		groupIndices: make(map[string]int),
+	}
 }
 
 // SetDirectory replaces the explicit-routing map (may include adapters not
@@ -299,46 +305,84 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		}
 	}
 
+	// Partition adapters into priority groups
+	groupBuckets := make(map[string][]types.ProviderAdapter)
 	for _, a := range adapters {
-		if preferredID != "" && a.ID() == preferredID {
+		grp := DetermineAdapterGroup(a)
+		groupBuckets[grp] = append(groupBuckets[grp], a)
+	}
+
+	// Iterate group by group in standard priority order:
+	// 1. Claude subscription
+	// 2. Codex subscription
+	// 3. AGY subscription
+	// 4. Claude free
+	// 5. Codex free
+	// 6. AGY free
+	// 7. API other
+	// 8. Claude web
+	// 9. ChatGPT web
+	// 10. Gemini web
+	for _, grpKey := range GroupPriority {
+		grpAdapters := groupBuckets[grpKey]
+		if len(grpAdapters) == 0 {
 			continue
 		}
-		if skipTextOnly(a, req) {
-			continue
+
+		r.mu.Lock()
+		if r.groupIndices == nil {
+			r.groupIndices = make(map[string]int)
 		}
-		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
-			continue
-		}
-		if r.cooling(a.ID()) {
-			continue
-		}
-		isWeb := strings.Contains(a.ID(), "web") || strings.HasPrefix(a.ID(), "chatgpt")
-		if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
-			continue
-		}
-		ch, err := a.SendMessageStream(ctx, req)
-		if err == nil {
-			guard.RecordSuccess(a.ID())
-			if sessionKey != "" {
-				guard.GlobalAffinity().Pin(sessionKey, a.ID())
+		startIdx := r.groupIndices[grpKey]
+		r.mu.Unlock()
+
+		for step := 0; step < len(grpAdapters); step++ {
+			currIdx := (startIdx + step) % len(grpAdapters)
+			a := grpAdapters[currIdx]
+
+			if preferredID != "" && a.ID() == preferredID {
+				continue
 			}
-			// Promote winner so status ● active matches who answered
-			// (covers unpinned pick + rate-limit failover from a pin).
-			was := preferredID
-			r.markUsed(a.ID(), true)
-			if was != "" && was != a.ID() {
-				term.LogPool("auto-switch %s → %s", was, a.ID())
-			} else if was == "" {
-				term.LogPool("active provider → %s", a.ID())
+			if skipTextOnly(a, req) {
+				continue
 			}
-			return ch, nil
+			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+				continue
+			}
+			if r.cooling(a.ID()) {
+				continue
+			}
+			isWeb := strings.Contains(a.ID(), "web") || strings.HasPrefix(a.ID(), "chatgpt")
+			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
+				continue
+			}
+			ch, err := a.SendMessageStream(ctx, req)
+			if err == nil {
+				guard.RecordSuccess(a.ID())
+				if sessionKey != "" {
+					guard.GlobalAffinity().Pin(sessionKey, a.ID())
+				}
+				// Advance round-robin index within this group for subsequent turns
+				r.mu.Lock()
+				r.groupIndices[grpKey] = (currIdx + 1) % len(grpAdapters)
+				r.mu.Unlock()
+
+				was := preferredID
+				r.markUsed(a.ID(), was != "")
+				if was != "" && was != a.ID() {
+					term.LogPool("auto-switch %s → %s [%s]", was, a.ID(), GroupDisplayName(grpKey))
+				} else if was == "" {
+					term.LogPool("active provider → %s [%s]", a.ID(), GroupDisplayName(grpKey))
+				}
+				return ch, nil
+			}
+			guard.RecordError(a.ID(), err)
+			if errors.Is(err, types.ErrRateLimitReached) {
+				r.setCooldown(a.ID())
+			}
+			term.LogWarn("%s failed (%s), next: %v", a.ID(), GroupDisplayName(grpKey), err)
+			errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 		}
-		guard.RecordError(a.ID(), err)
-		if errors.Is(err, types.ErrRateLimitReached) {
-			r.setCooldown(a.ID())
-		}
-		term.LogWarn("%s failed, next: %v", a.ID(), err)
-		errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 	}
 	if len(errs) == 0 {
 		return nil, fmt.Errorf("router: no adapters configured, or all in cooldown")
@@ -385,9 +429,12 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 		cd := r.cooldownMap[a.ID()]
 		cooling := time.Now().Before(cd)
 		report := guard.GlobalHealth().GetReport(a.ID())
+		grp := DetermineAdapterGroup(a)
 		m := map[string]any{
 			"id":            a.ID(),
 			"priority":      a.Priority(),
+			"group":         grp,
+			"group_display": GroupDisplayName(grp),
 			"cooling":       cooling,
 			"preferred":     a.ID() == r.preferred,
 			"last_used":     a.ID() == r.lastUsed,
@@ -413,6 +460,9 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 func (r *AccountPoolRouter) Reload(adapters []types.ProviderAdapter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.groupIndices == nil {
+		r.groupIndices = make(map[string]int)
+	}
 	sorted := make([]types.ProviderAdapter, len(adapters))
 	copy(sorted, adapters)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Priority() < sorted[j].Priority() })
