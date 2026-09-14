@@ -331,7 +331,6 @@ func Run(rawArgs []string) {
 	case "run":
 		cmdRun(args)
 
-
 	case "env":
 		if len(args) == 0 || (len(args) == 1 && args[0] == "--public") {
 			base := proxy.ProxyBase()
@@ -740,6 +739,7 @@ func cmdRm(tool, name string) {
 	if err := profile.TrashProfile(tool, name); err != nil {
 		die("remove failed: %v", err)
 	}
+	proxy.Sync()
 	fmt.Printf("moved to trash — restore with: am restore %s\n", name)
 }
 

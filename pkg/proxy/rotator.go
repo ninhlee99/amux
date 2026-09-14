@@ -119,25 +119,54 @@ func (r *Rotator) Load() {
 // clears any dead-refresh blacklist entry for a profile whose bundle
 // changed since it was last cached — that's exactly what a re-login/re-save
 // does, and it's the signal that the account is trustworthy again.
+//
+// Profiles deleted from disk (`am rm`) are pruned from memory. Without that,
+// status keeps showing PIN on a ghost account and snapshotActiveIfChanged
+// can resurrect the trashed bundle under the old name.
 func (r *Rotator) RefreshFromDisk() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	known := map[string]bool{}
-	for _, n := range r.order {
-		known[n] = true
+
+	profs := profile.ListProfiles(r.tool)
+	onDisk := map[string]types.ProfileMeta{}
+	for _, p := range profs {
+		onDisk[p.Name] = p
 	}
-	for _, p := range profile.ListProfiles(r.tool) {
-		if r.disabled == nil {
-			r.disabled = map[string]bool{}
+
+	prevActive := ""
+	if len(r.order) > 0 && r.idx < len(r.order) {
+		prevActive = r.order[r.idx]
+	}
+
+	known := map[string]bool{}
+	newOrder := make([]string, 0, len(r.order))
+	for _, n := range r.order {
+		if _, ok := onDisk[n]; !ok {
+			delete(r.tokens, n)
+			delete(r.accounts, n)
+			delete(r.cooldown, n)
+			delete(r.dead, n)
+			delete(r.disabled, n)
+			delete(r.autoSwitches, n)
+			delete(r.manualSwitches, n)
+			continue
 		}
+		known[n] = true
+		newOrder = append(newOrder, n)
+	}
+	r.order = newOrder
+
+	if r.disabled == nil {
+		r.disabled = map[string]bool{}
+	}
+	for _, p := range profs {
 		r.disabled[p.Name] = p.Disabled
+		r.accounts[p.Name] = p.Account
 		if !known[p.Name] {
 			r.order = append(r.order, p.Name)
 			r.tokens[p.Name] = profile.LoadClaudeToken(r.tool, p.Name)
-			r.accounts[p.Name] = p.Account
 			continue
 		}
-		r.accounts[p.Name] = p.Account
 		if r.dead[p.Name] {
 			fresh := profile.LoadClaudeToken(r.tool, p.Name)
 			old := r.tokens[p.Name]
@@ -145,6 +174,24 @@ func (r *Rotator) RefreshFromDisk() {
 				r.tokens[p.Name] = fresh
 				delete(r.dead, p.Name)
 				log.Printf("amux: %s re-logged in — cleared dead-refresh flag", p.Name)
+			}
+		}
+	}
+
+	r.idx = 0
+	if a := profile.ReadActivePointer(r.tool); a != "" {
+		for i, n := range r.order {
+			if n == a {
+				r.idx = i
+				return
+			}
+		}
+	}
+	if prevActive != "" {
+		for i, n := range r.order {
+			if n == prevActive {
+				r.idx = i
+				return
 			}
 		}
 	}
