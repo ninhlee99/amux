@@ -60,6 +60,53 @@ func TestProvider_ConfigCRUD(t *testing.T) {
 	}
 }
 
+func TestAddOrUpdateProvider_SameAccountUpdatesInPlace(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "accounts.json")
+
+	p1 := ProviderConfig{
+		ID:         "claude:web:01",
+		Type:       "claude_web",
+		Account:    "user@example.com",
+		SessionKey: "key-1",
+		Plan:       "free",
+	}
+	if err := AddOrUpdateProvider(cfgPath, p1); err != nil {
+		t.Fatalf("first add failed: %v", err)
+	}
+
+	// Add again with a different ID but the SAME account email
+	p2 := ProviderConfig{
+		ID:         "claude:web:02",
+		Type:       "claude_web",
+		Account:    "user@example.com",
+		SessionKey: "key-2-updated",
+		Plan:       "pro",
+	}
+	if err := AddOrUpdateProvider(cfgPath, p2); err != nil {
+		t.Fatalf("second add failed: %v", err)
+	}
+
+	file, err := LoadConfigFile(cfgPath)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	// Must NOT have 2 providers. Must update in place.
+	if len(file.Providers) != 1 {
+		t.Fatalf("expected exactly 1 provider after relogin, got %d", len(file.Providers))
+	}
+	if file.Providers[0].ID != "claude:web:01" {
+		t.Errorf("expected ID claude:web:01 preserved, got %s", file.Providers[0].ID)
+	}
+	if file.Providers[0].SessionKey != "key-2-updated" {
+		t.Errorf("expected updated sessionKey, got %s", file.Providers[0].SessionKey)
+	}
+	if file.Providers[0].Plan != "pro" {
+		t.Errorf("expected updated plan pro, got %s", file.Providers[0].Plan)
+	}
+}
+
 func TestAddOrUpdateProvider_DuplicateAPIKeySkipped(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "accounts.json")

@@ -22,7 +22,7 @@ const (
 	CodexCallbackPort = 1455
 	CodexCallbackPath = "/auth/callback"
 	CodexRedirectURI  = "http://localhost:1455/auth/callback"
-	CodexScope        = "openid profile email offline_access model.request"
+	CodexScope        = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 )
 
 type codexTokenResponse struct {
@@ -50,8 +50,10 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	vals.Set("scope", CodexScope)
 	vals.Set("code_challenge", challenge)
 	vals.Set("code_challenge_method", "S256")
+	vals.Set("id_token_add_organizations", "true")
+	vals.Set("codex_cli_simplified_flow", "true")
 	vals.Set("state", state)
-	vals.Set("prompt", "login")
+	vals.Set("originator", "codex_cli_rs")
 	authURL := CodexAuthURL + "?" + vals.Encode()
 
 	fmt.Println("Opening browser for OpenAI Codex OAuth login…")
@@ -72,7 +74,13 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		return "", fmt.Errorf("exchange token: %w", err)
 	}
 
-	email := ParseJWTEmail(tokenResp.IDToken)
+	email, accountID, plan := ParseCodexClaims(tokenResp.IDToken)
+	if email == "" {
+		email, _, plan = ParseCodexClaims(tokenResp.AccessToken)
+	}
+	if email == "" {
+		email = ParseJWTEmail(tokenResp.IDToken)
+	}
 	if email == "" {
 		email = ParseJWTEmail(tokenResp.AccessToken)
 	}
@@ -80,16 +88,34 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		email = fmt.Sprintf("codex-%d", time.Now().Unix())
 	}
 
-	// 1. Save ~/.codex/auth.json for local CLI compatibility
+	if plan == "pro" {
+		fmt.Printf("✨ OpenAI Subscription detected (Plus/Pro/Team) for %s -> Configured as codex CLI.\n", email)
+	} else {
+		fmt.Printf("ℹ️ Free OpenAI account detected for %s -> Configured in codex free pool.\n", email)
+	}
+
+	// 1. Save ~/.codex/auth.json in the structure expected by Codex CLI
 	home, _ := os.UserHomeDir()
 	codexDir := filepath.Join(home, ".codex")
 	_ = os.MkdirAll(codexDir, 0700)
 	authJSONPath := filepath.Join(codexDir, "auth.json")
-	authPayload, _ := json.MarshalIndent(map[string]string{
+
+	tokensMap := map[string]any{
 		"access_token":  tokenResp.AccessToken,
 		"refresh_token": tokenResp.RefreshToken,
 		"id_token":      tokenResp.IDToken,
-	}, "", "  ")
+	}
+	if accountID != "" {
+		tokensMap["account_id"] = accountID
+	}
+
+	doc := map[string]any{
+		"auth_mode":      "chatgpt",
+		"OPENAI_API_KEY": nil,
+		"tokens":         tokensMap,
+		"last_refresh":   time.Now().UTC().Format(time.RFC3339),
+	}
+	authPayload, _ := json.MarshalIndent(doc, "", "  ")
 	_ = os.WriteFile(authJSONPath, authPayload, 0600)
 
 	// 2. Add or update in amux accounts.json
@@ -108,6 +134,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		Type:         "codex_cli",
 		Priority:     5,
 		Account:      email,
+		Plan:         plan,
 		Model:        "gpt-4o",
 		RefreshToken: tokenResp.RefreshToken,
 	})

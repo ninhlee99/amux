@@ -80,6 +80,53 @@ func TestParseJWTEmail(t *testing.T) {
 	}
 }
 
+func TestParseCodexClaims(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+
+	claims := map[string]any{
+		"email":              "codex@example.com",
+		"chatgpt_account_id": "org-test12345",
+		"chatgpt_plan_type":  "pro",
+	}
+	claimsBytes, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(claimsBytes)
+
+	token := fmt.Sprintf("%s.%s.", header, payload)
+	email, accountID, plan := ParseCodexClaims(token)
+	if email != "codex@example.com" {
+		t.Errorf("email = %q, want %q", email, "codex@example.com")
+	}
+	if accountID != "org-test12345" {
+		t.Errorf("accountID = %q, want %q", accountID, "org-test12345")
+	}
+	if plan != "pro" {
+		t.Errorf("plan = %q, want %q", plan, "pro")
+	}
+
+	// Test nested https://api.openai.com/auth claims
+	nestedClaims := map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"email":              "nested@example.com",
+			"chatgpt_account_id": "org-nested999",
+			"chatgpt_plan_type":  "free",
+		},
+	}
+	nestedBytes, _ := json.Marshal(nestedClaims)
+	nestedPayload := base64.RawURLEncoding.EncodeToString(nestedBytes)
+	nestedToken := fmt.Sprintf("%s.%s.", header, nestedPayload)
+	nEmail, nAccountID, nPlan := ParseCodexClaims(nestedToken)
+	if nEmail != "nested@example.com" {
+		t.Errorf("nested email = %q, want %q", nEmail, "nested@example.com")
+	}
+	if nAccountID != "org-nested999" {
+		t.Errorf("nested accountID = %q, want %q", nAccountID, "org-nested999")
+	}
+	if nPlan != "free" {
+		t.Errorf("nested plan = %q, want %q", nPlan, "free")
+	}
+}
+
+
 func TestSupportedOAuthProviders(t *testing.T) {
 	providers := SupportedOAuthProviders()
 	if len(providers) < 5 {

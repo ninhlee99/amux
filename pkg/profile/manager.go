@@ -256,6 +256,88 @@ func parseJWTEmail(tok, field string) string {
 	return jsonDottedPath(payload, field)
 }
 
+// DetectPlan checks whether a tool's current auth state has an active paid subscription or is free tier.
+func DetectPlan(spec types.ToolSpec) string {
+	switch spec.Name {
+	case "claude":
+		for _, a := range spec.Artifacts {
+			if strings.HasSuffix(a.Path, ".claude.json") {
+				b, err := os.ReadFile(a.Path)
+				if err != nil {
+					continue
+				}
+				billing := strings.ToLower(jsonDottedPath(b, "oauthAccount.billingType"))
+				orgType := strings.ToLower(jsonDottedPath(b, "oauthAccount.organizationType"))
+				if strings.Contains(billing, "stripe") || strings.Contains(orgType, "pro") || strings.Contains(orgType, "team") {
+					return "pro"
+				}
+				return "free"
+			}
+		}
+	case "codex":
+		for _, a := range spec.Artifacts {
+			if strings.HasSuffix(a.Path, "auth.json") {
+				b, err := os.ReadFile(a.Path)
+				if err != nil {
+					continue
+				}
+				var doc map[string]any
+				if err := json.Unmarshal(b, &doc); err == nil {
+					tokens, _ := doc["tokens"].(map[string]any)
+					tok, _ := tokens["id_token"].(string)
+					if tok == "" {
+						tok, _ = tokens["access_token"].(string)
+					}
+					if tok != "" {
+						planType := strings.ToLower(parseJWTClaim(tok, "chatgpt_plan_type"))
+						switch planType {
+						case "plus", "pro", "team", "business", "enterprise", "edu", "edu_plus", "edu_pro":
+							return "pro"
+						default:
+							return "free"
+						}
+					}
+				}
+			}
+		}
+	case "antigravity":
+		return "pro"
+	}
+	return "free"
+}
+
+func parseJWTClaim(tok, field string) string {
+	parts := strings.Split(tok, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	seg := parts[1]
+	if m := len(seg) % 4; m != 0 {
+		seg += strings.Repeat("=", 4-m)
+	}
+	payload, err := base64.URLEncoding.DecodeString(seg)
+	if err != nil {
+		payload, err = base64.RawURLEncoding.DecodeString(seg)
+	}
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	if v, ok := claims[field].(string); ok {
+		return v
+	}
+	if authObj, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
+		if v, ok := authObj[field].(string); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+
 func SnapshotArtifact(a types.Artifact) (types.ProfileEntry, error) {
 	switch a.Kind {
 	case "file":
@@ -538,7 +620,8 @@ func CmdSave(tool, name string) (string, error) {
 		return "", fmt.Errorf("write bundle: %w", err)
 	}
 
-	meta := types.ProfileMeta{Name: name, Tool: tool, Account: acct, Saved: time.Now()}
+	plan := DetectPlan(spec)
+	meta := types.ProfileMeta{Name: name, Tool: tool, Account: acct, Plan: plan, Saved: time.Now()}
 	mb, _ := json.MarshalIndent(meta, "", "  ")
 	if err := WriteFileAtomic(MetaPath(tool, name), mb, 0o600); err != nil {
 		return "", fmt.Errorf("write meta: %w", err)

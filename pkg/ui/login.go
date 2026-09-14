@@ -315,12 +315,21 @@ func loginClaude(f loginFlags) {
 	}
 
 	accountEmail := ""
+	accountPlan := "free"
 	if acct, err := browser.FetchClaudeAccount(key, cookieHeader); err != nil {
 		fmt.Printf("Could not detect account email: %v\n", err)
 		fmt.Println("Continuing without identity — re-login may create a new pool entry.")
 	} else {
 		accountEmail = acct.Email
-		fmt.Printf("Signed in as %s.\n", accountEmail)
+		if acct.Plan != "" {
+			accountPlan = acct.Plan
+		}
+		if accountPlan == "pro" {
+			fmt.Printf("✨ Signed in as %s [Subscription: Claude Pro/Team].\n", accountEmail)
+			fmt.Println("👉 Tip: This account has a paid subscription and can also be used directly with Claude Code CLI ('am add claude').")
+		} else {
+			fmt.Printf("ℹ️ Signed in as %s [Tier: Free] -> Configured for Claude Web proxy pool.\n", accountEmail)
+		}
 	}
 
 	model := f.model
@@ -340,6 +349,7 @@ func loginClaude(f loginFlags) {
 			Priority:   slot.Priority,
 			Enabled:    slot.Enabled,
 			Account:    accountEmail,
+			Plan:       accountPlan,
 			SessionKey: key,
 			Cookies:    cookieHeader,
 			Model:      model,
@@ -403,7 +413,7 @@ func loginGemini(f loginFlags) {
 			model = detected
 			fmt.Printf("Detected model: %s\n", model)
 		} else {
-			model = "gemini-3.6-flash"
+			model = "gemini-3.8-flash"
 		}
 	}
 	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
@@ -495,13 +505,17 @@ func loginGitHubModels(f loginFlags) {
 	if multi {
 		priority = priorityFloor
 	}
+	model := f.model
+	if model == "" {
+		model = "gpt-5.6-terra"
+	}
 	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
 		ID:       id,
 		Type:     "openai_compatible",
 		Priority: priority,
 		BaseURL:  "https://models.github.ai/inference",
 		APIKey:   tok,
-		Model:    "gpt-4o",
+		Model:    model,
 	})
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -693,16 +707,33 @@ func loadProviderRows() []provider.ProviderConfig {
 func CmdAccounts() {
 	term.Header("amux accounts", "all accounts · POOL=IN means rotate")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, term.Dim("ID\tKIND\tACCOUNT\tPOOL\tMODEL"))
+	fmt.Fprintln(w, term.Dim("ID\tKIND\tACCOUNT\tPLAN\tPOOL\tMODEL"))
 
 	n := 0
-	for _, p := range profile.ListProfiles("claude") {
-		acct := p.Account
-		if acct == "" {
-			acct = p.Name
+	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
+		if tool == "codex" {
+			continue // Codex is represented below in loadProviderRows()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Name, "claude", acct, poolMark(!p.Disabled), "-")
-		n++
+		for _, p := range profile.ListProfiles(tool) {
+			acct := p.Account
+			if acct == "" {
+				acct = p.Name
+			}
+			pName := p.Name
+			if pName == "" {
+				pName = p.ID
+			}
+			plan := strings.ToUpper(p.Plan)
+			if plan == "" {
+				if tool == "claude" || tool == "antigravity" {
+					plan = "PRO"
+				} else {
+					plan = "FREE"
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", pName, tool, acct, plan, poolMark(!p.Disabled), "-")
+			n++
+		}
 	}
 	for _, p := range loadProviderRows() {
 		acct := p.Account
@@ -713,7 +744,15 @@ func CmdAccounts() {
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.ID, providerKindLabel(p.Type), acct, poolMark(p.InRotatePool()), model)
+		plan := strings.ToUpper(p.Plan)
+		if plan == "" {
+			if p.Type == "chatgpt_web" || p.Type == "claude_web" || p.Type == "gemini_web" || p.Type == "gemini" || p.Type == "openai_compatible" {
+				plan = "FREE"
+			} else {
+				plan = "-"
+			}
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, providerKindLabel(p.Type), acct, plan, poolMark(p.InRotatePool()), model)
 		n++
 	}
 	w.Flush()
@@ -728,12 +767,21 @@ func CmdPool() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
 	n := 0
-	for _, p := range profile.ListProfiles("claude") {
-		if p.Disabled {
+	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
+		if tool == "codex" {
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, "claude", "-", "-")
-		n++
+		for _, p := range profile.ListProfiles(tool) {
+			if p.Disabled {
+				continue
+			}
+			pName := p.Name
+			if pName == "" {
+				pName = p.ID
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", pName, tool, "-", "-")
+			n++
+		}
 	}
 	for _, p := range loadProviderRows() {
 		if !p.InRotatePool() {

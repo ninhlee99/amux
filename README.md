@@ -115,7 +115,7 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am usage [day\|week\|month\|all]` | Thống kê token (`-D` chi tiết, `-d YYYY-MM-DD`, `-p PROJECT`) |
 | `am logs [flags]` | Quản lý nhật ký hoạt động: `--count` (thống kê), `--errors` (xem lỗi), `--clean` (dọn dẹp > 7 ngày) |
 | `am proxy [up\|down\|token]` | Điều khiển daemon `:8787`. Hỗ trợ: `--public`, `-b/--addr`, `-p/--port`, `--threshold N` |
-| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `agy`, `antigravity`, `codex`) kèm tự động nạp môi trường proxy |
+| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `codex`) kèm tự động nạp môi trường proxy |
 | `am env [--public]` | Xuất biến môi trường cho lệnh `eval "$(am env)"` (`--public` sử dụng IP mạng LAN) |
 | `am env [set\|get\|rm\|list]` | Quản lý và lưu trữ cố định các biến môi trường tùy chỉnh cho proxy/công cụ |
 | `am hook [claude\|agy\|codex\|cursor]` | Điều khiển hook vòng đời cho từng công cụ (`start` / `stop`) |
@@ -224,14 +224,11 @@ Antigravity (AGY CLI & IDE) tương tác qua giao thức chuẩn Google Gemini:
 
 2. **Cách chạy AGY với proxy amux:**
    ```sh
-   # Cách 1: Chạy trực tiếp (tự bật proxy ngầm và inject biến môi trường)
-   am run agy
-   am run antigravity
-
-   # Cách 2: Export môi trường vào shell (bao gồm alias agy='am run agy')
+   # Export biến môi trường vào shell (thiết lập GEMINI_API_BASE & GOOGLE_GENAI_BASE_URL trỏ về proxy)
    eval "$(am env)"
    agy
    ```
+   > *Lưu ý: Nếu đã cài đặt hooks (`am hook install` hoặc `am setup`), proxy daemon sẽ tự động khởi động và kết thúc theo vòng đời phiên làm việc của AGY.*
 
 3. **Quản lý Profile AGY:**
    ```sh
@@ -325,8 +322,6 @@ eval "$(am env --public)"       # Xuất biến môi trường trỏ trực ti�
 ## 🏛️ Kiến Trúc Hệ Thống & Tài Liệu Kỹ Thuật
 
 - 📖 Xem chi tiết thiết kế Domain-Driven Design (DDD), phân tầng các package và sơ đồ luồng dữ liệu tại [STRUCT.md](STRUCT.md).
-- 🧠 Xem tài liệu thiết kế lớp nén ngữ cảnh token tại [docs/token-compression.md](docs/token-compression.md).
-- 📊 Báo cáo đối chiếu công cụ và inventory tại [docs/reports/index.html](docs/reports/index.html).
 
 ## 📄 Bản Quyền
 
