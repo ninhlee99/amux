@@ -518,7 +518,7 @@ func parseWindow(h http.Header, suffix string) types.Window {
 // is too late, the old refresh token is already burned by then. Call this
 // once in a goroutine after the proxy starts.
 func (r *Rotator) PeriodicSnapshot() {
-	t := time.NewTicker(5 * time.Minute)
+	t := time.NewTicker(90 * time.Second)
 	defer t.Stop()
 	for range t.C {
 		r.snapshotActiveIfChanged()

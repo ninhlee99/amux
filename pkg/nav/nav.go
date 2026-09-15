@@ -21,7 +21,8 @@ const (
 type Bundle struct {
 	ProjectRoot string `json:"project_root"`
 	Workspace   string `json:"workspace"` // folder name under ~/.am/workspaces/
-	Label       string `json:"label"`
+
+	Label string `json:"label"`
 
 	// Workspace paths (primary store)
 	WorkspaceDir    string `json:"workspace_dir,omitempty"`
@@ -35,6 +36,28 @@ type Bundle struct {
 
 	PrimaryMap    string `json:"primary_map,omitempty"`
 	PrimaryLocate string `json:"primary_locate,omitempty"`
+}
+
+// PathsOnly is the safe agent-facing view: pointers only — never a full GRAPH dump.
+type PathsOnly struct {
+	ProjectRoot   string `json:"project_root"`
+	Workspace     string `json:"workspace"`
+	WorkspaceDir  string `json:"workspace_dir,omitempty"`
+	PrimaryMap    string `json:"primary_map,omitempty"`
+	PrimaryLocate string `json:"primary_locate,omitempty"`
+	Hint          string `json:"hint"`
+}
+
+// AsPathsOnly returns navigation pointers + token-saving hint for agents.
+func (b Bundle) AsPathsOnly() PathsOnly {
+	return PathsOnly{
+		ProjectRoot:   b.ProjectRoot,
+		Workspace:     b.Workspace,
+		WorkspaceDir:  b.WorkspaceDir,
+		PrimaryMap:    b.PrimaryMap,
+		PrimaryLocate: b.PrimaryLocate,
+		Hint:          "am map recent → get/learn; am map graph <module> for 1 subnet. Never dump full GRAPH/MODULES into the LLM.",
+	}
 }
 
 // GitRoot returns the git toplevel for start, or start if not in a repo.

@@ -13,7 +13,7 @@ const (
 	RoleCoding   = "coding"   // Codex
 	RoleAnalysis = "analysis" // AGY / Antigravity
 	RoleReview   = "review"   // Claude web
-	RoleCompact  = "compact"  // ChatGPT web — token-saving / compact context
+	RoleCompact  = "compact"  // soft-prefer ChatGPT web; real shrink is ctxshrink/TaskCompact
 	RoleQuality  = "quality"  // Gemini web — product quality evaluation
 	RoleAPI      = "api"      // API-other failover
 )

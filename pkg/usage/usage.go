@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 )
 
@@ -132,9 +133,9 @@ func PrintUsageReport(args []string) {
 	if projectFilter != "" {
 		label += "  project=" + projectFilter
 	}
-	fmt.Printf("token usage — %s\n\n", label)
+	fmt.Printf("%s\n\n", term.Bold("token usage — "+label))
 	if len(filtered) == 0 {
-		fmt.Println("no requests logged in this window (see ~/.am/usage.log)")
+		fmt.Println(term.Dim("no requests logged in this window (see ~/.am/usage.log)"))
 		return
 	}
 
@@ -160,14 +161,14 @@ func printUsageByDay(entries []types.UsageEntry) {
 	}
 	sort.Strings(days)
 
-	fmt.Printf("%-12s  %12s  %12s  %8s\n", "date", "in", "out", "req")
-	fmt.Println(strings.Repeat("-", 48))
+	fmt.Printf("%s  %12s  %12s  %8s\n", term.Dim(fmt.Sprintf("%-12s", "date")), term.Dim("in"), term.Dim("out"), term.Dim("req"))
+	fmt.Println(term.Dim(strings.Repeat("─", 48)))
 	for _, d := range days {
 		a := byDay[d]
-		fmt.Printf("%-12s  %12s  %12s  %8d\n", d, Commas(a.in), Commas(a.out), a.reqs)
+		fmt.Printf("%-12s  %12s  %12s  %8d\n", d, FormatTokens(a.in), FormatTokens(a.out), a.reqs)
 	}
-	fmt.Println(strings.Repeat("-", 48))
-	fmt.Printf("%-12s  %12s  %12s  %8d\n", "total", Commas(totalIn), Commas(totalOut), totalReqs)
+	fmt.Println(term.Dim(strings.Repeat("─", 48)))
+	fmt.Printf("%s  %12s  %12s  %8d\n", term.Bold("total"), term.Bold(FormatTokens(totalIn)), term.Bold(FormatTokens(totalOut)), totalReqs)
 }
 
 func printUsageDetail(entries []types.UsageEntry) {
@@ -199,21 +200,21 @@ func printUsageDetail(entries []types.UsageEntry) {
 		totalReqs++
 	}
 
-	fmt.Println("by account:")
+	fmt.Println(term.Bold("by account:"))
 	printUsageTable(byAccount)
 	fmt.Println()
-	fmt.Println("by model:")
+	fmt.Println(term.Bold("by model:"))
 	printUsageTable(byModel)
 	fmt.Println()
-	fmt.Println("by project:")
+	fmt.Println(term.Bold("by project:"))
 	printUsageTable(byProject)
 	fmt.Println()
-	fmt.Println("by session (most recent first; a new one starts on /clear):")
+	fmt.Println(term.Bold("by session (most recent first; a new one starts on /clear):"))
 	printUsageTableByTime(bySession, lastSeen)
 
 	fmt.Println()
-	fmt.Println(strings.Repeat("-", 66))
-	fmt.Printf("%-30s  in %9s   out %9s   %5d req\n", "total", Commas(totalIn), Commas(totalOut), totalReqs)
+	fmt.Println(term.Dim(strings.Repeat("─", 66)))
+	fmt.Printf("%-30s  in %9s   out %9s   %5d req\n", term.Bold("total"), term.Bold(FormatTokens(totalIn)), term.Bold(FormatTokens(totalOut)), totalReqs)
 }
 
 func ProjectLabel(dir string) string {
@@ -252,7 +253,7 @@ func printUsageTable(m map[string]*usageAgg) {
 	sort.Strings(names)
 	for _, n := range names {
 		a := m[n]
-		fmt.Printf("  %-28s  in %9s   out %9s   %5d req\n", n, Commas(a.in), Commas(a.out), a.reqs)
+		fmt.Printf("  %-28s  in %9s   out %9s   %5d req\n", n, FormatTokens(a.in), FormatTokens(a.out), a.reqs)
 	}
 }
 
@@ -265,7 +266,7 @@ func printUsageTableByTime(m map[string]*usageAgg, lastSeen map[string]time.Time
 	for _, n := range names {
 		a := m[n]
 		fmt.Printf("  %-28s  in %9s   out %9s   %5d req   last %s\n",
-			n, Commas(a.in), Commas(a.out), a.reqs, lastSeen[n].Local().Format("01-02 15:04"))
+			n, FormatTokens(a.in), FormatTokens(a.out), a.reqs, lastSeen[n].Local().Format("01-02 15:04"))
 	}
 }
 

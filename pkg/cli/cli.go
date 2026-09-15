@@ -86,6 +86,7 @@ Monitoring & Utilities:
   amux map get --file F --func N     1 dòng summary (không đọc full MODULES)
   amux map learn --file F --func N --summary S
   amux map show [dir]         đường dẫn workspace + file map
+  amux map json [--full] [dir]  paths-only (default); --full = full bundle
 
   amux statusline             Codex-style tok · 5h/7d/quota bars (Claude · AGY)
   amux logs [--count] [--errors] [--clean]
@@ -1022,10 +1023,15 @@ func cmdHookInstall(args []string) {
 	// mirror the same var into the macOS session env as a fallback.
 	proxyUp := proxy.ProxyUp()
 	hook.SyncLaunchctlEnv(proxyUp, proxy.ProxyBase())
+	if err := hook.SyncClaudeSettingsEnv(proxyUp, proxy.ProxyBase()); err != nil {
+		fmt.Printf("warning: sync Claude settings.json env: %v\n", err)
+	}
 	if proxyUp {
 		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL, OPENAI_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
+		fmt.Println("claude settings.json: mirrored ANTHROPIC_BASE_URL (proxy up)")
 	} else {
 		fmt.Println("launchctl: cleared gateway vars from macOS session env (proxy not running)")
+		fmt.Println("claude settings.json: cleared ANTHROPIC_BASE_URL (proxy not running)")
 	}
 
 	line := `eval "$(am env)"`

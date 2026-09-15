@@ -604,29 +604,40 @@ func loginGrok(f loginFlags) {
 	}, f)
 }
 
-// CmdDoctorProviders live-probes every pool adapter with a tiny chat turn and
-// prints OK/FAIL. Used to answer "does chatgpt/gemini/api actually work?".
+// CmdDoctorProviders live-probes every addressable adapter (pool + out-of-pool
+// web accounts) with a tiny chat turn and prints OK/FAIL.
+// Free web accounts are listed but not probed by default (quota burn) —
+// set AM_DOCTOR_WEB=1 to include them.
 func CmdDoctorProviders() {
-	adapters, err := provider.LoadAccounts(provider.DefaultAccountsPath())
+	adapters, err := provider.LoadAllAddressable(provider.DefaultAccountsPath())
 	if err != nil {
 		fmt.Printf("load accounts: %v\n", err)
 		return
 	}
 	if len(adapters) == 0 {
-		fmt.Println("No providers in pool. Try: am login chatgpt|claude|gemini")
+		fmt.Println("No providers. Try: am login chatgpt|claude|gemini")
 		return
 	}
-	fmt.Println("=== am doctor providers (live 1-turn probe) ===")
+	probeFreeWeb := os.Getenv("AM_DOCTOR_WEB") == "1"
+	fmt.Println(term.Bold("=== am doctor providers (live 1-turn probe) ==="))
+	if !probeFreeWeb {
+		fmt.Println(term.Dim("free web skipped (set AM_DOCTOR_WEB=1 to probe)"))
+	}
 	req := &types.ChatRequest{
 		Model:    "default",
 		Messages: []types.ChatMessage{{Role: "user", Content: "Reply with exactly: OK"}},
 	}
 	for _, a := range adapters {
+		tag := doctorWebTag(a)
+		if doctorIsFreeWeb(a) && !probeFreeWeb {
+			fmt.Printf("%s  %-16s%s  skipped\n", term.Dim("SKIP"), a.ID(), tag)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		ch, err := a.SendMessageStream(ctx, req)
 		if err != nil {
 			cancel()
-			fmt.Printf("FAIL  %-16s  %v\n", a.ID(), err)
+			fmt.Printf("%s  %-16s%s  %v\n", term.Red("FAIL"), a.ID(), tag, err)
 			continue
 		}
 		var got strings.Builder
@@ -640,7 +651,7 @@ func CmdDoctorProviders() {
 		}
 		cancel()
 		if streamErr != nil {
-			fmt.Printf("FAIL  %-16s  %v\n", a.ID(), streamErr)
+			fmt.Printf("%s  %-16s%s  %v\n", term.Red("FAIL"), a.ID(), tag, streamErr)
 			continue
 		}
 		preview := strings.ReplaceAll(strings.TrimSpace(got.String()), "\n", " ")
@@ -648,11 +659,45 @@ func CmdDoctorProviders() {
 			preview = preview[:60] + "…"
 		}
 		if preview == "" {
-			fmt.Printf("FAIL  %-16s  empty reply\n", a.ID())
+			fmt.Printf("%s  %-16s%s  empty reply\n", term.Red("FAIL"), a.ID(), tag)
 			continue
 		}
-		fmt.Printf("OK    %-16s  %q\n", a.ID(), preview)
+		fmt.Printf("%s    %-16s%s  %q\n", term.Green("OK"), a.ID(), tag, preview)
 	}
+}
+
+type supportsToolsProbe interface {
+	SupportsTools() bool
+}
+
+type planProbe interface {
+	Plan() string
+}
+
+func doctorWebTag(a types.ProviderAdapter) string {
+	var parts []string
+	if p, ok := a.(supportsToolsProbe); ok && !p.SupportsTools() {
+		parts = append(parts, "text-only web")
+	}
+	if doctorIsFreeWeb(a) {
+		parts = append(parts, "free")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return term.Dim(" [" + strings.Join(parts, ", ") + "]")
+}
+
+func doctorIsFreeWeb(a types.ProviderAdapter) bool {
+	p, ok := a.(planProbe)
+	if !ok {
+		return strings.Contains(strings.ToLower(a.ID()), "free")
+	}
+	plan := strings.ToLower(strings.TrimSpace(p.Plan()))
+	if plan == "free" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(a.ID()), "free")
 }
 
 func providerKindLabel(typ string) string {

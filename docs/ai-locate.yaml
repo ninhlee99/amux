@@ -17,8 +17,9 @@ workspace_map:
   cli_get: am map get --file F --func N
   cli_learn: am map learn --file F --func N --summary S
   cli_show: am map show
-  proxy_api: GET /_am/map?root=<git-root>
-  token_rule: "init=full; check/update/learn=recent+touched only; never dump MODULES.md to LLM"
+  proxy_api: GET /_am/map?root=<git-root>   # paths-only; ?full=1 dump; ?mode=recent narrow
+  cli_json: am map json [--full] [dir]      # paths-only default
+  token_rule: "init=full; check/update/learn=recent+touched only; never dump MODULES.md/GRAPH to LLM; map json paths-only; /_am/map?mode=recent"
   client_files:
     - docs/AI_CODEBASE_MAP.md
     - docs/ai-locate.yaml

@@ -74,10 +74,13 @@ func parseClaudeAccountPlan(body []byte) string {
 		for _, m := range doc.Memberships {
 			plan := strings.ToLower(m.Organization.AnalyticsSubscriptionPlan)
 			billing := strings.ToLower(m.Organization.BillingType)
-			if plan == "claude_pro" || plan == "claude_team" || plan == "claude_enterprise" {
+			switch {
+			case plan == "claude_max" || plan == "raven" || strings.Contains(plan, "max"):
+				return "max"
+			case plan == "claude_pro" || plan == "claude_team" || plan == "claude_enterprise":
 				return "pro"
-			}
-			if strings.Contains(billing, "stripe") && !strings.Contains(plan, "free") {
+			case strings.Contains(billing, "stripe") && !strings.Contains(plan, "free"):
+				// Paid billing without an explicit free label — treat as pro (not free).
 				return "pro"
 			}
 		}

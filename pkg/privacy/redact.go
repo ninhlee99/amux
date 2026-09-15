@@ -970,11 +970,9 @@ func RedactChatRequest(req *types.ChatRequest) Result {
 
 	for i := range req.Messages {
 		m := &req.Messages[i]
-		if m.Role == "tool" {
-			// tool results carry file contents / bash output that should not be mangled
-			continue
-		}
 		if m.Content != "" {
+			// Redact secrets in user/assistant AND tool results — web flatten
+			// would otherwise leak ghp_/keys from bash/Read output. Paths stay.
 			s, r := RedactString(m.Content)
 			m.Content = s
 			add(r)

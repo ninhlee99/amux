@@ -3,6 +3,7 @@ package term
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProgressBarBounds(t *testing.T) {
@@ -52,6 +53,22 @@ func TestForceColor_EnablesUnicodeBar(t *testing.T) {
 	}
 	if !strings.Contains(Green("x"), "\x1b[") {
 		t.Fatal("ForceColor must enable ANSI paint")
+	}
+}
+
+func TestLog_NoDeadlockWithColor(t *testing.T) {
+	// Regression: Log used to hold mu while CyanErr → colorEnabled re-locked mu.
+	ForceColor()
+	defer Enable()
+	done := make(chan struct{})
+	go func() {
+		Log(TagPool, "deadlock probe %s", "ok")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Log deadlocked on term.mu")
 	}
 }
 

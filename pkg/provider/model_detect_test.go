@@ -177,3 +177,31 @@ func TestDetectClaudeWebModel_UnauthorizedReturnsEmpty(t *testing.T) {
 		t.Fatalf("got %q, want empty on 401 (must not block login, caller falls back)", got)
 	}
 }
+
+func TestClaudeWebAdapter_ModelFreePlanDemotesOpus(t *testing.T) {
+	a := &ClaudeWebAdapter{TargetModel: "claude-opus-5", PlanTier: "free"}
+	if got := a.model(); got != claudeWebDefaultModel {
+		t.Fatalf("free+opus → %q, want %q", got, claudeWebDefaultModel)
+	}
+	a.PlanTier = "claude_pro"
+	if got := a.model(); got != "claude-opus-5" {
+		t.Fatalf("pro keeps opus, got %q", got)
+	}
+	a.TargetModel = ""
+	a.PlanTier = "free"
+	if got := a.model(); got != claudeWebDefaultModel {
+		t.Fatalf("free empty → %q", got)
+	}
+}
+
+func TestPickClaudeWebPlan(t *testing.T) {
+	if got := pickClaudeWebPlan([]string{"chat", "claude_max"}); got != "max" {
+		t.Fatalf("max: %q", got)
+	}
+	if got := pickClaudeWebPlan([]string{"claude_pro"}); got != "pro" {
+		t.Fatalf("pro: %q", got)
+	}
+	if got := pickClaudeWebPlan([]string{"chat"}); got != "free" {
+		t.Fatalf("free: %q", got)
+	}
+}

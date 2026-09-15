@@ -57,10 +57,12 @@ func stamp() string {
 //
 //	15:04:05  amux  [ROTATE   ]  ninhle → tungnt  (rate-limit)
 func Log(tag, format string, args ...any) {
-	mu.Lock()
-	defer mu.Unlock()
 	msg := fmt.Sprintf(format, args...)
-	if !quiet {
+	mu.Lock()
+	q := quiet
+	mu.Unlock()
+	// Paint after unlock — CyanErr/errOK also take mu (non-reentrant).
+	if !q {
 		prefix := CyanErr("amux")
 		if !errOK() {
 			prefix = "amux"

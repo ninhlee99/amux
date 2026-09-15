@@ -39,6 +39,33 @@ I'll list files.
 	}
 }
 
+func TestParseWebTools_DialectAliases(t *testing.T) {
+	// Cursor-style catalog: model emits Bash/Read → map to client names.
+	defs := []types.ToolDef{
+		{Name: "run_terminal_command"},
+		{Name: "read_file"},
+	}
+	xml := ParseWebTools(`<tool_call>
+{"name": "Bash", "arguments": {"command": "ls"}}
+</tool_call>
+<tool_call>
+{"name": "Read", "arguments": {"path": "a.go"}}
+</tool_call>`, defs)
+	if len(xml) != 2 {
+		t.Fatalf("want 2 calls, got %+v", xml)
+	}
+	if xml[0].Name != "run_terminal_command" {
+		t.Fatalf("bash alias → %q", xml[0].Name)
+	}
+	if xml[1].Name != "read_file" {
+		t.Fatalf("read alias → %q", xml[1].Name)
+	}
+	fence := ParseWebTools("```bash\necho hi\n```", defs)
+	if len(fence) != 1 || fence[0].Name != "run_terminal_command" {
+		t.Fatalf("bash fence alias: %+v", fence)
+	}
+}
+
 func TestParseWebTools_RejectsUnknown(t *testing.T) {
 	defs := []types.ToolDef{{Name: "Read"}}
 	calls := ParseWebTools("```bash\nrm -rf /\n```", defs)

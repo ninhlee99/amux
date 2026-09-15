@@ -419,7 +419,7 @@ func TestRedactChatRequest_OpenAIToolFormat(t *testing.T) {
 					{ID: "call_mcp_1", Name: "mcp__github__search_issues", Arguments: `{"query":"repo:amux"}`},
 				},
 			},
-			{Role: "tool", ToolCallID: "call_mcp_1", Content: `[{"issue": 1, "title": "password reset bug"}]`},
+			{Role: "tool", ToolCallID: "call_mcp_1", Content: `[{"issue": 1, "title": "password reset bug", "token": "ghp_ABCDEF1234567890abcdefghij"}]`},
 		},
 		Tools: []types.ToolDef{
 			{
@@ -447,8 +447,11 @@ func TestRedactChatRequest_OpenAIToolFormat(t *testing.T) {
 	if req.Messages[1].ToolCalls[0].Arguments != `{"query":"repo:amux"}` {
 		t.Fatalf("tool call args altered: %s", req.Messages[1].ToolCalls[0].Arguments)
 	}
-	// Role tool content intact
-	if req.Messages[2].Content != `[{"issue": 1, "title": "password reset bug"}]` {
-		t.Fatalf("role tool content altered: %s", req.Messages[2].Content)
+	// Role tool: secrets redacted; non-secret payload intact
+	if strings.Contains(req.Messages[2].Content, "ghp_ABCDEF") {
+		t.Fatalf("tool result secret leaked: %s", req.Messages[2].Content)
+	}
+	if !strings.Contains(req.Messages[2].Content, "password reset bug") {
+		t.Fatalf("tool result over-redacted: %s", req.Messages[2].Content)
 	}
 }

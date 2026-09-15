@@ -1100,6 +1100,27 @@ func UpdateProviderCookies(path, id, sessionKey, cookies string) error {
 	return fmt.Errorf("provider %s not found", id)
 }
 
+// UpdateProviderPlanModel persists detected plan/model for a web adapter.
+func UpdateProviderPlanModel(path, id, plan, model string) error {
+	f, err := LoadConfigFile(path)
+	if err != nil {
+		return err
+	}
+	for i, p := range f.Providers {
+		if p.ID != id {
+			continue
+		}
+		if plan != "" {
+			f.Providers[i].Plan = plan
+		}
+		if model != "" {
+			f.Providers[i].Model = model
+		}
+		return SaveConfigFile(path, f)
+	}
+	return fmt.Errorf("provider %s not found", id)
+}
+
 // UpdateProviderConversation persists Claude web org+conversation IDs so the
 // next process reuses the same thread (empty conv clears → next send creates).
 func UpdateProviderConversation(path, id, orgID, conversationID string) error {

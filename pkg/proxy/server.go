@@ -719,7 +719,29 @@ func handleAmMapBundle(w http.ResponseWriter, r *http.Request) {
 		b.PrimaryMap = "docs/AI_CODEBASE_MAP.md (amux tool — in-repo path relative to amux root)"
 		b.PrimaryLocate = "docs/ai-locate.yaml"
 	}
-	_ = json.NewEncoder(w).Encode(b)
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	// Narrow git∪touched focus — prefer this over reading full GRAPH.md.
+	if mode == "recent" {
+		rep, err := nav.RecentFocus(root, "HEAD", false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mode":   "recent",
+			"paths":  b.AsPathsOnly(),
+			"recent": rep,
+			"hint":   "Use recent funcs only. Never dump full GRAPH/MODULES into the LLM.",
+		})
+		return
+	}
+	// Default: paths-only (token-safe). Agents must not dump full GRAPH.
+	// Opt-in dump: ?full=1
+	if r.URL.Query().Get("full") == "1" || strings.EqualFold(r.URL.Query().Get("full"), "true") || mode == "full" {
+		_ = json.NewEncoder(w).Encode(b)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(b.AsPathsOnly())
 }
 
 func handleAmMapViz(w http.ResponseWriter, r *http.Request) {

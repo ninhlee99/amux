@@ -85,13 +85,25 @@ func cmdMap(args []string) {
 		cmdMapShow(dir)
 	case "json":
 		dir := "."
-		if len(args) > 1 {
-			dir = args[1]
+		full := false
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--full":
+				full = true
+			default:
+				if !strings.HasPrefix(args[i], "-") {
+					dir = args[i]
+				}
+			}
 		}
 		b := nav.Resolve(dir)
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(b)
+		if full {
+			_ = enc.Encode(b)
+		} else {
+			_ = enc.Encode(b.AsPathsOnly())
+		}
 	default:
 		die("usage: am map [init|update|learn|recent|touch|get|graph|viz|show|json] …")
 	}

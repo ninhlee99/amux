@@ -677,18 +677,38 @@ func logWebTools(source string, calls []types.ToolCall, raw string) {
 
 // ParseWebTools extracts tool calls from a web model's text reply.
 func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
-	allow := map[string]string{} // lower → canonical
+	allow := map[string]string{} // lower → canonical client name
+	by := map[string]types.ToolDef{}
 	for _, d := range defs {
 		if d.Name != "" {
 			allow[strings.ToLower(d.Name)] = d.Name
+			by[strings.ToLower(d.Name)] = d
 		}
 	}
+	// Dialect aliases: model may emit Bash/Read while Cursor/Codex use other names.
 	canonical := func(name string) (string, bool) {
-		if len(allow) == 0 {
-			return name, name != ""
+		if name == "" {
+			return "", false
 		}
-		c, ok := allow[strings.ToLower(name)]
-		return c, ok
+		if len(allow) == 0 {
+			return name, true
+		}
+		if c, ok := allow[strings.ToLower(name)]; ok {
+			return c, true
+		}
+		lower := strings.ToLower(name)
+		switch {
+		case lower == "bash" || lower == "shell" || lower == "run_terminal_command" ||
+			lower == "run_command" || lower == "exec_command":
+			if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok {
+				return d.Name, true
+			}
+		case lower == "read" || lower == "read_file" || lower == "view_file":
+			if d, ok := findToolDef(by, "read", "read_file", "view_file"); ok {
+				return d.Name, true
+			}
+		}
+		return "", false
 	}
 
 	var out []types.ToolCall
@@ -756,14 +776,18 @@ func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
 		}
 		add(probe.Name, probe.ID, string(args))
 	}
-	if _, bashOK := canonical("Bash"); bashOK || len(allow) == 0 {
+	if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok || len(allow) == 0 {
+		bashName := "Bash"
+		if ok {
+			bashName = d.Name
+		}
 		for _, m := range reBashFence.FindAllStringSubmatch(text, -1) {
 			cmd := strings.TrimSpace(m[1])
 			if cmd == "" {
 				continue
 			}
 			b, _ := json.Marshal(map[string]string{"command": cmd})
-			add("Bash", "", string(b))
+			add(bashName, "", string(b))
 		}
 	}
 	return out

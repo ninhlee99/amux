@@ -321,3 +321,27 @@ func TestResolveAmuxRepo(t *testing.T) {
 		t.Fatal("should detect amux repo")
 	}
 }
+
+func TestBundleAsPathsOnly(t *testing.T) {
+	b := Bundle{
+		ProjectRoot:   "/tmp/demo",
+		Workspace:     "demo",
+		WorkspaceDir:  "/home/.am/workspaces/demo",
+		PrimaryMap:    "/home/.am/workspaces/demo/AI_CODEBASE_MAP.md",
+		PrimaryLocate: "/home/.am/workspaces/demo/ai-locate.yaml",
+		MapPath:       "/tmp/demo/docs/MAP.md",
+		LocatePath:    "/tmp/demo/docs/locate.yaml",
+		AgentsPath:    "/tmp/demo/AGENTS.md",
+	}
+	p := b.AsPathsOnly()
+	if p.ProjectRoot != b.ProjectRoot || p.PrimaryMap != b.PrimaryMap {
+		t.Fatalf("paths mismatch: %+v", p)
+	}
+	if p.Hint == "" || !strings.Contains(p.Hint, "Never dump") {
+		t.Fatalf("missing refuse-dump hint: %q", p.Hint)
+	}
+	// Must not expose every legacy path field — keep agent payload small.
+	if p.WorkspaceDir == "" {
+		t.Fatal("want workspace_dir")
+	}
+}

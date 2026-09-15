@@ -35,6 +35,7 @@ type ClaudeWebAdapter struct {
 	orgID           string
 	convUUID        string
 	cookieRefreshed bool // one CDP jar refresh per adapter lifetime (or after 429)
+	planChecked     bool // one org-capability re-detect when plan looks free/stale
 }
 
 const (
@@ -61,10 +62,16 @@ func (a *ClaudeWebAdapter) client() *http.Client {
 }
 
 func (a *ClaudeWebAdapter) model() string {
-	if a.TargetModel != "" {
-		return a.TargetModel
+	m := a.TargetModel
+	if m == "" {
+		m = claudeWebDefaultModel
 	}
-	return claudeWebDefaultModel
+	// Free plan cannot sustain Opus — keep Sonnet to avoid soft-ban / quality cliff.
+	if strings.EqualFold(strings.TrimSpace(a.PlanTier), "free") &&
+		strings.Contains(strings.ToLower(m), "opus") {
+		return claudeWebDefaultModel
+	}
+	return m
 }
 
 func (a *ClaudeWebAdapter) cookieHeader() string {
@@ -107,7 +114,29 @@ func (a *ClaudeWebAdapter) refreshCookiesFromProfile() error {
 	} else {
 		log.Printf("%s: refreshed Cloudflare cookie jar from browser profile", a.AdapterID)
 	}
+	a.refreshPlanAndModel()
 	return nil
+}
+
+// refreshPlanAndModel re-detects tier/model so skipFreeWebHardTask doesn't
+// treat a Max account as free after a stale accounts.json plan field.
+func (a *ClaudeWebAdapter) refreshPlanAndModel() {
+	model, plan := DetectClaudeWebAccount(a.SessionKey, a.Cookies)
+	if model == "" && plan == "" {
+		return
+	}
+	a.mu.Lock()
+	if model != "" {
+		a.TargetModel = model
+	}
+	if plan != "" {
+		a.PlanTier = plan
+	}
+	id, m, p := a.AdapterID, a.TargetModel, a.PlanTier
+	a.mu.Unlock()
+	if err := UpdateProviderPlanModel(DefaultAccountsPath(), id, p, m); err != nil {
+		log.Printf("%s: refreshed plan/model but failed to persist: %v", id, err)
+	}
 }
 
 func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
@@ -118,6 +147,17 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	// Bare sessionKey (no CF jar) → harsh bot bucket; browser multi-turns OK.
 	if !claudeCookiesHaveClearance(a.cookieHeader()) {
 		_ = a.refreshCookiesFromProfile()
+	}
+
+	// Stale accounts.json may mark Max as free — re-detect once per process.
+	a.mu.Lock()
+	needPlan := !a.planChecked && (a.PlanTier == "" || strings.EqualFold(a.PlanTier, "free"))
+	if needPlan {
+		a.planChecked = true
+	}
+	a.mu.Unlock()
+	if needPlan {
+		a.refreshPlanAndModel()
 	}
 
 	model := a.model()
@@ -392,11 +432,18 @@ func (a *ClaudeWebAdapter) getOrganizationID(ctx context.Context) (string, error
 // determined — callers should fall back to their own hardcoded default,
 // never blocking login on this.
 func DetectClaudeWebModel(sessionKey, cookieHeader string) string {
+	model, _ := DetectClaudeWebAccount(sessionKey, cookieHeader)
+	return model
+}
+
+// DetectClaudeWebAccount returns best model + plan tier from organizations API.
+// Plan is "max" | "pro" | "free" (empty on network/auth failure).
+func DetectClaudeWebAccount(sessionKey, cookieHeader string) (model, plan string) {
 	cookie := strings.TrimSpace(cookieHeader)
 	sessionKey = strings.TrimSpace(sessionKey)
 	if cookie == "" {
 		if sessionKey == "" {
-			return ""
+			return "", ""
 		}
 		cookie = "sessionKey=" + sessionKey
 	} else if sessionKey != "" && !strings.Contains(cookie, "sessionKey=") {
@@ -405,7 +452,7 @@ func DetectClaudeWebModel(sessionKey, cookieHeader string) string {
 
 	req, err := http.NewRequest(http.MethodGet, claudeWebOrganizationsURL, nil)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	req.Header.Set("Cookie", cookie)
 	req.Header.Set("Accept", "application/json")
@@ -414,20 +461,21 @@ func DetectClaudeWebModel(sessionKey, cookieHeader string) string {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return "", ""
 	}
 
 	var orgs []struct {
 		Capabilities []string `json:"capabilities"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&orgs); err != nil || len(orgs) == 0 {
-		return ""
+		return "", ""
 	}
-	return pickClaudeWebModel(orgs[0].Capabilities)
+	caps := orgs[0].Capabilities
+	return pickClaudeWebModel(caps), pickClaudeWebPlan(caps)
 }
 
 // pickClaudeWebModel maps an organization's capabilities (from
@@ -440,6 +488,19 @@ func pickClaudeWebModel(capabilities []string) string {
 		}
 	}
 	return claudeWebDefaultModel
+}
+
+// pickClaudeWebPlan maps org capabilities to a non-free tier when paid.
+func pickClaudeWebPlan(capabilities []string) string {
+	for _, cap := range capabilities {
+		switch cap {
+		case "claude_max", "raven":
+			return "max"
+		case "claude_pro", "claude_team", "claude_enterprise":
+			return "pro"
+		}
+	}
+	return "free"
 }
 
 func (a *ClaudeWebAdapter) createConversation(ctx context.Context, orgID, model string) (string, error) {
