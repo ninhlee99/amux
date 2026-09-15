@@ -63,3 +63,24 @@ func TestAttachedSessions_UnreachableReturnsNegativeOne(t *testing.T) {
 		t.Errorf("expected -1 when the proxy is unreachable, got %d", got)
 	}
 }
+
+func TestCmdProxyDownPublic_RevertsBindAndClearsToken(t *testing.T) {
+	// First set public = true and write a token
+	_ = SaveBindPublic(true)
+	_, _ = IssueNewAuthToken()
+	if !IsPublic() {
+		t.Fatalf("expected IsPublic() true before down")
+	}
+
+	// Down public when proxy is not running
+	CmdProxyDownPublic(true, true)
+
+	if IsPublic() {
+		t.Errorf("expected IsPublic() false after CmdProxyDownPublic")
+	}
+	tok, _ := LoadAuthToken()
+	if tok != "" {
+		t.Errorf("expected empty token after CmdProxyDownPublic, got: %s", tok)
+	}
+}
+
