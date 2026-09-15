@@ -36,76 +36,45 @@ func die(format string, a ...any) {
 }
 
 func usageHelp() {
-	fmt.Print(`amux - AI CLI account manager & Local AI Gateway
+	fmt.Print(`amux - AI CLI Account Manager & Local AI Gateway
 
-Setup (once):
-  amux setup [--auto-update]  hook install + /am:feedback + auto-update
+Usage: amux <command> [arguments]
 
-Accounts:
-  amux accounts [filter]      list ALL accounts grouped by rotate priority
-  amux ls [filter]            alias to amux accounts (claude|codex|agy|api|web|gemini|…)
-  amux off <id>               take any account out of rotate (stays in list)
-  amux on <id>                put it back
-  amux add [tool] [name]      save current CLI login (claude / codex / gemini)
-  amux rm <id|name>           delete account (CLI profile → trash, provider → removed)
-  amux accounts rm <id>       alias to amux rm <id> (delete provider)
-  amux rename <id> <new>      rename Claude profile
-  amux restore <id>           restore trash (` + "`am restore --backup`" + ` = last auto-backup)
-  amux sw                     picker · am sw <id> pin Claude or provider
-  amux current [tool]         who is logged in on this machine
+Essential (Daily Workflow):
+  status, st                  view gateway status, active provider, quota & sessions
+  ls, accounts [filter]       list accounts, priority & rotation state
+  sw, switch [id|name]        switch or pin active account / provider
+  on / off <id>               toggle account in/out of rotation pool
+  run <tool> [args...]        launch tool through rotating proxy (claude, codex, agy)
 
-Rotate pool:
-  amux pool                   who is IN rotate
-  amux pool set <id> [flags]  set account options (--priority N, --model M, --on, --off)
-  amux pool add <id>          include in rotate (same as am on)
-  amux pool remove <id>       exclude from rotate (same as am off)
-  amux pool priority <id> N   lower N = tried first (hot-reload)
-  amux pool model <id> M      change provider model (hot-reload)
+Accounts & Providers:
+  add [tool] [name]           save current CLI login (claude, codex, gemini)
+  login <provider>            web session login (chatgpt, claude, gemini-web, grok...)
+  oauth <provider>            standalone OAuth (claude, codex, agy, kimi...)
+  api add <name> [flags]      add custom API provider (--endpoint, --api-key, --model)
+  rm, remove <id|name>        remove account or provider (supports restore)
 
-Add providers:
-  amux oauth <provider>       standalone OAuth (claude, codex, antigravity, agy, kimi, grok)
-  amux login <provider>       chatgpt / claude / gemini / gemini-web / github / groq / kimi / grok
-  amux api add <name> --endpoint <url> --api-key <key> [--model M] [--priority N]
-  amux doctor providers       1-turn probe each adapter
-  amux btw <message>          inject a note to the agent while it is running
-                              (e.g. "am btw check if README is up to date too")
+Gateway & Proxy:
+  proxy [up|down] [flags]     start/stop local proxy daemon (default: 127.0.0.1:8787)
+                              flags: --public (bind 0.0.0.0 for LAN), -p/--port <N>, --force
+                              amux proxy down --public: stop & revert to local 127.0.0.1
+  proxy token                 view or generate admin token for public proxy
+  env [--public]              export environment variables (eval "$(amux env)")
+  guard [reset]               anti-ban defense status, health scores & cooldown reset
 
-  Codex: after am add codex, token is reused as codex:NN — no extra login.
+Pool & Routing:
+  pool                        view current rotation pool & priorities
+  pool set <id> [flags]       configure account (--priority N, --model M, --on, --off)
+  doctor providers            probe and health-check all configured providers
 
-Monitoring & Utilities:
-  amux update [--force] [--quiet]
-                            update amux to latest version from github (keeps all accounts)
-  amux usage [day|week|month|all] [-D|--detail] [-d YYYY-MM-DD] [-p PROJECT]
-                            token usage analytics
-  amux map init [dir]         FULL scan → sinh map (0 token API) — chỉ lần đầu
-  amux map update [dir]       FULL regenerate cấu trúc (giữ annotations)
-  amux map recent [--needs-learn]  CHỈ git∪touched — check/update hẹp
-  amux map touch --file F [--func N]  ghi focus session
-  amux map graph <module>|--list   subnet func (1 module) hoặc list neurons
-  amux map viz [--module M]        mở GRAPH.html — kéo node, xem mũi tên liên kết
-  amux map get --file F --func N     1 dòng summary (không đọc full MODULES)
-  amux map learn --file F --func N --summary S
-  amux map show [dir]         đường dẫn workspace + file map
-  amux map json [--full] [dir]  paths-only (default); --full = full bundle
-
-  amux statusline             Codex-style tok · 5h/7d/quota bars (Claude · AGY)
-  amux logs [--count] [--errors] [--clean]
-                            log statistics, errors, and 7-day retention cleanup
-  amux run <tool> [args...]   exec tool (claude, codex, agy) routed through proxy
-  amux proxy [up|down|token] [--public] [-b|--addr HOST] [-p|--port N] [--threshold N]
-                            run/manage proxy daemon (default 127.0.0.1:8787;
-                            --public binds 0.0.0.0; -p/--port overrides port)
-                            --public requires an admin token for non-loopback
-                            requests — 'amux proxy token' prints/generates it
-                            --threshold N  auto-switch Claude account when 5h/7d
-                            utilization >= N% (default 95). Also: AM_ROTATE_THRESHOLD
-  amux env [--public]         print export ANTHROPIC_BASE_URL=... for eval "$(amux env)";
-                            --public uses LAN IP when proxy is bound on 0.0.0.0
-  amux guard [reset]          view anti-ban health scores, quarantine state, and session affinity
-  amux hook [install|uninstall|status]
-  amux export [tool] [name..] [-o file|--stdout]  encrypted profile bundle
-  amux import [-f file] [--activate tool=name]
-  amux feedback [--error]     file a GitHub issue for bugs or errors (privacy sanitized)
+Analytics & Utilities:
+  usage [day|week|all]        token usage and quota consumption
+  logs [--errors] [--clean]   gateway request logs and error inspection
+  map [init|recent|viz]       codebase map for AI agents (see: amux map --help)
+  setup [--auto-update]       install shell integration, hooks & auto-update
+  update [--force]            update amux to latest version from GitHub
+  export / import             backup or restore encrypted account bundles
+  feedback [--error]          file GitHub issue with sanitized error logs
 `)
 }
 
@@ -435,13 +404,20 @@ func Run(rawArgs []string) {
 			case "down":
 				force := false
 				yes := false
+				publicFlag := false
 				for _, a := range args[1:] {
-					if a == "--force" {
+					switch a {
+					case "--force":
 						force = true
-					}
-					if a == "--yes-i-know" {
+					case "--yes-i-know":
 						yes = true
+					case "--public", "-P":
+						publicFlag = true
 					}
+				}
+				if publicFlag {
+					proxy.CmdProxyDownPublic(force, yes)
+					return
 				}
 				proxy.CmdProxyDown(force, yes)
 				return

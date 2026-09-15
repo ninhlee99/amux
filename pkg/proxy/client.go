@@ -264,6 +264,22 @@ func CmdProxyDown(force, yesIKnow bool) {
 	fmt.Println("amux proxy stopped")
 }
 
+// CmdProxyDownPublic stops public proxy mode, clears public auth token,
+// reverts persisted bind configuration back to local loopback (127.0.0.1),
+// and stops the proxy daemon.
+func CmdProxyDownPublic(force, yesIKnow bool) {
+	_ = SaveBindPublic(false)
+	_ = ClearAuthToken()
+
+	if !ProxyUp() {
+		fmt.Println("amux: public proxy disabled. Bind address reverted to 127.0.0.1 (local only).")
+		return
+	}
+
+	CmdProxyDown(force, yesIKnow)
+	fmt.Println("amux: public proxy stopped. Bind address reverted to 127.0.0.1 (local only). Public auth token revoked.")
+}
+
 func CmdSwitch(tool, name string) {
 	if tool != "claude" {
 		if err := profile.CmdUse(tool, name); err != nil {

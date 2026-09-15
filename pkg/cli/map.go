@@ -17,6 +17,23 @@ func cmdMap(args []string) {
 		return
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		fmt.Print(`amux map - Codebase map & navigation subsystem for AI agents
+
+Usage:
+  amux map init [dir]                  full codebase scan -> generate map (0 API tokens)
+  amux map update [dir]                regenerate codebase structure (keeps annotations)
+  amux map recent [--needs-learn]      check/update git and touched files
+  amux map touch --file F [--func N]   record active focus session
+  amux map graph <module>|--list       inspect function dependency subnet or neuron list
+  amux map viz [--module M]            open interactive visual GRAPH.html in browser
+  amux map get --file F --func N       quick 1-line function summary
+  amux map learn --file F --func N --summary S   save function summary annotation
+  amux map show [dir]                  show workspace directory and map paths
+  amux map json [--full] [dir]         export map as JSON (paths-only or full bundle)
+`)
+		return
+
 	case "init", "scaffold", "generate":
 		force := false
 		rest := args[1:]
