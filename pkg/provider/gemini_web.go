@@ -32,6 +32,7 @@ type GeminiWebAdapter struct {
 	PriorityLvl int
 	Cookies     string
 	TargetModel string
+	PlanTier    string // "pro" | "free" | …
 	HTTPClient  *http.Client
 
 	mu           sync.Mutex
@@ -58,6 +59,7 @@ var (
 
 func (a *GeminiWebAdapter) ID() string    { return a.AdapterID }
 func (a *GeminiWebAdapter) Priority() int { return a.PriorityLvl }
+func (a *GeminiWebAdapter) Plan() string  { return a.PlanTier }
 
 // SupportsTools is false: Gemini web StreamGenerate is text-only.
 func (a *GeminiWebAdapter) SupportsTools() bool { return false }
@@ -77,12 +79,12 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		return nil, err
 	}
 
-	continuing := len(a.loadMetadata()) > 0
-	prompt := WebBackendPrompt(req, continuing)
 	meta := a.loadMetadata()
-
 	rotated := false
 	for attempt := 0; attempt < 2; attempt++ {
+		// After rotate, force full flatten — server chat memory is gone.
+		continuing := len(meta) > 0 && !rotated
+		prompt := WebBackendPrompt(req, continuing)
 		text, newMeta, err := a.streamGenerate(ctx, prompt, meta)
 		if err != nil {
 			if isGeminiUsageLimit(err) {

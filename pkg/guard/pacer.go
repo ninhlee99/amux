@@ -56,11 +56,12 @@ type PacerConfig struct {
 }
 
 // DefaultPacerConfig provides safe production defaults.
+// Web jitter is intentionally wider — browser sessions trip bot buckets on burst.
 func DefaultPacerConfig() PacerConfig {
 	return PacerConfig{
 		MinRequestInterval: 250 * time.Millisecond,
-		WebJitterMin:       100 * time.Millisecond,
-		WebJitterMax:       350 * time.Millisecond,
+		WebJitterMin:       280 * time.Millisecond,
+		WebJitterMax:       900 * time.Millisecond,
 		InitialBackoff:     30 * time.Second,
 		MaxBackoff:         15 * time.Minute,
 	}
@@ -176,13 +177,17 @@ func (p *Pacer) Pace(ctx context.Context, accountID string, isWeb bool) error {
 		delete(p.backoffState, accountID)
 	}
 
-	// 2. Compute minimum spacing interval
+	// 2. Compute minimum spacing interval (web accounts get a longer floor)
 	now := time.Now()
 	var wait time.Duration
+	minInterval := p.cfg.MinRequestInterval
+	if isWeb && minInterval < 500*time.Millisecond {
+		minInterval = 500 * time.Millisecond
+	}
 	if last, ok := p.lastRequest[accountID]; ok {
 		elapsed := now.Sub(last)
-		if elapsed < p.cfg.MinRequestInterval {
-			wait = p.cfg.MinRequestInterval - elapsed
+		if elapsed < minInterval {
+			wait = minInterval - elapsed
 		}
 	}
 

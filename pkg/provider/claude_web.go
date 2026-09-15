@@ -25,6 +25,7 @@ type ClaudeWebAdapter struct {
 	SessionKey  string
 	Cookies     string // full Cookie header from login CDP (preferred over SessionKey alone)
 	TargetModel string
+	PlanTier    string // "pro" | "max" | "team" | "free" | …
 	HTTPClient  *http.Client
 
 	// Cached across turns in one am chat / pool process so we don't burn
@@ -47,6 +48,7 @@ var claudeWebOrganizationsURL = "https://claude.ai/api/organizations"
 
 func (a *ClaudeWebAdapter) ID() string    { return a.AdapterID }
 func (a *ClaudeWebAdapter) Priority() int { return a.PriorityLvl }
+func (a *ClaudeWebAdapter) Plan() string  { return a.PlanTier }
 
 // SupportsTools is false: claude.ai chat has no Anthropic tool_use wire.
 func (a *ClaudeWebAdapter) SupportsTools() bool { return false }
@@ -119,29 +121,29 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	}
 
 	model := a.model()
-	a.mu.Lock()
-	hasThread := a.convUUID != ""
-	a.mu.Unlock()
-	prompt := WebBackendPrompt(req, hasThread)
-
-	payloadMap := map[string]any{
-		"prompt":      prompt,
-		"model":       model,
-		"timezone":    "Asia/Ho_Chi_Minh",
-		"attachments": []any{},
-		"files":       []any{},
-	}
-
-	b, err := json.Marshal(payloadMap)
-	if err != nil {
-		return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
-	}
-
 	const maxAttempts = 4
 	var resp *http.Response
 	refreshedFor429 := false
 	rotatedConv := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		a.mu.Lock()
+		hasThread := a.convUUID != ""
+		a.mu.Unlock()
+		// After rotate, server thread is empty → force full flatten (not delta).
+		prompt := WebBackendPrompt(req, hasThread && !rotatedConv)
+
+		payloadMap := map[string]any{
+			"prompt":      prompt,
+			"model":       model,
+			"timezone":    "Asia/Ho_Chi_Minh",
+			"attachments": []any{},
+			"files":       []any{},
+		}
+		b, err := json.Marshal(payloadMap)
+		if err != nil {
+			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
+		}
+
 		orgID, convUUID, err := a.ensureConversation(ctx, model)
 		if err != nil {
 			return nil, err

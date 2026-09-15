@@ -11,6 +11,7 @@ import (
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
+	"amux-accounts/pkg/usage"
 )
 
 var streamKeepaliveInterval = 15 * time.Second
@@ -186,6 +187,16 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 	if req != nil && strings.TrimSpace(req.SessionID) == "" {
 		if sk := guard.ExtractSessionKey(r, req); sk != "" {
 			req.SessionID = sk
+		}
+	}
+	if req != nil {
+		if root := usage.ProjectForRemoteAddr(r.RemoteAddr); root != "" {
+			if req.Metadata == nil {
+				req.Metadata = map[string]any{}
+			}
+			if _, ok := req.Metadata["project"]; !ok {
+				req.Metadata["project"] = root
+			}
 		}
 	}
 	if id := explicitProviderHeaders(r, req); id != "" {

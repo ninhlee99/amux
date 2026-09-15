@@ -127,14 +127,14 @@ func isPrimaryProxyLayer(group string) bool {
 // assignment: not Claude-sub, not cooling/quarantined, and usable for the
 // request's tool needs. Soft task preference reorders; never excludes a
 // living group. Falls back across all eligible adapters.
-func (r *AccountPoolRouter) livingForSessionBalance(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) []types.ProviderAdapter {
+func (r *AccountPoolRouter) livingForSessionBalance(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable, strongerThanFree bool) []types.ProviderAdapter {
 	var living []types.ProviderAdapter
 	for _, a := range adapters {
 		grp := DetermineAdapterGroup(a)
 		if IsClaudeSubscriptionGroup(grp) {
 			continue
 		}
-		if skipTextOnly(a, req, nativeAvailable) {
+		if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
 			continue
 		}
 		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {

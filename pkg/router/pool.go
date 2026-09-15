@@ -133,6 +133,7 @@ func applyTaskClassification(req *types.ChatRequest) {
 	if req.TaskKind == TaskCompact && len(req.Messages) > 8 {
 		req.Messages = ctxshrink.CompactTranscript(req.Messages)
 	}
+	maybeAutoTouchMap(req)
 }
 
 func classificationExplicit(c TaskClassification) bool {
@@ -341,6 +342,70 @@ func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest, nativeAvailab
 	}
 }
 
+func shouldSkipAdapter(a types.ProviderAdapter, req *types.ChatRequest, nativeAvailable, strongerThanFree bool) bool {
+	return skipTextOnly(a, req, nativeAvailable) || skipFreeWebHardTask(a, req, strongerThanFree)
+}
+
+type planAware interface {
+	Plan() string
+}
+
+func adapterPlan(a types.ProviderAdapter) string {
+	if p, ok := a.(planAware); ok {
+		return strings.ToLower(strings.TrimSpace(p.Plan()))
+	}
+	return ""
+}
+
+// isFreeWebAdapter is true for web-session adapters on an explicit free plan
+// (or id containing "free"). Unknown/empty plan is treated as usable.
+func isFreeWebAdapter(a types.ProviderAdapter) bool {
+	grp := DetermineAdapterGroup(a)
+	switch grp {
+	case GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb:
+		plan := adapterPlan(a)
+		if plan == "free" {
+			return true
+		}
+		return strings.Contains(strings.ToLower(a.ID()), "free")
+	default:
+		return false
+	}
+}
+
+// skipFreeWebHardTask keeps free web off coding/fix when a stronger account exists.
+func skipFreeWebHardTask(a types.ProviderAdapter, req *types.ChatRequest, strongerAvailable bool) bool {
+	if !strongerAvailable || req == nil || !isFreeWebAdapter(a) {
+		return false
+	}
+	switch req.TaskKind {
+	case TaskCoding, TaskFix:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *AccountPoolRouter) hasStrongerThanFreeWeb(adapters []types.ProviderAdapter, req *types.ChatRequest) bool {
+	native := r.usableToolBackend(adapters)
+	for _, a := range adapters {
+		if isFreeWebAdapter(a) {
+			continue
+		}
+		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+			continue
+		}
+		if r.cooling(a.ID()) {
+			continue
+		}
+		if skipTextOnly(a, req, native) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (r *AccountPoolRouter) usableToolBackend(adapters []types.ProviderAdapter) bool {
 	for _, a := range adapters {
 		if !adapterSupportsTools(a) {
@@ -387,11 +452,12 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 
 	sessionKey := guard.ExtractSessionKey(nil, req)
 	nativeAvailable := r.usableToolBackend(adapters)
+	strongerThanFree := r.hasStrongerThanFreeWeb(adapters, req)
 
 	// 1. Affinity wins for an in-flight session (unless account is dead).
 	if sessionKey != "" {
 		if pinned, ok := guard.GlobalAffinity().GetPinned(sessionKey); ok {
-			if alive := r.adapterAlive(adapters, pinned, req, nativeAvailable); alive != nil {
+			if alive := r.adapterAlive(adapters, pinned, req, nativeAvailable, strongerThanFree); alive != nil {
 				preferredID = pinned
 				manual = true // treat affinity as sticky for this request
 			} else {
@@ -409,7 +475,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	// account and pin it. Anonymous requests (no session) keep group-order
 	// failover below so existing priority behavior stays intact.
 	if preferredID == "" && sessionKey != "" {
-		if a := r.pickSessionAdapter(adapters, req, nativeAvailable); a != nil {
+		if a := r.pickSessionAdapter(adapters, req, nativeAvailable, strongerThanFree); a != nil {
 			preferredID = a.ID()
 			guard.GlobalAffinity().Pin(sessionKey, preferredID)
 		}
@@ -423,9 +489,9 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if a.ID() != preferredID {
 				continue
 			}
-			if skipTextOnly(a, req, nativeAvailable) {
+			if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
 				skippedPreferred = true
-				errs = append(errs, fmt.Errorf("%s: skip text-only backend (client sent tools)", a.ID()))
+				errs = append(errs, fmt.Errorf("%s: skip weak/text-only backend for this task", a.ID()))
 				break
 			}
 			if isQ, remaining, reason := guard.IsQuarantined(a.ID()); isQ {
@@ -504,7 +570,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if preferredID != "" && a.ID() == preferredID {
 				continue
 			}
-			if skipTextOnly(a, req, nativeAvailable) {
+			if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
 				continue
 			}
 			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
@@ -552,12 +618,12 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	return nil, errors.Join(errs...)
 }
 
-func (r *AccountPoolRouter) adapterAlive(adapters []types.ProviderAdapter, id string, req *types.ChatRequest, nativeAvailable bool) types.ProviderAdapter {
+func (r *AccountPoolRouter) adapterAlive(adapters []types.ProviderAdapter, id string, req *types.ChatRequest, nativeAvailable, strongerThanFree bool) types.ProviderAdapter {
 	for _, a := range adapters {
 		if a.ID() != id {
 			continue
 		}
-		if skipTextOnly(a, req, nativeAvailable) {
+		if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
 			return nil
 		}
 		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
@@ -573,8 +639,8 @@ func (r *AccountPoolRouter) adapterAlive(adapters []types.ProviderAdapter, id st
 
 // pickSessionAdapter returns the next living proxy-layer adapter for a new
 // session (round-robin). Nil when the pool is empty / all cooling.
-func (r *AccountPoolRouter) pickSessionAdapter(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) types.ProviderAdapter {
-	living := r.livingForSessionBalance(adapters, req, nativeAvailable)
+func (r *AccountPoolRouter) pickSessionAdapter(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable, strongerThanFree bool) types.ProviderAdapter {
+	living := r.livingForSessionBalance(adapters, req, nativeAvailable, strongerThanFree)
 	if len(living) == 0 {
 		return nil
 	}

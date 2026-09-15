@@ -25,6 +25,7 @@ type ChatGPTWebAdapter struct {
 	PriorityLvl  int
 	SessionToken string
 	TargetModel  string
+	PlanTier     string // "plus" | "pro" | "team" | "free" | …
 	HTTPClient   *http.Client
 
 	mu              sync.Mutex
@@ -36,6 +37,7 @@ const chatGPTConversationURL = "https://chatgpt.com/backend-api/conversation"
 
 func (a *ChatGPTWebAdapter) ID() string    { return a.AdapterID }
 func (a *ChatGPTWebAdapter) Priority() int { return a.PriorityLvl }
+func (a *ChatGPTWebAdapter) Plan() string  { return a.PlanTier }
 
 // SupportsTools is false: ChatGPT web flattens to one text prompt and
 // cannot emit Claude/OpenAI tool_use. Pool Send skips this adapter when
