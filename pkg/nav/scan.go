@@ -31,15 +31,15 @@ type ScanResult struct {
 
 // ModuleHit is one navigable package/dir.
 type ModuleHit struct {
-	ID         string
-	RelPath    string
-	Keywords   []string
-	ReadFirst  []string
-	Symbols    []string
-	Tests      []string
-	FileCount  int
-	FuncCount  int
-	Files      []FileHit
+	ID        string
+	RelPath   string
+	Keywords  []string
+	ReadFirst []string
+	Symbols   []string
+	Tests     []string
+	FileCount int
+	FuncCount int
+	Files     []FileHit
 }
 
 // ScanProject walks root (bounded) and classifies stack + modules.

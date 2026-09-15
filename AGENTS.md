@@ -9,7 +9,7 @@
 
 Không dùng bản đồ amux để navigate codebase client.
 
-**Check/update (không init):** `am map recent --needs-learn` → đọc source hẹp → `am map learn`. Cấm dump full MODULES.
+**Check/update:** `am map recent` → GRAPH (mesh+1 subnet) → `am map learn`. Cấm dump bảng func.
 
 ## Sửa amux (gateway)
 

@@ -81,6 +81,7 @@ Monitoring & Utilities:
   amux map update [dir]       FULL regenerate cấu trúc (giữ annotations)
   amux map recent [--needs-learn]  CHỈ git∪touched — check/update hẹp
   amux map touch --file F [--func N]  ghi focus session
+  amux map graph <module>|--list   subnet func (1 module) hoặc list neurons
   amux map get --file F --func N     1 dòng summary (không đọc full MODULES)
   amux map learn --file F --func N --summary S
   amux map show [dir]         đường dẫn workspace + file map

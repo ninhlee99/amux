@@ -20,7 +20,11 @@ amux/
 ├── AGENTS.md                       # Entry ngắn cho AI agent
 ├── docs/
 │   ├── AI_CODEBASE_MAP.md          # Bản đồ tra cứu theo mục tiêu (đọc trước khi grep repo)
-│   └── ai-locate.yaml              # Index machine-readable: keywords → files → tests
+│   ├── ai-locate.yaml              # Index machine-readable: keywords → files → tests
+│   ├── WORKSPACE_MAP.md            # Map per-client: am map + ~/.am/workspaces/
+│   ├── GRAPH.md                    # Neural mesh + hubs (commit — portable amux)
+│   ├── MODULES.md                  # Stub → GRAPH (commit)
+│   └── MAP_GENERATED.txt           # Metadata scan root=. (commit)
 ├── README.md                       # Tài liệu hướng dẫn sử dụng và tra cứu CLI
 ├── go.mod / go.sum                 # Go modules & dependencies
 │
@@ -36,6 +40,7 @@ amux/
 └── pkg/
     ├── cli/                        # [ENTRYPOINT] Bộ phân phối lệnh CLI
     │   ├── cli.go                  # Dispatcher chính, flags, setup, run, proxy, logs...
+    │   ├── map.go                  # am map init/update/recent/touch/get/learn/show
     │   ├── account.go              # Quản lý toggle account (off/on), pool commands, ID resolver
     │   └── cli_test.go             # Unit tests cho CLI parsing & actions
     │
@@ -124,8 +129,16 @@ amux/
     │   ├── schema.go               # Chuyển đổi và chuẩn hóa JSON Schema giữa các provider
     │   └── schema_test.go          # Tests chuẩn hóa schema
     │
+    ├── nav/                        # [WORKSPACE MAP] Bản đồ codebase per-project (0 LLM token)
+    │   ├── nav.go                  # Resolve ~/.am/workspaces/<name>/, IsAmuxRepository
+    │   ├── scan.go / inventory.go  # Local filesystem scan → modules/files/funcs
+    │   ├── generate.go             # Write map + publish docs/MODULES.md (amux repo)
+    │   ├── annotations.go          # am map learn → annotations.json overlay
+    │   ├── focus.go                # recent/touch — chỉ git∪touched
+    │   └── *_test.go
+    │
     ├── proxy/                      # [GATEWAY DAEMON] Máy chủ Proxy :8787
-    │   ├── server.go               # Khởi chạy HTTP server, routing, passthrough, admin endpoints (/_am/*)
+    │   ├── server.go               # HTTP :8787, routing, /_am/* (gồm GET /_am/map)
     │   ├── rotator.go              # Xoay vòng tài khoản Claude OAuth, theo dõi giới hạn 5h/7d, auto-switch
     │   ├── addr.go                 # Chuẩn hóa địa chỉ lắng nghe, phát hiện bind public/local
     │   ├── authtoken.go            # Cấp phát API key tạm thời amux-<hex>, xác thực khi bind public, rate limit
@@ -144,7 +157,7 @@ amux/
     │   └── *_test.go               # Tests query lưu trữ và chẩn đoán lỗi
     │
     ├── usage/                      # [METRICS] Đo lường & thống kê tiêu thụ token
-    │   ├── capture.go              # Tee-reader bóc tách token từ luồng phản hồi streaming
+    │   ├── capture.go              # Tee-reader usage; EnsureMapIfMissing khi thấy project mới
     │   ├── project.go              # Định danh thư mục dự án dựa trên port kết nối của client
     │   ├── usage.go                # Thống kê và tổng hợp token theo ngày, tuần, tháng, project, model
     │   └── *_test.go               # Tests capture và tính toán usage
@@ -177,7 +190,8 @@ amux/
 
 | Package | Phân Tầng | Trách nhiệm chính |
 | :--- | :--- | :--- |
-| `main.go` & `pkg/cli` | **Entrypoint** | Tiếp nhận lệnh CLI; điều phối các chức năng tài khoản (`off`/`on`), cấu hình pool, quản lý proxy, guard, login, logs, run tool... |
+| `main.go` & `pkg/cli` | **Entrypoint** | Tiếp nhận lệnh CLI; điều phối tài khoản, pool, proxy, guard, login, logs, **`am map`**, run tool... |
+| `pkg/nav` | **Workspace Map** | Scan → **GRAPH.md**; client → `~/.am/workspaces/` only; amux → publish `docs/GRAPH.md` (commit, multi-machine). |
 | `pkg/types` | **Domain Core** | Định nghĩa toàn bộ contracts, interfaces, và chuẩn định dạng ID (`brand[:method]:NN`). Tuyệt đối không import các package nội bộ khác. |
 | `pkg/auth` | **Security / Auth** | Đọc/ghi macOS Keychain, quản lý & refresh OAuth token của Claude, mã hóa AES-256-GCM (`AMENC1:`) bằng master key Scrypt. |
 | `pkg/profile` | **Profile Domain** | Đóng gói snapshot môi trường CLI (`.amp`), chuyển đổi export/import (`.amexp`), quản lý bật/tắt profile trong xoay vòng. |
@@ -189,9 +203,9 @@ amux/
 | `pkg/guard` | **Anti-Ban Engine** | Lớp phòng thủ 5 tầng chống bị phát hiện/gắn cờ tài khoản: Header Sanitizer, Traffic Pacing/Jitter, Health Score & Circuit Breaker, Session Affinity, Egress Proxy riêng biệt. |
 | `pkg/tools` | **Tool Mid-Layer** | Chuẩn hóa schema công cụ giữa Claude Code, Cursor, Codex, Gemini (Antigravity); giả lập vòng lặp gọi tool (`webloop.go`) cho các web session. |
 | `pkg/utils` | **Shared Utilities** | Tiện ích chuyển đổi và chuẩn hóa JSON Schema dùng chung giữa các adapter. |
-| `pkg/proxy` | **Gateway Daemon** | Lắng nghe tại cổng `:8787`, cơ chế tự động xoay vòng tài khoản (Rotator), cấp phát API key tạm thời khi mở mạng (`authtoken.go`), HTTP CONNECT tunnel, watchdog giám sát. |
+| `pkg/proxy` | **Gateway Daemon** | `:8787`, Rotator Claude, API key tạm thời (`authtoken.go`), CONNECT tunnel, admin `/_am/*` gồm **`GET /_am/map`**. |
 | `pkg/monitor` | **Observability** | Ghi nhật ký sự kiện (`events.log`), lưu vết I/O (`requests.log`), chẩn đoán lỗi turn (`errors.log`) và tự động dọn dẹp sau 7 ngày (`error_diag.go`). |
-| `pkg/usage` | **Metrics & Analytics** | Bóc tách số lượng token streaming, liên kết với thư mục dự án của client, thống kê theo ngày/tuần/tháng. |
+| `pkg/usage` | **Metrics & Analytics** | Token streaming + project root client; lần đầu thấy project → `nav.EnsureMapIfMissing`. |
 | `pkg/term` | **Term Styling** | Bảng màu ANSI thích ứng Dark/Light, định dạng dòng lệnh tối giản, nhãn rõ ràng, log có gắn nhãn thời gian thực. |
 | `pkg/hook` | **Integration / System** | Cài đặt lifecycle hooks chuẩn hóa cho Claude Code, Antigravity, Codex, Cursor; đồng bộ biến môi trường với `launchctl`; tự động cập nhật qua LaunchAgent. |
 | `pkg/env` | **Shell Environment** | Cung cấp lệnh xuất môi trường `eval "$(am env)"`, lưu trữ cấu hình môi trường tùy biến (`am env set/get/rm/list`). |

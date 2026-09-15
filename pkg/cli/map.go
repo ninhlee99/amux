@@ -63,7 +63,7 @@ func cmdMap(args []string) {
 		fmt.Printf("  map:    %s\n", b.WorkspaceMap)
 		fmt.Printf("  locate: %s\n", b.WorkspaceLocate)
 		if b.IsAmuxRepository() {
-			fmt.Printf("  published: docs/MODULES.md, docs/MAP_GENERATED.txt\n")
+			fmt.Printf("  published: docs/GRAPH.md, docs/MODULES.md (stub), docs/MAP_GENERATED.txt\n")
 		}
 	case "learn", "annotate", "enrich":
 		cmdMapLearn(args[1:])
@@ -73,6 +73,8 @@ func cmdMap(args []string) {
 		cmdMapTouch(args[1:])
 	case "get", "lookup":
 		cmdMapGet(args[1:])
+	case "graph", "mesh", "subnet":
+		cmdMapGraph(args[1:])
 	case "show", "where", "paths":
 		dir := "."
 		if len(args) > 1 {
@@ -89,8 +91,84 @@ func cmdMap(args []string) {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(b)
 	default:
-		die("usage: am map [init|update|learn|recent|touch|get|show|json] …")
+		die("usage: am map [init|update|learn|recent|touch|get|graph|show|json] …")
 	}
+}
+
+func cmdMapGraph(args []string) {
+	dir := "."
+	listOnly := false
+	mod := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() string {
+			if i+1 >= len(args) {
+				die("missing value after %s", a)
+			}
+			i++
+			return args[i]
+		}
+		switch a {
+		case "--dir", "-C":
+			dir = next()
+		case "--list", "-l":
+			listOnly = true
+		case "--module", "-m":
+			mod = next()
+		default:
+			if !strings.HasPrefix(a, "-") {
+				if mod == "" {
+					mod = a
+				} else {
+					dir = a
+				}
+			} else {
+				die("usage: am map graph <module>|--list [--dir DIR]")
+			}
+		}
+	}
+	scan, g, err := nav.LoadGraphForDir(dir)
+	if err != nil {
+		die("%v", err)
+	}
+	if listOnly || mod == "" {
+		fmt.Println("modules:")
+		for _, p := range g.ModOrder {
+			hubs := g.Hubs[p]
+			hub := ""
+			if len(hubs) > 0 {
+				hub = hubs[0]
+			}
+			fmt.Printf("  %-20s  files=%-3d funcs=%-4d hub=%s\n", p, moduleFileCount(scan, p), moduleFuncCount(scan, p), hub)
+		}
+		if mod == "" && !listOnly {
+			fmt.Println("\nsubnet: am map graph <module>")
+		}
+		return
+	}
+	out, err := nav.RenderSubnetMD(scan, g, mod)
+	if err != nil {
+		die("%v", err)
+	}
+	fmt.Print(out)
+}
+
+func moduleFileCount(scan nav.ScanResult, path string) int {
+	for _, m := range scan.Modules {
+		if m.RelPath == path {
+			return m.FileCount
+		}
+	}
+	return 0
+}
+
+func moduleFuncCount(scan nav.ScanResult, path string) int {
+	for _, m := range scan.Modules {
+		if m.RelPath == path {
+			return m.FuncCount
+		}
+	}
+	return 0
 }
 
 func cmdMapLearn(args []string) {
@@ -349,7 +427,8 @@ func cmdMapShow(dir string) {
 	printPath("  locate (primary)", b.PrimaryLocate)
 	printPath("  workspace map", b.WorkspaceMap)
 	printPath("  workspace locate", b.WorkspaceLocate)
-	printPath("  modules inventory", filepath.Join(b.WorkspaceDir, nav.FileModulesMD))
+	printPath("  graph (neural)", filepath.Join(b.WorkspaceDir, nav.FileGraphMD))
+	printPath("  modules stub", filepath.Join(b.WorkspaceDir, nav.FileModulesMD))
 	printPath("  learned annotations", filepath.Join(b.WorkspaceDir, nav.FileAnnotations))
 	printPath("  session focus", filepath.Join(b.WorkspaceDir, nav.FileFocus))
 	if !b.HasProjectMap() {

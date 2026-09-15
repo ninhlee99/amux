@@ -328,8 +328,12 @@ func splitIdent(s string) []string {
 
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	if n <= 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
 }

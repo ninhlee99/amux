@@ -14,11 +14,11 @@ const FileAnnotations = "annotations.json"
 // FuncAnnotation is an AI/human refinement of a function after deeper reading.
 // Survives am map update (re-scan overlays these summaries).
 type FuncAnnotation struct {
-	File      string    `json:"file"`                // repo-relative path
-	Func      string    `json:"func"`                // function/type name
-	Summary   string    `json:"summary"`             // improved description
-	Notes     string    `json:"notes,omitempty"`     // optional longer note
-	Source    string    `json:"source,omitempty"`    // agent | human | am-learn
+	File      string    `json:"file"`             // repo-relative path
+	Func      string    `json:"func"`             // function/type name
+	Summary   string    `json:"summary"`          // improved description
+	Notes     string    `json:"notes,omitempty"`  // optional longer note
+	Source    string    `json:"source,omitempty"` // agent | human | am-learn
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

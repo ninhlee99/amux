@@ -38,6 +38,7 @@ func GenerateMap(startDir string, force bool) (Bundle, error) {
 	locatePath := filepath.Join(ws, FileLocateYAML)
 	agentsPath := filepath.Join(ws, FileAgentsMD)
 	modulesPath := filepath.Join(ws, FileModulesMD)
+	graphPath := filepath.Join(ws, FileGraphMD)
 
 	write := func(path, body string, always bool) error {
 		if !always && !force && fileExists(path) {
@@ -46,10 +47,15 @@ func GenerateMap(startDir string, force bool) (Bundle, error) {
 		return os.WriteFile(path, []byte(body), 0o644)
 	}
 
+	graph := buildGraph(root, scan)
+
 	if err := write(mapPath, renderMapMD(scan, b.Workspace), true); err != nil {
 		return b, err
 	}
-	if err := write(locatePath, renderLocateYAML(scan), true); err != nil {
+	if err := write(locatePath, renderLocateYAML(scan, graph), true); err != nil {
+		return b, err
+	}
+	if err := write(graphPath, renderGraphMD(scan, graph, b.Workspace), true); err != nil {
 		return b, err
 	}
 	if err := write(modulesPath, renderModulesMD(scan, b.Workspace), true); err != nil {
@@ -71,15 +77,16 @@ func GenerateMap(startDir string, force bool) (Bundle, error) {
 			time.Now().Format(time.RFC3339), scan.Root, len(scan.Modules), totalFiles, totalFuncs, learned)), 0o644)
 
 	b = Resolve(root)
-	if err := publishAmuxInventory(b); err != nil {
+	if err := publishAmuxInventory(b, scan, learned, totalFiles, totalFuncs); err != nil {
 		return b, err
 	}
 	return b, nil
 }
 
-// publishAmuxInventory copies scan inventory into docs/ for the amux tool repo
+// publishAmuxInventory writes portable inventory into docs/ for the amux tool repo
 // (does not overwrite hand-curated AI_CODEBASE_MAP.md or ai-locate.yaml).
-func publishAmuxInventory(b Bundle) error {
+// root in MAP_GENERATED is always "." — no machine-specific absolute path.
+func publishAmuxInventory(b Bundle, scan ScanResult, learned, totalFiles, totalFuncs int) error {
 	if !b.IsAmuxRepository() {
 		return nil
 	}
@@ -87,19 +94,38 @@ func publishAmuxInventory(b Bundle) error {
 	if err := os.MkdirAll(docs, 0o755); err != nil {
 		return err
 	}
+	srcGraph := filepath.Join(b.WorkspaceDir, FileGraphMD)
+	if fileExists(srcGraph) {
+		body, err := os.ReadFile(srcGraph)
+		if err != nil {
+			return err
+		}
+		portable := strings.Replace(string(body),
+			fmt.Sprintf("> Workspace: ~/.am/workspaces/%s/", b.Workspace),
+			"> docs/GRAPH.md (portable · root=.)",
+			1)
+		if err := os.WriteFile(filepath.Join(docs, FileGraphMD), []byte(portable), 0o644); err != nil {
+			return err
+		}
+	}
+	// MODULES.md = stub only (AI uses GRAPH); still publish stub for clarity
 	srcMod := filepath.Join(b.WorkspaceDir, FileModulesMD)
 	if fileExists(srcMod) {
-		if err := copyFile(srcMod, filepath.Join(docs, FileModulesMD)); err != nil {
+		body, err := os.ReadFile(srcMod)
+		if err != nil {
+			return err
+		}
+		portable := strings.Replace(string(body),
+			fmt.Sprintf("> ~/.am/workspaces/%s/MODULES.md", b.Workspace),
+			"> docs/MODULES.md (stub · see GRAPH.md)",
+			1)
+		if err := os.WriteFile(filepath.Join(docs, FileModulesMD), []byte(portable), 0o644); err != nil {
 			return err
 		}
 	}
-	srcGen := filepath.Join(b.WorkspaceDir, "GENERATED.txt")
-	if fileExists(srcGen) {
-		if err := copyFile(srcGen, filepath.Join(docs, "MAP_GENERATED.txt")); err != nil {
-			return err
-		}
-	}
-	return nil
+	meta := fmt.Sprintf("generated_at=%s\nroot=.\nmodules=%d\nfiles=%d\nfuncs=%d\nlearned=%d\nmode=local-scan\ntokens=0\nnote=docs only: root=. is portable; real abs path lives in ~/.am/workspaces/*/project_root.txt\n",
+		time.Now().Format(time.RFC3339), len(scan.Modules), totalFiles, totalFuncs, learned)
+	return os.WriteFile(filepath.Join(docs, "MAP_GENERATED.txt"), []byte(meta), 0o644)
 }
 
 // UpdateMap regenerates map from current tree (same as init --force).
@@ -127,15 +153,14 @@ Bản đồ **tự sinh** bởi amux (local scan, 0 token API).
 
 Workspace: ~/.am/workspaces/%s/
 
-1. AI_CODEBASE_MAP.md — tổng quan + bảng module (số file/func)
-2. MODULES.md — chi tiết từng file + function + mô tả
-3. ai-locate.yaml — index keywords
-4. annotations.json — mô tả do AI/học lại sau khi đọc sâu (sống qua map update)
+1. GRAPH.md — neural mesh (module↔module) + func subnets (đọc cái này)
+2. AI_CODEBASE_MAP.md — tổng quan bảng module
+3. ai-locate.yaml — keywords → hubs (không dump mọi func)
+4. annotations.json — learn overlays
 
-Cập nhật cấu trúc: am map update
-Sau khi phân tích function: am map learn --file PATH --func NAME --summary "..."
-
-Đây là project client (qua proxy), không phải repo amux.
+Cập nhật: am map update
+Chi tiết 1 func: am map get / am map learn
+Cấm dump MODULES cũ kiểu bảng dài.
 `, scan.Label, workspace)
 }
 
@@ -148,11 +173,10 @@ func renderMapMD(scan ScanResult, workspace string) string {
 
 	b.WriteString("## Quy trình agent\n\n")
 	b.WriteString("1. Match mục tiêu → `ai-locate.yaml` (`keywords`)\n")
-	b.WriteString("2. Xem bảng module (số file / số func) bên dưới\n")
-	b.WriteString("3. Đọc chi tiết function trong `MODULES.md`\n")
-	b.WriteString("4. Mở đúng file:line — không quét cả repo\n")
-	b.WriteString("5. `am map update` khi đổi cấu trúc\n")
-	b.WriteString("6. Sau khi đọc sâu 1 function → `am map learn` để lần sau summary đúng hơn\n\n")
+	b.WriteString("2. Xem **GRAPH.md** (mesh module + subnet func) — không đọc bảng inventory dài\n")
+	b.WriteString("3. Mở đúng file hub — `am map get` nếu cần 1 summary\n")
+	b.WriteString("4. `am map update` khi đổi cấu trúc lớn\n")
+	b.WriteString("5. Đọc sâu xong → `am map learn`\n\n")
 
 	b.WriteString("## Stack\n\n")
 	fmt.Fprintf(&b, "- Languages: %s\n", strings.Join(scan.Languages, ", "))
@@ -185,54 +209,35 @@ func renderMapMD(scan ScanResult, workspace string) string {
 	if len(scan.Modules) == 0 {
 		b.WriteString("| *(scan không thấy module)* | | | | |\n")
 	}
-	b.WriteString("\nChi tiết từng file/function: **[MODULES.md](./MODULES.md)**\n")
+	b.WriteString("\nBản đồ nơ-ron: **[GRAPH.md](./GRAPH.md)** · 1 func: `am map get`\n")
 	return b.String()
 }
 
 func renderModulesMD(scan ScanResult, workspace string) string {
+	// Stub only — full dump burned tokens; GRAPH.md is the AI surface.
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Module inventory — %s\n\n", scan.Label)
+	fmt.Fprintf(&b, "# MODULES — %s (stub)\n\n", scan.Label)
 	fmt.Fprintf(&b, "> ~/.am/workspaces/%s/MODULES.md  \n", workspace)
-	fmt.Fprintf(&b, "> Auto-generated · doc-comment + name heuristic (không LLM)\n\n")
-	b.WriteString("Mỗi module: số file, mỗi file: số function, mỗi function: signature + mô tả ngắn.\n\n")
-
+	b.WriteString("> **Deprecated as AI dump.** Dùng [GRAPH.md](./GRAPH.md) (mesh + subnets).\n")
+	b.WriteString("> Chi tiết 1 function: `am map get --file PATH --func NAME`\n\n")
+	b.WriteString("| module | files | funcs |\n|--------|------:|------:|\n")
 	for _, m := range scan.Modules {
-		fmt.Fprintf(&b, "## `%s` — %d files · %d funcs\n\n", m.RelPath, m.FileCount, m.FuncCount)
-		if len(m.Keywords) > 0 {
-			fmt.Fprintf(&b, "Keywords: %s\n\n", strings.Join(m.Keywords, ", "))
-		}
-		if len(m.Files) == 0 {
-			b.WriteString("*(không có source file được parse)*\n\n")
-			continue
-		}
-		for _, f := range m.Files {
-			fmt.Fprintf(&b, "### `%s` (%d funcs)\n\n", f.RelPath, f.FuncCount)
-			if f.FuncCount == 0 {
-				b.WriteString("- *(no exported/top-level funcs detected)*\n\n")
-				continue
-			}
-			b.WriteString("| Line | Kind | Name | Summary |\n")
-			b.WriteString("|-----:|------|------|---------|\n")
-			for _, fn := range f.Funcs {
-				sum := strings.ReplaceAll(fn.Summary, "|", "/")
-				fmt.Fprintf(&b, "| %d | %s | `%s` | %s |\n", fn.Line, fn.Kind, fn.Name, sum)
-			}
-			b.WriteString("\n")
-		}
+		fmt.Fprintf(&b, "| `%s` | %d | %d |\n", m.RelPath, m.FileCount, m.FuncCount)
 	}
 	return b.String()
 }
 
-func renderLocateYAML(scan ScanResult) string {
+func renderLocateYAML(scan ScanResult, graph GraphSnapshot) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s — auto-generated by amux map (local scan)\n", scan.Label)
-	b.WriteString("version: 2\n")
+	b.WriteString("version: 3\n")
 	b.WriteString("scope: client-project\n")
 	fmt.Fprintf(&b, "project: %q\n", scan.Label)
-	fmt.Fprintf(&b, "root: %q\n", scan.Root)
+	b.WriteString("root: \".\"\n")
 	fmt.Fprintf(&b, "generated: %q\n", time.Now().Format(time.RFC3339))
 	b.WriteString("generator: amux-local-scan\n")
-	b.WriteString("detail: MODULES.md\n")
+	b.WriteString("detail: GRAPH.md\n")
+	b.WriteString("token_rule: \"read GRAPH mesh+one subnet; never dump all funcs\"\n")
 	b.WriteString("\nlanguages:\n")
 	for _, l := range scan.Languages {
 		fmt.Fprintf(&b, "  - %s\n", l)
@@ -246,19 +251,11 @@ func renderLocateYAML(scan ScanResult) string {
 	b.WriteString("\ntasks:\n")
 
 	b.WriteString("  - id: project-overview\n")
-	b.WriteString("    keywords: [overview, architecture, entry, bootstrap, readme]\n")
+	b.WriteString("    keywords: [overview, architecture, entry, bootstrap, readme, graph]\n")
 	b.WriteString("    read_first:\n")
+	b.WriteString("      - GRAPH.md\n")
 	if scan.Readme != "" {
 		fmt.Fprintf(&b, "      - %s\n", scan.Readme)
-	}
-	for i, e := range scan.EntryFiles {
-		if i >= 3 {
-			break
-		}
-		fmt.Fprintf(&b, "      - %s\n", e)
-	}
-	if scan.Readme == "" && len(scan.EntryFiles) == 0 {
-		b.WriteString("      - .\n")
 	}
 	b.WriteString("    symbols: []\n")
 	b.WriteString("    tests: []\n")
@@ -284,47 +281,40 @@ func renderLocateYAML(scan ScanResult) string {
 				fmt.Fprintf(&b, "      - %s\n", f)
 			}
 		}
+		hubs := graph.Hubs[m.RelPath]
 		b.WriteString("    symbols: [")
-		for i, s := range m.Symbols {
+		syms := hubs
+		if len(syms) == 0 {
+			syms = m.Symbols
+			if len(syms) > maxHubsPerMod {
+				syms = syms[:maxHubsPerMod]
+			}
+		}
+		for i, s := range syms {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			fmt.Fprintf(&b, "%s", yamlBareOrQuote(s))
+			fmt.Fprintf(&b, "%s", yamlBareOrQuote(shortFuncName(s)))
 		}
 		b.WriteString("]\n")
 		if len(m.Tests) == 0 {
 			b.WriteString("    tests: []\n")
 		} else {
 			b.WriteString("    tests:\n")
+			n := 0
 			for _, t := range m.Tests {
 				fmt.Fprintf(&b, "      - %s\n", t)
-			}
-		}
-		b.WriteString("    files:\n")
-		if len(m.Files) == 0 {
-			b.WriteString("      []\n")
-			continue
-		}
-		for _, f := range m.Files {
-			fmt.Fprintf(&b, "      - path: %s\n", f.RelPath)
-			fmt.Fprintf(&b, "        func_count: %d\n", f.FuncCount)
-			if len(f.Funcs) == 0 {
-				b.WriteString("        functions: []\n")
-				continue
-			}
-			b.WriteString("        functions:\n")
-			for _, fn := range f.Funcs {
-				fmt.Fprintf(&b, "          - name: %s\n", yamlBareOrQuote(fn.Name))
-				fmt.Fprintf(&b, "            kind: %s\n", fn.Kind)
-				fmt.Fprintf(&b, "            line: %d\n", fn.Line)
-				fmt.Fprintf(&b, "            summary: %q\n", fn.Summary)
+				n++
+				if n >= 3 {
+					break
+				}
 			}
 		}
 	}
 
 	b.WriteString("\ninvariants:\n")
-	b.WriteString("  - \"Dùng bản đồ workspace này — không dùng map repo amux\"\n")
-	b.WriteString("  - \"Chi tiết function nằm trong MODULES.md + files[].functions\"\n")
+	b.WriteString("  - \"Đọc GRAPH.md (mesh + 1 subnet) — không dump mọi function\"\n")
+	b.WriteString("  - \"Chi tiết 1 func: am map get / learn\"\n")
 	b.WriteString("  - \"am map update sau khi đổi cấu trúc lớn\"\n")
 	return b.String()
 }

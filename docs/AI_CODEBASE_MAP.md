@@ -158,13 +158,14 @@ go test -tags live ./pkg/live -count=1 -timeout 15m   # cần ~/.am thật
 
 ## 9. Cập nhật bản đồ
 
-**Inventory tự scan (Go, 0 token):** `am map update` → `docs/MODULES.md` + `docs/MAP_GENERATED.txt` (commit cùng repo).
+**Inventory amux (commit git):** `am map update` → `docs/GRAPH.md` + stub `MODULES.md` + `MAP_GENERATED.txt` — clone máy khác dùng luôn, không bắt buộc generate lại.  
+**Client projects:** chỉ `~/.am/workspaces/<name>/` — không commit vào repo client.
 
 Khi thêm **package mới**, **route HTTP**, **lệnh CLI**, hoặc **khái niệm group/task** — cập nhật:
 
 1. Một dòng trong bảng §3  
 2. Một entry `tasks:` trong `docs/ai-locate.yaml`  
-3. Chạy `am map update` để refresh `MODULES.md`  
+3. Chạy `am map update` (refresh GRAPH)  
 4. (Tuỳ chọn) §2 diagram nếu luồng runtime đổi  
 
 ---

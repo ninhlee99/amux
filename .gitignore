@@ -10,7 +10,5 @@ all-account*
 .claude/perf-review.md
 .claude/worktrees/
 
-# am map update — regenerable (0 token); do not commit
-docs/MODULES.md
-docs/MAP_GENERATED.txt
-
+# Client project maps live only under ~/.am/workspaces/ — never in client repos.
+# Amux tool repo DOES commit docs/GRAPH.md (+ stub MODULES / MAP_GENERATED).

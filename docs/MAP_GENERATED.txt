@@ -1,0 +1,9 @@
+generated_at=2026-09-15T15:57:57+07:00
+root=.
+modules=21
+files=97
+funcs=1129
+learned=0
+mode=local-scan
+tokens=0
+note=docs only: root=. is portable; real abs path lives in ~/.am/workspaces/*/project_root.txt

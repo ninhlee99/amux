@@ -246,8 +246,8 @@ func WalkWorkspaces(fn func(name string, rootHint string) error) error {
 }
 
 // Deprecated aliases.
-func StoreID(absRoot string) string          { return WorkspaceName(absRoot) }
-func ProjectStoreDir(name string) string     { return WorkspaceDir(name) }
+func StoreID(absRoot string) string      { return WorkspaceName(absRoot) }
+func ProjectStoreDir(name string) string { return WorkspaceDir(name) }
 func WalkStoreProjects(fn func(string, string) error) error {
 	return WalkWorkspaces(fn)
 }

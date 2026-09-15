@@ -83,19 +83,24 @@ type Session struct{}
 	if !strings.Contains(body, "file_count") || !strings.Contains(body, "func_count") {
 		t.Fatalf("expected file/func counts: %s", body)
 	}
-	if !strings.Contains(body, "summary:") {
-		t.Fatalf("expected function summaries: %s", body)
+	graphPath := filepath.Join(b.WorkspaceDir, FileGraphMD)
+	graphBody, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(graphBody), "## Mesh") || !strings.Contains(string(graphBody), "## Neurons") {
+		t.Fatalf("GRAPH.md missing mesh/neurons: %s", graphBody)
+	}
+	if !strings.Contains(string(graphBody), "Login") {
+		t.Fatalf("expected Login hub/subnet in GRAPH: %s", graphBody)
 	}
 	modPath := filepath.Join(b.WorkspaceDir, FileModulesMD)
 	modBody, err := os.ReadFile(modPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(modBody), "session.go") || !strings.Contains(string(modBody), "Login") {
-		t.Fatalf("MODULES.md missing inventory: %s", modBody)
-	}
-	if !strings.Contains(string(modBody), "authenticates") {
-		t.Fatalf("expected doc summary in MODULES.md: %s", modBody)
+	if !strings.Contains(string(modBody), "GRAPH.md") || !strings.Contains(string(modBody), "stub") {
+		t.Fatalf("MODULES.md should be stub pointing to GRAPH: %s", modBody)
 	}
 }
 
@@ -146,21 +151,20 @@ func TestLearnFuncsOverlaysSummary(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("learn: n=%d err=%v", n, err)
 	}
-	b := Resolve(root)
-	mod, err := os.ReadFile(filepath.Join(b.WorkspaceDir, FileModulesMD))
+	hit, err := LookupFunc(root, "pkg/auth/login.go", "Login")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mod), "[learned]") || !strings.Contains(string(mod), "JWT") {
-		t.Fatalf("MODULES.md should show learned summary: %s", mod)
+	if !strings.Contains(hit.Summary, "[learned]") || !strings.Contains(hit.Summary, "JWT") {
+		t.Fatalf("lookup should show learned summary: %+v", hit)
 	}
 	// update must keep annotation
 	if _, err := UpdateMap(root); err != nil {
 		t.Fatal(err)
 	}
-	mod2, _ := os.ReadFile(filepath.Join(b.WorkspaceDir, FileModulesMD))
-	if !strings.Contains(string(mod2), "JWT") {
-		t.Fatalf("annotation lost after update: %s", mod2)
+	hit2, err := LookupFunc(root, "pkg/auth/login.go", "Login")
+	if err != nil || !strings.Contains(hit2.Summary, "JWT") {
+		t.Fatalf("annotation lost after update: %+v err=%v", hit2, err)
 	}
 }
 
@@ -223,6 +227,51 @@ func TestRecentFocusTouchedOnly(t *testing.T) {
 	h, err := LookupFunc(root, "pkg/auth/login.go", "Login")
 	if err != nil || h.Line == 0 {
 		t.Fatalf("lookup: %+v err=%v", h, err)
+	}
+}
+
+func TestPublishAmuxInventoryPortableRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AMUX_HOME", home)
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "pkg", "cli"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module amux-accounts\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "pkg", "cli", "cli.go"), []byte("package cli\nfunc Run() {}\n"), 0o644)
+	_ = os.MkdirAll(filepath.Join(root, "docs"), 0o755)
+
+	if _, err := GenerateMap(root, true); err != nil {
+		t.Fatal(err)
+	}
+	gen, err := os.ReadFile(filepath.Join(root, "docs", "MAP_GENERATED.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(gen)
+	if !strings.Contains(body, "root=.") {
+		t.Fatalf("want portable root=.: %s", body)
+	}
+	if strings.Contains(body, root) {
+		t.Fatalf("docs must not embed absolute path %q: %s", root, body)
+	}
+	mod, err := os.ReadFile(filepath.Join(root, "docs", FileModulesMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(mod), root) {
+		t.Fatalf("MODULES.md must not embed absolute path: %s", mod)
+	}
+	if !strings.Contains(string(mod), "GRAPH.md") {
+		t.Fatalf("want MODULES stub → GRAPH: %s", mod)
+	}
+	graph, err := os.ReadFile(filepath.Join(root, "docs", FileGraphMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(graph), root) {
+		t.Fatalf("GRAPH.md must not embed absolute path: %s", graph)
+	}
+	if !strings.Contains(string(graph), "## Mesh") {
+		t.Fatalf("GRAPH missing mesh: %s", graph)
 	}
 }
 

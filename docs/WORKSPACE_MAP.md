@@ -13,7 +13,8 @@ amux phục vụ **nhiều repo client**. Mỗi project có bản đồ riêng t
 | `am map update` | **FULL** regenerate cấu trúc | Đổi lớn kiến trúc (giữ `annotations.json`) |
 | `am map recent` | **HẸP** git-changed ∪ touched | Check / quyết định learn |
 | `am map touch` | ghi `focus.json` | Vừa mở 1 file/func |
-| `am map get` | **1 dòng** | Xem summary 1 func — không đọc MODULES |
+| `am map graph <mod>` | **1 subnet** nơ-ron con | Khi đã biết module |
+| `am map get` | **1 dòng** | Xem summary 1 func |
 | `am map learn` | **1–N func** đã đọc sâu | Update map kiến thức |
 
 **Init giữ nguyên (full).** Kiểm tra + enrich map **chỉ** recent/touched — không quét lại cả map/repo trong context AI.
@@ -33,8 +34,9 @@ am map show
 1. `am map recent [--needs-learn]` (Go/git — 0 API token)  
 2. Chỉ mở **source** các func trong list đó  
 3. `am map learn …`  
-4. **Cấm:** `cat` full `MODULES.md` / full `AI_CODEBASE_MAP.md` khi chỉ check/update  
-5. Batch: `echo '[...]' | am map learn --stdin`
+4. **Cấm:** dump full `MODULES` kiểu bảng / full GRAPH mọi subnet cùng lúc  
+5. Đọc GRAPH: **mesh + hubs**; subnet: `am map graph <module>`  
+6. Batch: `echo '[...]' | am map learn --stdin`
 
 Proxy lần đầu thiếu map → `EnsureMapIfMissing` = init (full). Agent sau đó chỉ `recent` + `learn`.
 
@@ -43,12 +45,17 @@ Nội dung workspace:
 | File | Nội dung |
 |------|----------|
 | `AI_CODEBASE_MAP.md` | stack + bảng module (sinh lúc init/update) |
-| `MODULES.md` | inventory đầy đủ (máy đọc; AI dùng `recent`/`get`) |
-| `ai-locate.yaml` | tasks + functions |
+| **`GRAPH.md`** | **AI đọc cái này** — mesh module↔module + subnet func (nơ-ron) |
+| `MODULES.md` | stub đếm file/func → trỏ GRAPH |
+| `ai-locate.yaml` | tasks + **hubs** (không dump mọi func) |
 | `annotations.json` | learn — sống qua `am map update` |
 | `focus.json` | session touched (git∪touch) |
+| `project_root.txt` | **abs** path máy — nguồn sự thật cho Resolve |
+| `GENERATED.txt` | metadata local (root = abs) |
 | `AGENTS.md` | pointer |
-| `project_root.txt` | absolute path repo |
+
+`docs/GRAPH.md` (+ stub `MODULES.md`, `MAP_GENERATED.txt`): **commit trong repo amux** (dùng máy khác không cần `am map update`).  
+Project client khác: map **chỉ** `~/.am/workspaces/` — không bao giờ push vào git client.
 
 ---
 
