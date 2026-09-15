@@ -588,6 +588,20 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			HTTPClient:  proxyClient,
 		}, nil
 
+	case "claude", "claude_api", "claude_oauth":
+		model := p.Model
+		if model == "" {
+			model = claudeDefaultModel
+		}
+		return &ClaudeAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			TargetModel: model,
+			GroupLabel:  p.Group,
+			APIKey:      ResolveSecret(p.APIKey),
+			HTTPClient:  proxyClient,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", p.Type)
 	}
@@ -711,6 +725,27 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 			for i := range providers {
 				if (providers[i].Type == "antigravity" || providers[i].Type == "agy") && providers[i].Enabled != nil && !*providers[i].Enabled {
 					adapters = append(adapters, &AntigravityAdapter{AdapterID: agyPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group, PlanTier: providers[i].Plan})
+					break
+				}
+			}
+		}
+	}
+
+	hasClaude := false
+	for _, a := range adapters {
+		if _, ok := a.(*ClaudeAdapter); ok {
+			hasClaude = true
+			break
+		}
+	}
+
+	if !hasClaude {
+		if a := claudePoolAdapter(providers); a != nil {
+			adapters = append(adapters, a)
+		} else if !rotateOnly && ClaudeAuthAvailable() {
+			for i := range providers {
+				if (providers[i].Type == "claude" || providers[i].Type == "claude_api" || providers[i].Type == "claude_oauth") && providers[i].Enabled != nil && !*providers[i].Enabled {
+					adapters = append(adapters, &ClaudeAdapter{AdapterID: claudePoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group})
 					break
 				}
 			}
@@ -862,6 +897,69 @@ func agyPoolID() string {
 	}
 	return "agy:01"
 }
+
+func claudePoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
+	if !ClaudeAuthAvailable() {
+		return nil
+	}
+
+	priority := 10
+	model := claudeDefaultModel
+	group := "claude_sub"
+	apiKey := ""
+	for i := range providers {
+		if providers[i].Type != "claude" && providers[i].Type != "claude_api" && providers[i].Type != "claude_oauth" {
+			continue
+		}
+		if providers[i].Enabled != nil && !*providers[i].Enabled {
+			return nil // explicit opt-out
+		}
+		priority = providers[i].Priority
+		if providers[i].Model != "" {
+			model = providers[i].Model
+		}
+		if providers[i].Group != "" {
+			group = providers[i].Group
+		}
+		if providers[i].APIKey != "" {
+			apiKey = ResolveSecret(providers[i].APIKey)
+		}
+		break
+	}
+
+	return &ClaudeAdapter{
+		AdapterID:   claudePoolID(),
+		PriorityLvl: priority,
+		TargetModel: model,
+		GroupLabel:  group,
+		APIKey:      apiKey,
+	}
+}
+
+// ClaudeAutoRow returns a synthetic display row for auto-surfaced Claude adapter.
+func ClaudeAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
+	a, ok := claudePoolAdapter(providers).(*ClaudeAdapter)
+	if !ok || a == nil {
+		return ProviderConfig{}, false
+	}
+	return ProviderConfig{ID: a.AdapterID, Type: "claude", Priority: a.PriorityLvl, Model: a.TargetModel, Group: a.GroupLabel}, true
+}
+
+func claudePoolID() string {
+	metas := profile.ListProfiles("claude")
+	if active := profile.ReadActivePointer("claude"); active != "" {
+		for _, m := range metas {
+			if m.Name == active {
+				return m.ID
+			}
+		}
+	}
+	if len(metas) > 0 {
+		return metas[0].ID
+	}
+	return types.FormatID("claude:sub", 1)
+}
+
 
 func LoadConfigFile(path string) (*AccountsFile, error) {
 	b, err := readAccountsFileBytes(path)

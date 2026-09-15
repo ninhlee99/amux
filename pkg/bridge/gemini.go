@@ -330,6 +330,11 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 				finishReason = chunk.FinishReason
 			}
 			if chunk.Done {
+				if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
+					if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+						toolCalls = parsed
+					}
+				}
 				if len(toolCalls) > 0 {
 					geminiCalls := tools.ToGeminiFunctionCalls(toolCalls)
 					parts := make([]geminiPart, 0, len(geminiCalls))
@@ -395,8 +400,19 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 	if thinkingContent.Len() > 0 {
 		parts = append(parts, geminiPart{Text: thinkingContent.String(), Thought: true})
 	}
+	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
+		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+			toolCalls = parsed
+		}
+	}
 	if fullContent.Len() > 0 {
-		parts = append(parts, geminiPart{Text: fullContent.String()})
+		text := fullContent.String()
+		if len(toolCalls) > 0 {
+			text = tools.StripWebToolMarkup(text)
+		}
+		if strings.TrimSpace(text) != "" {
+			parts = append(parts, geminiPart{Text: text})
+		}
 	}
 	for _, tc := range toolCalls {
 		rawArgs := json.RawMessage(tc.Arguments)

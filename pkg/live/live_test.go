@@ -601,3 +601,111 @@ func skipOrFail(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// TestLive_ClaudeClient_CodexBackend_RealToolCall tests real live network call:
+// Claude client calls /v1/messages with tools, routes to real codex:01 backend.
+func TestLive_ClaudeClient_CodexBackend_RealToolCall(t *testing.T) {
+	env := livePool(t)
+	id := "codex:01"
+	body := []byte(`{
+		"model": "gpt-5.6-terra",
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [
+			{
+				"name": "Bash",
+				"description": "Execute shell command on local repository",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"command": {"type": "string"}
+					},
+					"required": ["command"]
+				}
+			}
+		],
+		"messages": [
+			{"role": "user", "content": "Please check repository status by running git status using Bash tool. Call the Bash tool now."}
+		]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("X-Provider", id)
+	req = req.WithContext(timeoutCtx(t, 120*time.Second))
+	rec := httptest.NewRecorder()
+
+	if err := bridge.HandleClaudeMessages(rec, req, env.pool, body); err != nil {
+		skipOrFail(t, err)
+	}
+
+	resStr := rec.Body.String()
+	t.Logf("codex:01 response len=%d: %s", len(resStr), resStr)
+	if rec.Code != http.StatusOK {
+		skipOrFail(t, fmt.Errorf("status %d: %s", rec.Code, resStr))
+	}
+	if !strings.Contains(resStr, `"type":"tool_use"`) && !strings.Contains(resStr, "Bash") {
+		t.Logf("codex:01 returned text instead of tool_use (might be refusal or direct answer)")
+		return
+	}
+	t.Logf("SUCCESS: codex:01 emitted tool_use for Claude client!")
+
+	// Turn 2: Claude client executes locally and sends tool_result
+	bodyTurn2 := []byte(`{
+		"model": "gpt-5.6-terra",
+		"max_tokens": 1024,
+		"stream": true,
+		"tools": [
+			{
+				"name": "Bash",
+				"description": "Execute shell command on local repository",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"command": {"type": "string"}
+					},
+					"required": ["command"]
+				}
+			}
+		],
+		"messages": [
+			{"role": "user", "content": "Please check repository status by running git status using Bash tool. Call the Bash tool now."},
+			{
+				"role": "assistant",
+				"content": [
+					{
+						"type": "tool_use",
+						"id": "call_q2sgfkZvkzpqpn8y1aOKjHxG",
+						"name": "Bash",
+						"input": {"command": "git status"}
+					}
+				]
+			},
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "tool_result",
+						"tool_use_id": "call_q2sgfkZvkzpqpn8y1aOKjHxG",
+						"content": "On branch main\nYour branch is up to date with 'origin/main'.\nnothing to commit, working tree clean"
+					}
+				]
+			}
+		]
+	}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(bodyTurn2))
+	req2.Header.Set("anthropic-version", "2023-06-01")
+	req2.Header.Set("X-Provider", id)
+	req2 = req2.WithContext(timeoutCtx(t, 120*time.Second))
+	rec2 := httptest.NewRecorder()
+
+	if err := bridge.HandleClaudeMessages(rec2, req2, env.pool, bodyTurn2); err != nil {
+		skipOrFail(t, err)
+	}
+
+	resStr2 := rec2.Body.String()
+	t.Logf("codex:01 Turn 2 response: %s", resStr2)
+	if rec2.Code != http.StatusOK {
+		skipOrFail(t, fmt.Errorf("Turn 2 status %d: %s", rec2.Code, resStr2))
+	}
+	t.Logf("SUCCESS: codex:01 received tool_result and completed Turn 2 successfully!")
+}

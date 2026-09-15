@@ -457,17 +457,38 @@ func parseResponsesInput(raw json.RawMessage) ([]types.ChatMessage, error) {
 		switch itemType {
 		case "function_call_output":
 			callID, _ := item["call_id"].(string)
-			output, _ := item["output"].(string)
+			if callID == "" {
+				callID, _ = item["id"].(string)
+			}
+			var outputStr string
+			if s, ok := item["output"].(string); ok {
+				outputStr = s
+			} else if item["output"] != nil {
+				if b, err := json.Marshal(item["output"]); err == nil {
+					outputStr = string(b)
+				}
+			}
 			msgs = append(msgs, types.ChatMessage{
 				Role:       "tool",
 				ToolCallID: callID,
-				Content:    output,
+				Content:    outputStr,
 			})
 
 		case "function_call":
 			callID, _ := item["call_id"].(string)
+			if callID == "" {
+				callID, _ = item["id"].(string)
+			}
 			name, _ := item["name"].(string)
 			args, _ := item["arguments"].(string)
+			if args == "" && item["arguments"] != nil {
+				if b, err := json.Marshal(item["arguments"]); err == nil {
+					args = string(b)
+				}
+			}
+			if args == "" {
+				args = "{}"
+			}
 			msgs = append(msgs, types.ChatMessage{
 				Role: "assistant",
 				ToolCalls: []types.ToolCall{

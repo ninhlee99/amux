@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"amux-accounts/pkg/types"
@@ -95,4 +96,188 @@ func FromClaudeToolUseBlocks(blocks []map[string]json.RawMessage) []types.ToolCa
 		out = append(out, types.ToolCall{ID: id, Name: name, Arguments: args})
 	}
 	return out
+}
+
+// MarshalClaudeMessagesRequest encodes req for Anthropic /v1/messages.
+// Tools (input_schema), tool calls (tool_use), and tool results (tool_result)
+// are properly formatted according to Anthropic API requirements with role alternation.
+func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte, error) {
+	if req == nil {
+		return nil, fmt.Errorf("nil request")
+	}
+	if model == "" {
+		model = req.Model
+	}
+	if model == "" {
+		model = "claude-3-7-sonnet-20250219"
+	}
+
+	payload := map[string]any{
+		"model":      model,
+		"max_tokens": 8192,
+		"stream":     true,
+	}
+	if !req.Stream {
+		payload["stream"] = false
+	}
+	if req.Temperature > 0 {
+		payload["temperature"] = req.Temperature
+	}
+	if req.Thinking && req.ThinkingBudget > 0 {
+		payload["thinking"] = map[string]any{
+			"type":          "enabled",
+			"budget_tokens": req.ThinkingBudget,
+		}
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = ToClaudeTools(req.Tools)
+		if req.ToolChoice != nil {
+			if tc := normalizeClaudeToolChoice(req.ToolChoice); tc != nil {
+				payload["tool_choice"] = tc
+			}
+		}
+	}
+
+	var systemInstructions []string
+	type anthropicBlock map[string]any
+	type anthropicMsg struct {
+		Role    string           `json:"role"`
+		Content []anthropicBlock `json:"content"`
+	}
+
+	var rawMsgs []anthropicMsg
+
+	for _, m := range req.Messages {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		switch role {
+		case "system":
+			if strings.TrimSpace(m.Content) != "" {
+				systemInstructions = append(systemInstructions, m.Content)
+			}
+		case "tool":
+			callID := m.ToolCallID
+			if callID == "" {
+				callID = m.Name
+			}
+			content := m.Content
+			if content == "" {
+				content = "{}"
+			}
+			rawMsgs = append(rawMsgs, anthropicMsg{
+				Role: "user",
+				Content: []anthropicBlock{
+					{
+						"type":         "tool_result",
+						"tool_use_id": callID,
+						"content":     content,
+					},
+				},
+			})
+		case "assistant":
+			var blocks []anthropicBlock
+			if strings.TrimSpace(m.Content) != "" {
+				blocks = append(blocks, anthropicBlock{
+					"type": "text",
+					"text": m.Content,
+				})
+			}
+			for _, tc := range m.ToolCalls {
+				callID := tc.ID
+				if callID == "" {
+					callID = tc.Name
+				}
+				args := json.RawMessage(`{}`)
+				if strings.TrimSpace(tc.Arguments) != "" && json.Valid([]byte(tc.Arguments)) {
+					args = json.RawMessage(tc.Arguments)
+				}
+				blocks = append(blocks, anthropicBlock{
+					"type":  "tool_use",
+					"id":    callID,
+					"name":  tc.Name,
+					"input": args,
+				})
+			}
+			if len(blocks) > 0 {
+				rawMsgs = append(rawMsgs, anthropicMsg{
+					Role:    "assistant",
+					Content: blocks,
+				})
+			}
+		default: // "user"
+			if strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 {
+				continue
+			}
+			rawMsgs = append(rawMsgs, anthropicMsg{
+				Role: "user",
+				Content: []anthropicBlock{
+					{
+						"type": "text",
+						"text": m.Content,
+					},
+				},
+			})
+		}
+	}
+
+	if len(systemInstructions) > 0 {
+		payload["system"] = strings.Join(systemInstructions, "\n\n")
+	}
+
+	// Coalesce messages to enforce Anthropic alternating role requirement:
+	// User -> Assistant -> User -> Assistant...
+	var finalMsgs []anthropicMsg
+	for _, m := range rawMsgs {
+		if len(finalMsgs) == 0 {
+			if m.Role != "user" {
+				// Anthropic requires the first message to be user
+				finalMsgs = append(finalMsgs, anthropicMsg{
+					Role:    "user",
+					Content: []anthropicBlock{{"type": "text", "text": "Hello"}},
+				})
+			}
+			finalMsgs = append(finalMsgs, m)
+			continue
+		}
+		last := &finalMsgs[len(finalMsgs)-1]
+		if last.Role == m.Role {
+			// Merge consecutive same-role messages (e.g. multiple tool_results in user role)
+			last.Content = append(last.Content, m.Content...)
+		} else {
+			finalMsgs = append(finalMsgs, m)
+		}
+	}
+
+	if len(finalMsgs) == 0 {
+		finalMsgs = []anthropicMsg{
+			{
+				Role:    "user",
+				Content: []anthropicBlock{{"type": "text", "text": "Hello"}},
+			},
+		}
+	}
+
+	payload["messages"] = finalMsgs
+	return json.Marshal(payload)
+}
+
+func normalizeClaudeToolChoice(tc any) any {
+	if tc == nil {
+		return nil
+	}
+	switch v := tc.(type) {
+	case string:
+		switch v {
+		case "auto":
+			return map[string]string{"type": "auto"}
+		case "none":
+			return nil
+		case "required", "any":
+			return map[string]string{"type": "any"}
+		default:
+			return map[string]string{"type": "tool", "name": v}
+		}
+	case map[string]any:
+		return v
+	}
+	return map[string]string{"type": "auto"}
 }

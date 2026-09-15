@@ -50,7 +50,9 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		// show up automatically, no proxy code change.
 		msgs = slimWebMessages(msgs)
 	}
-	msgs = ctxshrink.CompactMessages(msgs)
+	// Apply progressive token budget fitting to guarantee prompt stays comfortably
+	// under ChatGPT / Claude / Gemini web context ceiling (~20k tokens safe cap).
+	msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
 
 	var body string
 	useDelta := req.FullContext && continuingThread && len(req.Tools) > 0 && historyHasToolTurns(msgs)
@@ -73,7 +75,7 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		body = BuildConcatenatedPrompt(msgs)
 	}
 	if len(req.Tools) == 0 {
-		return body
+		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
 	preamble := tools.WebPreamble(req.Tools)
@@ -82,12 +84,25 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		preamble = tools.WebCatalogOnly(req.Tools)
 	}
 	trimmedBody := strings.TrimSpace(body)
+	var finalPrompt string
 	if strings.HasSuffix(trimmedBody, "Assistant:") {
 		trimmedBody = strings.TrimSuffix(trimmedBody, "Assistant:")
 		body = strings.TrimSpace(trimmedBody) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
-		return preamble + body
+		finalPrompt = preamble + body
+	} else {
+		finalPrompt = preamble + body + closer
 	}
-	return preamble + body + closer
+	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
+}
+
+func enforceWebPromptLimit(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	head := maxRunes * 4 / 10
+	tail := maxRunes * 4 / 10
+	return string(r[:head]) + "\n\n... [history truncated to fit web payload limit] ...\n\n" + string(r[len(r)-tail:])
 }
 
 // historyHasToolTurns is true when the client already ran tools this session.
@@ -161,6 +176,8 @@ var (
 	reTotalTokens    = regexp.MustCompile(`(?s)<total_tokens>.*?</total_tokens>\s*`)
 	reScratchpadHint = regexp.MustCompile(`(?im)^First privately list what you need next;[^\n]*\n?`)
 	reHookNotice     = regexp.MustCompile(`(?im)^(?:SessionStart|UserPromptSubmit)\b[^\n]*\n?`)
+	reEnvContext     = regexp.MustCompile(`(?s)<environment_context>.*?</environment_context>\s*`)
+	reLocalCaveat    = regexp.MustCompile(`(?s)<local-command-caveat>.*?</local-command-caveat>\s*`)
 )
 
 func stripWebUserNoise(s string) string {
@@ -168,6 +185,8 @@ func stripWebUserNoise(s string) string {
 	s = reTotalTokens.ReplaceAllString(s, "")
 	s = reScratchpadHint.ReplaceAllString(s, "")
 	s = reHookNotice.ReplaceAllString(s, "")
+	s = reEnvContext.ReplaceAllString(s, "")
+	s = reLocalCaveat.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 
@@ -178,11 +197,14 @@ func isClientHarness(s string) bool {
 	if strings.Contains(s, "You are Antigravity") || (strings.Contains(s, "Antigravity") && strings.Contains(s, "agentic")) {
 		return true
 	}
+	if strings.Contains(s, "You are Codex") || strings.Contains(s, "OpenAI Codex") || strings.Contains(s, "codex_cli") {
+		return true
+	}
 	low := strings.ToLower(s)
 	if strings.Contains(s, "permission mode") && strings.Contains(low, "tool") {
 		return true
 	}
-	if len([]rune(s)) > 2500 && (strings.Contains(low, "available tools") || strings.Contains(low, "input_schema")) {
+	if len([]rune(s)) > 2000 && (strings.Contains(low, "available tools") || strings.Contains(low, "input_schema") || strings.Contains(low, "functiondeclarations")) {
 		return true
 	}
 	return false

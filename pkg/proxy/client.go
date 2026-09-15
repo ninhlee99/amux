@@ -180,6 +180,8 @@ func CmdProxyUpFlags(f UpFlags) {
 		}
 	} else if f.Restart || needSpawn {
 		fmt.Printf("amux proxy up  bind %s  %s\n", listen, ProxyBase())
+	} else if ProxyUp() {
+		fmt.Printf("amux proxy already running on %s (%s)\n", listen, ProxyBase())
 	}
 }
 

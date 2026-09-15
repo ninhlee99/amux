@@ -75,3 +75,78 @@ func TestToolCallClaudeCursor(t *testing.T) {
 		t.Fatalf("back=%+v", back)
 	}
 }
+
+func TestMarshalClaudeMessagesRequest(t *testing.T) {
+	req := &types.ChatRequest{
+		Model: "claude-3-7-sonnet-20250219",
+		Tools: []types.ToolDef{
+			{
+				Name:        "exec_command",
+				Description: "Run a shell command",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}}}`),
+			},
+		},
+		Messages: []types.ChatMessage{
+			{Role: "system", Content: "You are a helpful coding assistant."},
+			{Role: "user", Content: "List directory contents."},
+			{
+				Role: "assistant",
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", Name: "exec_command", Arguments: `{"cmd":"ls -la"}`},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: "file1.txt\nfile2.txt"},
+		},
+	}
+
+	b, err := MarshalClaudeMessagesRequest(req, "")
+	if err != nil {
+		t.Fatalf("MarshalClaudeMessagesRequest failed: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+
+	if m["system"] != "You are a helpful coding assistant." {
+		t.Errorf("unexpected system: %v", m["system"])
+	}
+
+	toolsList, ok := m["tools"].([]any)
+	if !ok || len(toolsList) != 1 {
+		t.Fatalf("unexpected tools: %v", m["tools"])
+	}
+
+	msgs, ok := m["messages"].([]any)
+	if !ok || len(msgs) != 3 {
+		t.Fatalf("expected 3 coalesced messages (user, assistant, user), got %d: %+v", len(msgs), msgs)
+	}
+
+	// First: user
+	m0 := msgs[0].(map[string]any)
+	if m0["role"] != "user" {
+		t.Errorf("msg 0 role expected user, got %v", m0["role"])
+	}
+
+	// Second: assistant with tool_use
+	m1 := msgs[1].(map[string]any)
+	if m1["role"] != "assistant" {
+		t.Errorf("msg 1 role expected assistant, got %v", m1["role"])
+	}
+	content1 := m1["content"].([]any)
+	if len(content1) != 1 || content1[0].(map[string]any)["type"] != "tool_use" {
+		t.Errorf("msg 1 content expected tool_use, got %+v", content1)
+	}
+
+	// Third: user with tool_result
+	m2 := msgs[2].(map[string]any)
+	if m2["role"] != "user" {
+		t.Errorf("msg 2 role expected user, got %v", m2["role"])
+	}
+	content2 := m2["content"].([]any)
+	if len(content2) != 1 || content2[0].(map[string]any)["type"] != "tool_result" {
+		t.Errorf("msg 2 content expected tool_result, got %+v", content2)
+	}
+}
+
