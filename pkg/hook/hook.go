@@ -233,15 +233,16 @@ func HookInstalled() bool {
 	return false
 }
 
-// InstallStatusLine writes Claude Code's statusLine command. Does not
-// overwrite a custom statusline the user already set (unless it is ours).
+// InstallStatusLine writes Claude Code / AGY statusLine command.
+// Overwrites our prior install and caveman-only badges (am statusline
+// re-embeds the caveman badge). Leaves other custom statuslines alone.
 func InstallStatusLine(m map[string]any, command string) {
 	if m == nil {
 		return
 	}
 	if existing, ok := m["statusLine"].(map[string]any); ok {
 		cmd, _ := existing["command"].(string)
-		if cmd != "" && !statusLineCommandIsOurs(cmd) {
+		if cmd != "" && !statusLineCommandIsOurs(cmd) && !statusLineCommandIsCaveman(cmd) {
 			return
 		}
 	}
@@ -263,6 +264,11 @@ func IsOurStatusLine(m map[string]any) bool {
 func statusLineCommandIsOurs(cmd string) bool {
 	cmd = strings.TrimSpace(cmd)
 	return strings.HasSuffix(cmd, " statusline") || strings.Contains(cmd, "\" statusline")
+}
+
+func statusLineCommandIsCaveman(cmd string) bool {
+	low := strings.ToLower(cmd)
+	return strings.Contains(low, "caveman-statusline")
 }
 
 // InstalledEvents returns the hook events we currently own an entry in,

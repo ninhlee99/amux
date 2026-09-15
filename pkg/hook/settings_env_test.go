@@ -86,6 +86,19 @@ func TestInstallStatusLine_DoesNotOverwriteCustom(t *testing.T) {
 	}
 }
 
+func TestInstallStatusLine_ReplacesCaveman(t *testing.T) {
+	m := map[string]any{
+		"statusLine": map[string]any{
+			"type":    "command",
+			"command": `bash "/Users/x/.claude/hooks/caveman-statusline.sh"`,
+		},
+	}
+	InstallStatusLine(m, `"/usr/local/bin/am" statusline`)
+	if !IsOurStatusLine(m) {
+		t.Fatal("caveman-only statusline must be replaced by am statusline")
+	}
+}
+
 func TestInstallStatusLine_WritesOurs(t *testing.T) {
 	m := map[string]any{}
 	InstallStatusLine(m, `"/usr/local/bin/am" statusline`)

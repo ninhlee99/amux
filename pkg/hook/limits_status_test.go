@@ -13,6 +13,9 @@ func TestEnsureCodexStatusLine_InsertsWhenMissing(t *testing.T) {
 	if !strings.Contains(got, "used-tokens") || !strings.Contains(got, "five-hour-limit") {
 		t.Fatalf("missing used-tokens/5h, got %q", got)
 	}
+	if !strings.Contains(got, "status_line_use_colors = true") {
+		t.Fatalf("missing colors flag, got %q", got)
+	}
 }
 
 func TestEnsureCodexStatusLine_UpgradesOldOurs(t *testing.T) {
@@ -26,14 +29,25 @@ func TestEnsureCodexStatusLine_UpgradesOldOurs(t *testing.T) {
 	}
 }
 
-func TestEnsureCodexStatusLine_SkipsCustom(t *testing.T) {
+func TestEnsureCodexStatusLine_AddsColorsToCustom(t *testing.T) {
 	in := "[tui]\nstatus_line = [\"model\", \"git-branch\"]\n"
 	got, changed := ensureCodexStatusLine(in)
-	if changed {
-		t.Fatalf("must not overwrite custom, got %q", got)
+	if !changed {
+		t.Fatal("expected colors flag insert")
 	}
-	if got != in {
-		t.Fatalf("content changed: %q", got)
+	if !strings.Contains(got, `status_line = ["model", "git-branch"]`) {
+		t.Fatalf("must keep custom list, got %q", got)
+	}
+	if !strings.Contains(got, "status_line_use_colors = true") {
+		t.Fatalf("missing colors, got %q", got)
+	}
+}
+
+func TestEnsureCodexStatusLine_IdempotentWithColors(t *testing.T) {
+	in := "[tui]\nstatus_line_use_colors = true\nstatus_line = [\"used-tokens\", \"five-hour-limit\", \"weekly-limit\"]\n"
+	got, changed := ensureCodexStatusLine(in)
+	if changed {
+		t.Fatalf("already complete, got %q", got)
 	}
 }
 

@@ -39,6 +39,22 @@ func TestRemainingBarBounds(t *testing.T) {
 	}
 }
 
+func TestForceColor_EnablesUnicodeBar(t *testing.T) {
+	Disable()
+	ForceColor()
+	defer Enable()
+	got := RemainingBar(0.5, 8)
+	if strings.Contains(got, "#") || strings.Contains(got, ".") {
+		t.Fatalf("ForceColor must use block chars, got %q", got)
+	}
+	if !strings.Contains(got, "█") || !strings.Contains(got, "░") {
+		t.Fatalf("want █░ bar, got %q", got)
+	}
+	if !strings.Contains(Green("x"), "\x1b[") {
+		t.Fatal("ForceColor must enable ANSI paint")
+	}
+}
+
 func TestBadgeNoColor(t *testing.T) {
 	Disable()
 	defer Enable()

@@ -87,7 +87,7 @@ Monitoring & Utilities:
   amux map learn --file F --func N --summary S
   amux map show [dir]         đường dẫn workspace + file map
 
-  amux statusline             session tok · 5h/7d left % + bar (Claude · AGY)
+  amux statusline             Codex-style tok · 5h/7d/quota bars (Claude · AGY)
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
   amux run <tool> [args...]   exec tool (claude, codex, agy) routed through proxy

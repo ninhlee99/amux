@@ -32,6 +32,7 @@ const (
 var (
 	mu       sync.Mutex
 	forceOff bool
+	forceOn  bool // statusline pipes: ANSI even when stdout is not a TTY
 	quiet    bool
 
 	// 256-color palette — mid tones, work on both dark and light bg.
@@ -105,10 +106,29 @@ func SetTheme(name string) {
 }
 
 // Disable turns colors off (tests / piped output).
-func Disable() { forceOff = true }
+func Disable() {
+	mu.Lock()
+	forceOff = true
+	forceOn = false
+	mu.Unlock()
+}
 
 // Enable re-enables auto detection.
-func Enable() { forceOff = false }
+func Enable() {
+	mu.Lock()
+	forceOff = false
+	forceOn = false
+	mu.Unlock()
+}
+
+// ForceColor enables ANSI even when stdout is not a TTY (statusline pipes).
+// Wins over inherited NO_COLOR so AGY/Claude footers stay colored.
+func ForceColor() {
+	mu.Lock()
+	forceOn = true
+	forceOff = false
+	mu.Unlock()
+}
 
 // SetQuiet suppresses tagged Log lines on stderr (chat UI). Events still persist.
 func SetQuiet(v bool) {
@@ -118,8 +138,15 @@ func SetQuiet(v bool) {
 }
 
 func colorEnabled(fd int) bool {
-	if forceOff {
+	mu.Lock()
+	on, off := forceOn, forceOff
+	mu.Unlock()
+	if off {
 		return false
+	}
+	// Explicit ForceColor (statusline) wins over inherited NO_COLOR from agent shells.
+	if on {
+		return true
 	}
 	if os.Getenv("NO_COLOR") != "" {
 		return false

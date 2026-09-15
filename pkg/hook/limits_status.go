@@ -11,7 +11,10 @@ import (
 
 const codexStatusLineValue = `["used-tokens", "five-hour-limit", "weekly-limit"]`
 
-var reCodexStatusLine = regexp.MustCompile(`(?m)^[ \t]*status_line[ \t]*=[ \t]*\[[^\]]*\][ \t]*`)
+var (
+	reCodexStatusLine      = regexp.MustCompile(`(?m)^[ \t]*status_line[ \t]*=[ \t]*\[[^\]]*\][ \t]*`)
+	reCodexStatusLineColor = regexp.MustCompile(`(?m)^[ \t]*status_line_use_colors[ \t]*=[ \t]*\S+[ \t]*`)
+)
 
 func AGYSettingsPath() string {
 	home, _ := os.UserHomeDir()
@@ -90,24 +93,44 @@ func uninstallCodexStatusLine() error {
 
 func ensureCodexStatusLine(content string) (string, bool) {
 	line := "status_line = " + codexStatusLineValue
+	colorLine := "status_line_use_colors = true"
+	changed := false
 	if loc := reCodexStatusLine.FindStringIndex(content); loc != nil {
 		cur := strings.TrimSpace(content[loc[0]:loc[1]])
 		if strings.Contains(cur, "used-tokens") && strings.Contains(cur, "five-hour-limit") && strings.Contains(cur, "weekly-limit") {
-			return content, false
+			// keep list; still may need colors flag below
+		} else if isOurCodexStatusLine(cur) {
+			content = content[:loc[0]] + line + content[loc[1]:]
+			changed = true
+		} else {
+			// custom list — only ensure colors
+			goto colors
 		}
-		if isOurCodexStatusLine(cur) {
-			return content[:loc[0]] + line + content[loc[1]:], true
+	} else if strings.Contains(content, "[tui]") {
+		content = strings.Replace(content, "[tui]", "[tui]\n"+line, 1)
+		changed = true
+	} else {
+		out := strings.TrimRight(content, "\n")
+		if out != "" {
+			out += "\n\n"
 		}
-		return content, false
+		content = out + "[tui]\n" + line + "\n"
+		changed = true
 	}
-	if strings.Contains(content, "[tui]") {
-		return strings.Replace(content, "[tui]", "[tui]\n"+line, 1), true
+colors:
+	if !reCodexStatusLineColor.MatchString(content) {
+		if strings.Contains(content, "[tui]") {
+			content = strings.Replace(content, "[tui]", "[tui]\n"+colorLine, 1)
+			changed = true
+		}
+	} else if loc := reCodexStatusLineColor.FindStringIndex(content); loc != nil {
+		cur := strings.TrimSpace(content[loc[0]:loc[1]])
+		if !strings.Contains(cur, "true") {
+			content = content[:loc[0]] + colorLine + content[loc[1]:]
+			changed = true
+		}
 	}
-	out := strings.TrimRight(content, "\n")
-	if out != "" {
-		out += "\n\n"
-	}
-	return out + "[tui]\n" + line + "\n", true
+	return content, changed
 }
 
 func isOurCodexStatusLine(line string) bool {

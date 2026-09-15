@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,10 +56,20 @@ type LimitWindows struct {
 	SevenDUsed *float64
 }
 
-// CmdStatusline renders session tokens + 5h / 7d remaining.
+type limitSeg struct {
+	Label string  // e.g. "5h", "Gemini 7d", "Claude 7d"
+	Used  float64 // 0–1 utilization
+}
+
+// CmdStatusline renders Codex-style session tokens + rate/quota bars.
+// Forces ANSI color (AGY/Claude pipe stdout is not a TTY). Optionally
+// appends caveman badge when that hook script is present.
 func CmdStatusline() {
+	term.ForceColor()
 	in, _ := ReadStatuslineInput(os.Stdin)
-	fmt.Println(RenderStatusline(in, fetchProxyLimits()))
+	line := RenderStatusline(in, fetchProxyLimits())
+	line = appendCavemanBadge(line)
+	fmt.Println(line)
 }
 
 func ReadStatuslineInput(r io.Reader) (StatuslineInput, error) {
@@ -65,17 +78,48 @@ func ReadStatuslineInput(r io.Reader) (StatuslineInput, error) {
 	return in, err
 }
 
-// RenderStatusline: `10k tok  ·  5h left 75% ████  ·  7d left 60% ██░░` — no window size.
+// RenderStatusline Codex-style footer:
+//
+//	12k  ·  5h ████████ 100%  ·  Gemini 7d ███████░ 94%  ·  Claude 7d ███░░░░░ 40%
+//
+// No context-window size. Colors/bars assume term.ForceColor for pipes.
 func RenderStatusline(in StatuslineInput, extra LimitWindows) string {
-	var b strings.Builder
+	var parts []string
 	if used, ok := sessionTokens(in); ok {
-		b.WriteString(usage.FormatTokens(used))
-		b.WriteString(" tok")
+		parts = append(parts, term.Bold(usage.FormatTokens(used))+term.Dim(" tok"))
 	}
-	five, seven := mergeLimits(in, extra)
-	writeLimit(&b, "5h", five)
-	writeLimit(&b, "7d", seven)
-	return b.String()
+	for _, seg := range collectLimitSegs(in, extra) {
+		parts = append(parts, formatLimitSeg(seg))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, term.Dim("  ·  "))
+}
+
+func formatLimitSeg(seg limitSeg) string {
+	left := 1 - seg.Used
+	if left < 0 {
+		left = 0
+	}
+	if left > 1 {
+		left = 1
+	}
+	pct := int(left*100 + 0.5)
+	// Codex-like: "5h ████░░░░ 50%" — label, bar (remaining), percent left.
+	return term.Dim(seg.Label) + " " + term.RemainingBar(left, 8) + " " + colorPct(pct)
+}
+
+func colorPct(pct int) string {
+	s := fmt.Sprintf("%d%%", pct)
+	switch {
+	case pct <= 10:
+		return term.Red(s)
+	case pct <= 30:
+		return term.Yellow(s)
+	default:
+		return term.Green(s)
+	}
 }
 
 func sessionTokens(in StatuslineInput) (int, bool) {
@@ -103,98 +147,112 @@ func sessionTokens(in StatuslineInput) (int, bool) {
 	return n, true
 }
 
-func writeLimit(b *strings.Builder, label string, used *float64) {
-	if used == nil {
-		return
+// collectLimitSegs builds display segments. AGY quota map keeps every bucket
+// (Gemini + Claude/OpenAI). Claude rate_limits → 5h/7d. Proxy rotator only
+// when client sent neither.
+func collectLimitSegs(in StatuslineInput, extra LimitWindows) []limitSeg {
+	if len(in.Quota) > 0 {
+		return segsFromQuota(in.Quota)
 	}
-	if b.Len() > 0 {
-		b.WriteString("  ·  ")
-	}
-	left := 1 - *used
-	if left < 0 {
-		left = 0
-	}
-	if left > 1 {
-		left = 1
-	}
-	pct := int(left*100 + 0.5)
-	// "5h left 75% ██████" — label + remaining % first, bar last (scan-friendly).
-	b.WriteString(fmt.Sprintf("%s left %d%% ", label, pct))
-	b.WriteString(term.RemainingBar(left, 8))
-}
-
-func mergeLimits(in StatuslineInput, extra LimitWindows) (fiveH, sevenD *float64) {
+	var out []limitSeg
 	if in.RateLimits != nil {
 		if in.RateLimits.FiveHour != nil {
-			v := in.RateLimits.FiveHour.UsedPercentage / 100
-			fiveH = &v
+			out = append(out, limitSeg{Label: "5h", Used: clamp01(in.RateLimits.FiveHour.UsedPercentage / 100)})
 		}
 		if in.RateLimits.SevenDay != nil {
-			v := in.RateLimits.SevenDay.UsedPercentage / 100
-			sevenD = &v
+			out = append(out, limitSeg{Label: "7d", Used: clamp01(in.RateLimits.SevenDay.UsedPercentage / 100)})
 		}
 	}
-	q5, q7 := limitsFromQuota(in.Quota)
-	if fiveH == nil {
-		fiveH = q5
+	if len(out) > 0 {
+		return out
 	}
-	if sevenD == nil {
-		sevenD = q7
+	if extra.FiveHUsed != nil {
+		out = append(out, limitSeg{Label: "5h", Used: clamp01(*extra.FiveHUsed)})
 	}
-	// AGY quota (and any other client-native buckets) must not inherit
-	// Claude rotator 5h/7d from /_am/status — those windows belong to
-	// another product.
-	if len(in.Quota) > 0 {
-		return fiveH, sevenD
+	if extra.SevenDUsed != nil {
+		out = append(out, limitSeg{Label: "7d", Used: clamp01(*extra.SevenDUsed)})
 	}
-	if fiveH == nil {
-		fiveH = extra.FiveHUsed
-	}
-	if sevenD == nil {
-		sevenD = extra.SevenDUsed
-	}
-	return fiveH, sevenD
+	return out
 }
 
-func limitsFromQuota(q map[string]statuslineQuota) (fiveH, sevenD *float64) {
-	for k, v := range q {
-		used := quotaUsed(v)
+func segsFromQuota(q map[string]statuslineQuota) []limitSeg {
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []limitSeg
+	for _, k := range keys {
+		used := quotaUsed(q[k])
 		if used == nil {
 			continue
 		}
-		kl := strings.ToLower(k)
-		switch {
-		case strings.Contains(kl, "5h") || strings.Contains(kl, "five-hour") ||
-			strings.Contains(kl, "five_hour") || strings.Contains(kl, "hourly"):
-			if fiveH == nil {
-				fiveH = used
-			}
-		case strings.Contains(kl, "week") || strings.Contains(kl, "7d") ||
-			strings.Contains(kl, "seven"):
-			if sevenD == nil {
-				sevenD = used
-			}
-		}
+		out = append(out, limitSeg{Label: quotaLabel(k), Used: *used})
 	}
-	return fiveH, sevenD
+	return out
+}
+
+func quotaLabel(key string) string {
+	kl := strings.ToLower(strings.TrimSpace(key))
+	brand := ""
+	switch {
+	case strings.Contains(kl, "gemini"):
+		brand = "Gemini"
+	case strings.Contains(kl, "claude"):
+		brand = "Claude"
+	case strings.Contains(kl, "openai") || strings.Contains(kl, "chatgpt"):
+		brand = "OpenAI"
+	case strings.Contains(kl, "codex"):
+		brand = "Codex"
+	case strings.Contains(kl, "agy") || strings.Contains(kl, "antigravity"):
+		brand = "AGY"
+	}
+	win := ""
+	switch {
+	case strings.Contains(kl, "5h") || strings.Contains(kl, "five") || strings.Contains(kl, "hour"):
+		win = "5h"
+	case strings.Contains(kl, "week") || strings.Contains(kl, "7d") || strings.Contains(kl, "seven"):
+		win = "7d"
+	case strings.Contains(kl, "day") || strings.Contains(kl, "daily"):
+		win = "1d"
+	case strings.Contains(kl, "month"):
+		win = "30d"
+	}
+	switch {
+	case brand != "" && win != "":
+		return brand + " " + win
+	case brand != "":
+		return brand
+	case win != "":
+		return win
+	default:
+		return key
+	}
 }
 
 func quotaUsed(v statuslineQuota) *float64 {
 	if v.UsedPercentage != nil {
-		x := *v.UsedPercentage
-		if x > 1 {
-			x /= 100
+		x := clamp01(*v.UsedPercentage)
+		if *v.UsedPercentage > 1 {
+			x = clamp01(*v.UsedPercentage / 100)
 		}
 		return &x
 	}
 	if v.RemainingFraction != nil {
-		x := 1 - *v.RemainingFraction
-		if x < 0 {
-			x = 0
-		}
+		x := clamp01(1 - *v.RemainingFraction)
 		return &x
 	}
 	return nil
+}
+
+func clamp01(x float64) float64 {
+	if x < 0 {
+		return 0
+	}
+	if x > 1 {
+		return 1
+	}
+	return x
 }
 
 func fetchProxyLimits() LimitWindows {
@@ -221,4 +279,36 @@ func fetchProxyLimits() LimitWindows {
 		return LimitWindows{FiveHUsed: a.FiveHUsed, SevenDUsed: a.SevenDUsed}
 	}
 	return LimitWindows{}
+}
+
+// appendCavemanBadge runs the local caveman statusline script when present so
+// replacing Claude's statusLine with `am statusline` keeps the caveman badge.
+func appendCavemanBadge(line string) string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".claude", "hooks", "caveman-statusline.sh"),
+		filepath.Join(home, ".codex", "hooks", "caveman-statusline.sh"),
+	}
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		candidates = append([]string{filepath.Join(d, "hooks", "caveman-statusline.sh")}, candidates...)
+	}
+	for _, script := range candidates {
+		st, err := os.Stat(script)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		out, err := exec.Command("bash", script).Output()
+		if err != nil {
+			continue
+		}
+		badge := strings.TrimSpace(string(out))
+		if badge == "" {
+			continue
+		}
+		if line == "" {
+			return badge
+		}
+		return line + "  " + badge
+	}
+	return line
 }
