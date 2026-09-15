@@ -10,3 +10,7 @@ all-account*
 .claude/perf-review.md
 .claude/worktrees/
 
+# am map update — regenerable (0 token); do not commit
+docs/MODULES.md
+docs/MAP_GENERATED.txt
+
