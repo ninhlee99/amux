@@ -29,7 +29,8 @@ func newDefaultTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 100
 	t.MaxIdleConnsPerHost = 10
-	t.IdleConnTimeout = 90 * time.Second
+	t.IdleConnTimeout = 30 * time.Second
 	t.ResponseHeaderTimeout = 5 * time.Minute
+	t.ExpectContinueTimeout = 1 * time.Second
 	return t
 }

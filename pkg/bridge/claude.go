@@ -385,6 +385,11 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 			break
 		}
 	}
+	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
+		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+			toolCalls = parsed
+		}
+	}
 	// Deduplicate tool calls by ID if present
 	if len(toolCalls) > 0 {
 		seen := map[string]bool{}
@@ -701,6 +706,12 @@ loop:
 	if textStarted {
 		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", blockIndex)
 		blockIndex++
+	}
+
+	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
+		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+			toolCalls = parsed
+		}
 	}
 
 	if len(toolCalls) > 0 {

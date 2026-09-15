@@ -143,6 +143,11 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 				finishReason = chunk.FinishReason
 			}
 			if chunk.Done {
+				if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
+					if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+						toolCalls = parsed
+					}
+				}
 				if len(toolCalls) > 0 {
 					finishReason = "tool_calls"
 					oaCalls := tools.ToOpenAIToolCalls(toolCalls)
@@ -241,6 +246,12 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 		if chunk.Done {
 			break
+		}
+	}
+
+	if len(toolCalls) == 0 && full.Len() > 0 && len(req.Tools) > 0 {
+		if parsed, _ := tools.FinalizeWebToolCalls(full.String(), req.Tools, req.Messages); len(parsed) > 0 {
+			toolCalls = parsed
 		}
 	}
 	if len(toolCalls) > 0 {

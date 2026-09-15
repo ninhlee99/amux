@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"amux-accounts/pkg/monitor"
@@ -739,7 +740,50 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			if d, ok := findToolDef(by, "read", "read_file", "view_file"); ok {
 				return d.Name, true
 			}
+		case lower == "write" || lower == "write_file" || lower == "write_to_file":
+			if d, ok := findToolDef(by, "write", "write_file", "write_to_file"); ok {
+				return d.Name, true
+			}
+		case lower == "edit" || lower == "edit_file" || lower == "replace_file_content" ||
+			lower == "patch" || lower == "str_replace_editor":
+			if d, ok := findToolDef(by, "edit", "edit_file", "replace_file_content", "patch", "str_replace_editor"); ok {
+				return d.Name, true
+			}
+		case lower == "grep" || lower == "grep_search" || lower == "search_code" || lower == "search":
+			if d, ok := findToolDef(by, "grep", "grep_search", "search_code", "search"); ok {
+				return d.Name, true
+			}
+		case lower == "find" || lower == "find_by_name" || lower == "glob" || lower == "file_search":
+			if d, ok := findToolDef(by, "find", "find_by_name", "glob", "file_search"); ok {
+				return d.Name, true
+			}
+		case lower == "agent" || lower == "invoke_subagent" || lower == "subagent" ||
+			lower == "task" || lower == "spawn_agent" || lower == "dispatch_agent":
+			if d, ok := findToolDef(by, "agent", "invoke_subagent", "subagent", "task", "spawn_agent", "dispatch_agent"); ok {
+				return d.Name, true
+			}
 		}
+
+		// MCP tool matching: e.g. "mcp__server__tool" <-> "server_tool" or "mcp_server_tool"
+		cleanName := strings.TrimPrefix(lower, "mcp__")
+		cleanName = strings.TrimPrefix(cleanName, "mcp_")
+		cleanNameNorm := strings.ReplaceAll(strings.ReplaceAll(cleanName, "__", "_"), "-", "_")
+		for k, canon := range allow {
+			kClean := strings.TrimPrefix(k, "mcp__")
+			kClean = strings.TrimPrefix(kClean, "mcp_")
+			kCleanNorm := strings.ReplaceAll(strings.ReplaceAll(kClean, "__", "_"), "-", "_")
+			if kCleanNorm == cleanNameNorm || strings.HasSuffix(kCleanNorm, "_"+cleanNameNorm) {
+				return canon, true
+			}
+		}
+
+		// AGY call_mcp_tool fallback: if client has call_mcp_tool and incoming is an MCP tool
+		if strings.HasPrefix(lower, "mcp__") || strings.HasPrefix(lower, "mcp_") {
+			if d, ok := findToolDef(by, "call_mcp_tool"); ok {
+				return d.Name, true
+			}
+		}
+
 		return "", false
 	}
 
@@ -748,8 +792,54 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 	add := func(name, id, args string) {
 		canon, ok := canonical(name)
 		if !ok {
-			return
+			// If incoming is call_mcp_tool, inspect args to map to client's mcp__server__tool
+			if strings.EqualFold(name, "call_mcp_tool") {
+				var mcpArgs struct {
+					ServerName string          `json:"ServerName"`
+					ToolName   string          `json:"ToolName"`
+					Arguments  json.RawMessage `json:"Arguments"`
+				}
+				if json.Unmarshal([]byte(args), &mcpArgs) == nil && mcpArgs.ServerName != "" && mcpArgs.ToolName != "" {
+					candidate := "mcp__" + mcpArgs.ServerName + "__" + mcpArgs.ToolName
+					if c, found := canonical(candidate); found {
+						canon = c
+						ok = true
+						if len(mcpArgs.Arguments) > 0 && string(mcpArgs.Arguments) != "null" {
+							args = string(mcpArgs.Arguments)
+						}
+					}
+				}
+			}
+			if !ok {
+				return
+			}
 		}
+
+		// If client expects call_mcp_tool and incoming is an mcp__server__tool name:
+		if strings.EqualFold(canon, "call_mcp_tool") && (strings.HasPrefix(strings.ToLower(name), "mcp__") || strings.HasPrefix(strings.ToLower(name), "mcp_")) {
+			clean := strings.TrimPrefix(strings.ToLower(name), "mcp__")
+			clean = strings.TrimPrefix(clean, "mcp_")
+			parts := strings.SplitN(clean, "__", 2)
+			if len(parts) < 2 {
+				parts = strings.SplitN(clean, "_", 2)
+			}
+			if len(parts) == 2 {
+				var innerArgs any
+				if json.Unmarshal([]byte(args), &innerArgs) == nil {
+					wrapped := map[string]any{
+						"ServerName":  parts[0],
+						"ToolName":    parts[1],
+						"Arguments":   innerArgs,
+						"toolAction":  "Calling MCP tool",
+						"toolSummary": "MCP tool call",
+					}
+					if b, err := json.Marshal(wrapped); err == nil {
+						args = string(b)
+					}
+				}
+			}
+		}
+
 		args = strings.TrimSpace(args)
 		if args == "" {
 			args = "{}"
@@ -842,8 +932,8 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.Too
 	return calls
 }
 
-// coerceToolArgs remaps common aliases (path↔file_path, cmd↔command) to the
-// keys the client dialect schema expects.
+// coerceToolArgs remaps common aliases (path↔file_path, cmd↔command, content↔CodeContent,
+// old↔new strings, grep/find queries) to the keys the client dialect schema expects.
 func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 	var m map[string]any
 	if json.Unmarshal([]byte(argsJSON), &m) != nil || len(m) == 0 {
@@ -866,10 +956,187 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 			}
 		}
 	}
-	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath")
-	remap(wantPath, "file_path", "path", "AbsolutePath", "file", "filename")
+
+	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory")
+	remap(wantPath, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory", "file", "filename", "filepath")
+
 	wantCmd := toolArgKey(def, "command", "CommandLine", "cmd")
 	remap(wantCmd, "command", "CommandLine", "cmd", "script", "code")
+
+	wantContent := toolArgKey(def, "content", "CodeContent", "contents", "text")
+	remap(wantContent, "content", "CodeContent", "contents", "text", "body", "code")
+
+	wantOld := toolArgKey(def, "old_string", "TargetContent", "old_str", "old")
+	remap(wantOld, "old_string", "TargetContent", "old_str", "old", "orig", "original")
+
+	wantNew := toolArgKey(def, "new_string", "ReplacementContent", "new_str", "new")
+	remap(wantNew, "new_string", "ReplacementContent", "new_str", "new", "replacement")
+
+	wantQuery := toolArgKey(def, "query", "pattern", "Query", "Pattern")
+	remap(wantQuery, "query", "pattern", "Query", "Pattern", "regex", "search_term")
+
+	wantDir := toolArgKey(def, "dir", "directory", "SearchDirectory", "SearchPath")
+	remap(wantDir, "dir", "directory", "SearchDirectory", "SearchPath", "path", "cwd")
+
+	// Ensure required schema parameters for AGY / strict client tools if missing
+	schemaKeysList := schemaKeys(def.InputSchema, 20)
+	hasKey := func(k string) bool {
+		for _, sk := range schemaKeysList {
+			if sk == k {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Unwrap single-item array strings for path/cmd if web model generated an array
+	for _, k := range []string{"file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "command", "CommandLine"} {
+		if arr, ok := m[k].([]any); ok && len(arr) > 0 {
+			if firstStr, isStr := arr[0].(string); isStr {
+				m[k] = firstStr
+				changed = true
+			}
+		}
+	}
+
+	if hasKey("Overwrite") {
+		if v, ok := m["Overwrite"]; !ok || v == nil {
+			m["Overwrite"] = true
+			changed = true
+		} else if s, isStr := v.(string); isStr {
+			m["Overwrite"] = strings.EqualFold(s, "true") || s == "1"
+			changed = true
+		}
+	}
+	if hasKey("AllowMultiple") {
+		if v, ok := m["AllowMultiple"]; !ok || v == nil {
+			m["AllowMultiple"] = false
+			changed = true
+		} else if s, isStr := v.(string); isStr {
+			m["AllowMultiple"] = strings.EqualFold(s, "true") || s == "1"
+			changed = true
+		}
+	}
+	if hasKey("Cwd") {
+		if _, ok := m["Cwd"]; !ok {
+			m["Cwd"] = "."
+			changed = true
+		}
+	}
+	if hasKey("WaitMsBeforeAsync") {
+		if v, ok := m["WaitMsBeforeAsync"]; !ok || v == nil {
+			m["WaitMsBeforeAsync"] = 10000
+			changed = true
+		} else if s, isStr := v.(string); isStr {
+			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+				m["WaitMsBeforeAsync"] = n
+				changed = true
+			}
+		}
+	}
+	if hasKey("toolAction") {
+		if _, ok := m["toolAction"]; !ok {
+			m["toolAction"] = "Running tool"
+			changed = true
+		}
+	}
+	if hasKey("toolSummary") {
+		if _, ok := m["toolSummary"]; !ok {
+			m["toolSummary"] = "Tool execution"
+			changed = true
+		}
+	}
+	if hasKey("Instruction") {
+		if _, ok := m["Instruction"]; !ok {
+			m["Instruction"] = "Apply modification"
+			changed = true
+		}
+	}
+	if hasKey("Description") {
+		if _, ok := m["Description"]; !ok {
+			m["Description"] = "Code change"
+			changed = true
+		}
+	}
+	if hasKey("StartLine") {
+		if v, ok := m["StartLine"]; !ok || v == nil {
+			m["StartLine"] = 1
+			changed = true
+		} else if s, isStr := v.(string); isStr {
+			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+				m["StartLine"] = n
+				changed = true
+			}
+		}
+	}
+	if hasKey("EndLine") {
+		if v, ok := m["EndLine"]; !ok || v == nil {
+			m["EndLine"] = 1000000
+			changed = true
+		} else if s, isStr := v.(string); isStr {
+			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+				m["EndLine"] = n
+				changed = true
+			}
+		}
+	}
+
+	// Subagent coercion:
+	// AGY client expects invoke_subagent with Subagents array
+	if strings.EqualFold(def.Name, "invoke_subagent") {
+		if _, hasSub := m["Subagents"]; !hasSub {
+			promptVal := ""
+			roleVal := "Codebase Researcher"
+			typeNameVal := "research"
+			if p, ok := m["prompt"].(string); ok && p != "" {
+				promptVal = p
+			} else if t, ok := m["task"].(string); ok && t != "" {
+				promptVal = t
+			} else if d, ok := m["description"].(string); ok && d != "" {
+				promptVal = d
+			}
+			if promptVal != "" {
+				if r, ok := m["description"].(string); ok && r != "" && r != promptVal {
+					roleVal = r
+				}
+				if tn, ok := m["type"].(string); ok && tn != "" {
+					typeNameVal = tn
+				} else if tn, ok := m["TypeName"].(string); ok && tn != "" {
+					typeNameVal = tn
+				}
+				m["Subagents"] = []map[string]any{
+					{
+						"TypeName":  typeNameVal,
+						"Role":      roleVal,
+						"Prompt":    promptVal,
+						"Model":     "inherit",
+						"Workspace": "inherit",
+					},
+				}
+				delete(m, "prompt")
+				delete(m, "description")
+				delete(m, "task")
+				changed = true
+			}
+		}
+	} else if strings.EqualFold(def.Name, "agent") || strings.EqualFold(def.Name, "subagent") || strings.EqualFold(def.Name, "task") {
+		// Claude/Codex client expects Agent with prompt/description
+		if subs, ok := m["Subagents"].([]any); ok && len(subs) > 0 {
+			if first, ok := subs[0].(map[string]any); ok {
+				if p, ok := first["Prompt"].(string); ok && p != "" {
+					m["prompt"] = p
+				}
+				if r, ok := first["Role"].(string); ok && r != "" {
+					m["description"] = r
+				}
+				delete(m, "Subagents")
+				delete(m, "toolAction")
+				delete(m, "toolSummary")
+				changed = true
+			}
+		}
+	}
+
 	if !changed {
 		return argsJSON
 	}
