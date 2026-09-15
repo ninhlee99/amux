@@ -204,6 +204,56 @@ func TestIDEFromClientDialect(t *testing.T) {
 	}
 }
 
+func TestResolveAccountGroup(t *testing.T) {
+	cases := []struct {
+		id, typ, plan, explicit, want string
+	}{
+		{id: "claude:web:01", typ: "claude_web", want: GroupClaudeWeb},
+		{id: "chatgpt:01", typ: "chatgpt_web", want: GroupChatGPTWeb},
+		{id: "gemini:web:01", typ: "gemini_web", want: GroupGeminiWeb},
+		{id: "codex:01", typ: "codex_cli", plan: "plus", want: GroupCodexSub},
+		{id: "codex:02", typ: "codex_cli", plan: "free", want: GroupCodexFree},
+		{id: "agy:01", typ: "antigravity", want: GroupAGYSub},
+		{id: "agy:free:01", typ: "antigravity", want: GroupAGYFree},
+		{id: "gemini:api:01", typ: "openai_compatible", want: GroupAPIOther},
+		{id: "x", typ: "openai_compatible", explicit: GroupCodexSub, want: GroupCodexSub},
+	}
+	for _, tc := range cases {
+		got := ResolveAccountGroup(tc.id, tc.typ, tc.plan, tc.explicit)
+		if got != tc.want {
+			t.Errorf("%s/%s plan=%s explicit=%s: got %s want %s",
+				tc.id, tc.typ, tc.plan, tc.explicit, got, tc.want)
+		}
+	}
+}
+
+func TestResolveProfileGroup(t *testing.T) {
+	if ResolveProfileGroup("claude", "pro") != GroupClaudeSub {
+		t.Fatal("claude pro")
+	}
+	if ResolveProfileGroup("claude", "free") != GroupClaudeFree {
+		t.Fatal("claude free")
+	}
+	if ResolveProfileGroup("codex", "") != GroupCodexSub {
+		t.Fatal("codex default sub")
+	}
+	if ResolveProfileGroup("antigravity", "free") != GroupAGYFree {
+		t.Fatal("agy free")
+	}
+}
+
+func TestGroupIndex(t *testing.T) {
+	if GroupIndex(GroupClaudeSub) != 0 {
+		t.Fatal("claude_sub should be first")
+	}
+	if GroupIndex(GroupGeminiWeb) != len(GroupPriority)-1 {
+		t.Fatal("gemini_web should be last")
+	}
+	if GroupIndex("unknown_group") != len(GroupPriority) {
+		t.Fatal("unknown sorts after known")
+	}
+}
+
 func TestAccountPoolRouter_ClaudeDialectSkipsClaudeSubProxy(t *testing.T) {
 	// Claude IDE client must use other accounts as proxy — never Claude subscription.
 	codex := &mockGroupAdapter{id: "codex:dialect:01", priority: 1, group: GroupCodexSub}

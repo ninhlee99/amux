@@ -79,6 +79,9 @@ type ChatRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 	// Metadata carries arbitrary client metadata passed along with the request.
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// TaskKind is set by the router (not the client): coding | analysis | review |
+	// compact | quality | fix | general. Soft-prefers account groups; never excludes.
+	TaskKind string `json:"-"`
 }
 
 // StreamChunk is one piece of a streamed reply. The producer closes the

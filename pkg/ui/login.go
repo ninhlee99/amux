@@ -17,6 +17,7 @@ import (
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
+	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 )
@@ -707,16 +708,44 @@ func loadProviderRows() []provider.ProviderConfig {
 
 // CmdAccounts lists every saved account: Claude profiles + web/API providers.
 func CmdAccounts() {
-	term.Header("amux accounts", "all accounts · POOL=IN means rotate")
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, term.Dim("ID\tKIND\tACCOUNT\tPLAN\tPOOL\tMODEL"))
+	CmdAccountsFilter("")
+}
 
-	n := 0
+// CmdAccountsFilter lists accounts grouped by rotate priority.
+// filter may be a tool/group hint (claude, codex, agy, api, web) or empty = all.
+func CmdAccountsFilter(filter string) {
+	subtitle := "grouped by rotate priority · POOL=IN means rotate"
+	if filter != "" {
+		subtitle = "filter " + filter + " · " + subtitle
+	}
+	term.Header("amux accounts", subtitle)
+
+	rows := collectAccountRows(filter)
+	if len(rows) == 0 {
+		term.Warn("No accounts. am add / am login / am api add")
+		return
+	}
+
+	forEachAccountGroup(rows, func(title, _ string, members []accountRow) {
+		printDisplaySection(title)
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, term.Dim("ID\tKIND\tACCOUNT\tPLAN\tPOOL\tMODEL"))
+		for _, r := range members {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Account, r.Plan, r.Pool, r.Model)
+		}
+		w.Flush()
+		term.PanelEnd()
+	})
+}
+
+func collectAccountRows(filter string) []accountRow {
+	var rows []accountRow
 	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
 		if tool == "codex" {
 			continue // Codex is represented below in loadProviderRows()
 		}
 		for _, p := range profile.ListProfiles(tool) {
+			grp := router.ResolveProfileGroup(tool, p.Plan)
 			acct := p.Account
 			if acct == "" {
 				acct = p.Name
@@ -733,11 +762,24 @@ func CmdAccounts() {
 					plan = "FREE"
 				}
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", pName, tool, acct, plan, poolMark(!p.Disabled), "-")
-			n++
+			row := accountRow{
+				Group:   grp,
+				ID:      pName,
+				Kind:    tool,
+				Account: acct,
+				Plan:    plan,
+				Pool:    poolMark(!p.Disabled),
+				Model:   "-",
+			}
+			if !matchesAccountRowFilter(filter, row) {
+				continue
+			}
+			rows = append(rows, row)
 		}
 	}
 	for _, p := range loadProviderRows() {
+		grp := router.ResolveAccountGroup(p.ID, p.Type, p.Plan, p.Group)
+		kind := providerKindLabel(p.Type)
 		acct := p.Account
 		if acct == "" {
 			acct = "-"
@@ -754,21 +796,50 @@ func CmdAccounts() {
 				plan = "-"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, providerKindLabel(p.Type), acct, plan, poolMark(p.InRotatePool()), model)
-		n++
+		row := withAPIProvider(accountRow{
+			Group:    grp,
+			ID:       p.ID,
+			Kind:     kind,
+			Account:  acct,
+			Plan:     plan,
+			Pool:     poolMark(p.InRotatePool()),
+			Model:    model,
+			Priority: p.Priority,
+		})
+		if !matchesAccountRowFilter(filter, row) {
+			continue
+		}
+		rows = append(rows, row)
 	}
-	w.Flush()
-	if n == 0 {
-		term.Warn("No accounts. am add / am login / am api add")
-	}
+	return rows
 }
 
 // CmdPool lists accounts currently in the rotate pool (POOL=IN).
 func CmdPool() {
-	term.Header("amux pool", "rotate set · am pool add|remove <id>")
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
-	n := 0
+	term.Header("amux pool", "rotate set · grouped by priority · am pool add|remove <id>")
+	rows := collectPoolRows()
+	if len(rows) == 0 {
+		term.Warn("Rotate pool empty. am pool add <id>  (see: am accounts)")
+		return
+	}
+	forEachAccountGroup(rows, func(title, _ string, members []accountRow) {
+		printDisplaySection(title)
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
+		for _, r := range members {
+			prio := "-"
+			if r.Kind != "claude" && r.Kind != "antigravity" {
+				prio = fmt.Sprintf("%d", r.Priority)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.ID, r.Kind, prio, r.Model)
+		}
+		w.Flush()
+		term.PanelEnd()
+	})
+}
+
+func collectPoolRows() []accountRow {
+	var rows []accountRow
 	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
 		if tool == "codex" {
 			continue
@@ -781,8 +852,13 @@ func CmdPool() {
 			if pName == "" {
 				pName = p.ID
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", pName, tool, "-", "-")
-			n++
+			rows = append(rows, accountRow{
+				Group: router.ResolveProfileGroup(tool, p.Plan),
+				ID:    pName,
+				Kind:  tool,
+				Model: "-",
+				Pool:  "IN",
+			})
 		}
 	}
 	for _, p := range loadProviderRows() {
@@ -793,13 +869,16 @@ func CmdPool() {
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", p.ID, providerKindLabel(p.Type), p.Priority, model)
-		n++
+		rows = append(rows, withAPIProvider(accountRow{
+			Group:    router.ResolveAccountGroup(p.ID, p.Type, p.Plan, p.Group),
+			ID:       p.ID,
+			Kind:     providerKindLabel(p.Type),
+			Model:    model,
+			Priority: p.Priority,
+			Pool:     "IN",
+		}))
 	}
-	w.Flush()
-	if n == 0 {
-		term.Warn("Rotate pool empty. am pool add <id>  (see: am accounts)")
-	}
+	return rows
 }
 
 // CmdAccountsCmd handles `am accounts [priority <id> <N>]`.
@@ -811,7 +890,11 @@ func CmdAccountsCmd(args []string) {
 
 	switch args[0] {
 	case "ls", "list":
-		CmdAccounts()
+		filter := ""
+		if len(args) > 1 {
+			filter = args[1]
+		}
+		CmdAccountsFilter(filter)
 	case "rm", "delete", "remove":
 		if len(args) < 2 {
 			fmt.Println("Usage: amux accounts rm <id>")

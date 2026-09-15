@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"amux-accounts/pkg/auth/oauth"
@@ -43,7 +42,8 @@ Setup (once):
   amux setup [--auto-update]  hook install + /am:feedback + auto-update
 
 Accounts:
-  amux accounts               list ALL accounts (Claude + web + API)
+  amux accounts [filter]      list ALL accounts grouped by rotate priority
+  amux ls [filter]            alias to amux accounts (claude|codex|agy|api|web|gemini|…)
   amux off <id>               take any account out of rotate (stays in list)
   amux on <id>                put it back
   amux add [tool] [name]      save current CLI login (claude / codex / gemini)
@@ -53,7 +53,6 @@ Accounts:
   amux restore <id>           restore trash (` + "`am restore --backup`" + ` = last auto-backup)
   amux sw                     picker · am sw <id> pin Claude or provider
   amux current [tool]         who is logged in on this machine
-  amux ls [tool]              alias to amux accounts
 
 Rotate pool:
   amux pool                   who is IN rotate
@@ -152,7 +151,11 @@ func Run(rawArgs []string) {
 		cmdAdd(tool, name)
 
 	case "ls", "list":
-		cmdLs(args)
+		filter := ""
+		if len(args) > 0 {
+			filter = args[0]
+		}
+		ui.CmdAccountsFilter(filter)
 
 	case "rm", "remove", "delete":
 		target := strings.Join(args, " ")
@@ -606,36 +609,6 @@ func isProviderName(name string) bool {
 		}
 	}
 	return false
-}
-
-func cmdLs(args []string) {
-	c := profile.LoadConfig()
-	tools := profile.ToolNames(c)
-	if len(args) > 0 {
-		tools = []string{args[0]}
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tACCOUNT\tACTIVE\tOFF\tSAVED")
-	for _, tn := range tools {
-		active := profile.ReadActivePointer(tn)
-		profs := profile.ListProfiles(tn)
-		if len(profs) == 0 {
-			fmt.Fprintf(w, "%s\t(none — am add %s)\t\t\t\t\n", tn, tn)
-			continue
-		}
-		for _, p := range profs {
-			mark := ""
-			if p.Name == active {
-				mark = "*"
-			}
-			off := ""
-			if p.Disabled {
-				off = "yes"
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", p.ID, p.Name, orDash(p.Account), mark, off, p.Saved.Format("2006-01-02 15:04"))
-		}
-	}
-	w.Flush()
 }
 
 func cmdAdd(tool, name string) {

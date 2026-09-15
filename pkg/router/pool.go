@@ -95,11 +95,15 @@ func (r *AccountPoolRouter) SetDirectory(adapters []types.ProviderAdapter) {
 
 // applyTaskClassification inspects the request and dynamically enables thinking
 // mode or escalates to Pro tier when heavy analytical reasoning is required.
+// Also stamps a soft TaskKind used only for account-group preference.
 func applyTaskClassification(req *types.ChatRequest) {
 	if req == nil {
 		return
 	}
 	c := ClassifyTask(req)
+	if c.Kind != "" {
+		req.TaskKind = c.Kind
+	}
 	if c.IsHeavy && req.TargetTier == "" {
 		req.TargetTier = "pro"
 		log.Printf("router: heavy task detected (%s) -> escalated to Pro tier", strings.Join(c.Reasons, ", "))
@@ -376,11 +380,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 		groupBuckets[grp] = append(groupBuckets[grp], a)
 	}
 
-	ide := ""
-	if req != nil {
-		ide = IDEFromClientDialect(req.ClientDialect)
-	}
-	for _, grpKey := range ProxyGroupsForClient(ide) {
+	for _, grpKey := range GroupOrderForRequest(req) {
 		grpAdapters := groupBuckets[grpKey]
 		if len(grpAdapters) == 0 {
 			continue

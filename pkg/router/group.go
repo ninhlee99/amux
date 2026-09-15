@@ -137,6 +137,69 @@ type GroupAwareAdapter interface {
 	Group() string
 }
 
+// GroupIndex returns the GroupPriority rank (0 = highest). Unknown groups sort last.
+func GroupIndex(group string) int {
+	for i, g := range GroupPriority {
+		if g == group {
+			return i
+		}
+	}
+	return len(GroupPriority)
+}
+
+// ResolveAccountGroup maps a stored account onto a rotate group.
+// explicit wins; otherwise type / id / plan heuristics match DetermineAdapterGroup.
+func ResolveAccountGroup(id, providerType, plan, explicit string) string {
+	if g := strings.TrimSpace(explicit); g != "" {
+		return strings.ToLower(g)
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	typ := strings.ToLower(strings.TrimSpace(providerType))
+	plan = strings.ToLower(strings.TrimSpace(plan))
+	free := plan == "free" || strings.Contains(id, ":free") || strings.Contains(id, "free:")
+
+	switch {
+	case typ == "claude_web" || strings.Contains(id, "claude:web") || strings.Contains(id, "claude_web"):
+		return GroupClaudeWeb
+	case typ == "chatgpt_web" || (strings.Contains(id, "chatgpt") && !strings.Contains(id, "codex")):
+		return GroupChatGPTWeb
+	case typ == "gemini_web" || strings.Contains(id, "gemini:web") || strings.Contains(id, "gemini_web"):
+		return GroupGeminiWeb
+	case typ == "codex_cli" || strings.HasPrefix(id, "codex"):
+		if free {
+			return GroupCodexFree
+		}
+		return GroupCodexSub
+	case typ == "antigravity" || typ == "agy" || strings.HasPrefix(id, "agy") || strings.HasPrefix(id, "antigravity"):
+		if free {
+			return GroupAGYFree
+		}
+		return GroupAGYSub
+	case typ == "claude_code" || strings.HasPrefix(id, "claude"):
+		if free {
+			return GroupClaudeFree
+		}
+		return GroupClaudeSub
+	default:
+		return GroupAPIOther
+	}
+}
+
+// ResolveProfileGroup maps a CLI profile (claude / codex / antigravity) onto a group.
+func ResolveProfileGroup(tool, plan string) string {
+	tool = strings.ToLower(strings.TrimSpace(tool))
+	switch tool {
+	case "claude":
+		return ResolveAccountGroup("claude:"+strings.TrimSpace(plan), "claude_code", plan, "")
+	case "codex":
+		return ResolveAccountGroup("codex:"+strings.TrimSpace(plan), "codex_cli", plan, "")
+	case "antigravity", "agy":
+		return ResolveAccountGroup("agy:"+strings.TrimSpace(plan), "antigravity", plan, "")
+	default:
+		return GroupAPIOther
+	}
+}
+
 // DetermineAdapterGroup resolves the group for any ProviderAdapter.
 func DetermineAdapterGroup(a types.ProviderAdapter) string {
 	if ga, ok := a.(GroupAwareAdapter); ok {
@@ -144,48 +207,5 @@ func DetermineAdapterGroup(a types.ProviderAdapter) string {
 			return g
 		}
 	}
-
-	id := strings.ToLower(a.ID())
-
-	// 8. Claude Web
-	if strings.Contains(id, "claude:web") || strings.Contains(id, "claude_web") {
-		return GroupClaudeWeb
-	}
-
-	// 9. ChatGPT Web
-	if strings.Contains(id, "chatgpt") && !strings.Contains(id, "codex") {
-		return GroupChatGPTWeb
-	}
-
-	// 10. Gemini Web
-	if strings.Contains(id, "gemini:web") || strings.Contains(id, "gemini_web") {
-		return GroupGeminiWeb
-	}
-
-	// 2 & 5. Codex CLI
-	if strings.HasPrefix(id, "codex") {
-		if strings.Contains(id, "free") {
-			return GroupCodexFree
-		}
-		return GroupCodexSub
-	}
-
-	// 3 & 6. Antigravity / AGY
-	if strings.HasPrefix(id, "agy") || strings.HasPrefix(id, "antigravity") {
-		if strings.Contains(id, "free") {
-			return GroupAGYFree
-		}
-		return GroupAGYSub
-	}
-
-	// 1 & 4. Claude OAuth profiles
-	if strings.HasPrefix(id, "claude") {
-		if strings.Contains(id, "free") {
-			return GroupClaudeFree
-		}
-		return GroupClaudeSub
-	}
-
-	// 7. API Other (Gemini API, Groq, Kimi, OpenRouter, GitHub Models, etc.)
-	return GroupAPIOther
+	return ResolveAccountGroup(a.ID(), "", "", "")
 }

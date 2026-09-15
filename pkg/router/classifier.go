@@ -7,8 +7,22 @@ import (
 	"amux-accounts/pkg/types"
 )
 
+// Hidden task intents — soft routing hints only. Any account may still handle
+// any task; preferred groups are tried first among eligible adapters.
+const (
+	TaskGeneral  = "general"
+	TaskCoding   = "coding"
+	TaskAnalysis = "analysis"
+	TaskReview   = "review"
+	TaskCompact  = "compact"
+	TaskQuality  = "quality"
+	TaskFix      = "fix"
+)
+
 // TaskClassification holds the analysis result of a ChatRequest.
 type TaskClassification struct {
+	// Kind is the soft task intent (coding/analysis/…). Empty means general.
+	Kind string
 	// IsHeavy indicates the task requires deep reasoning or complex analysis,
 	// warranting escalation to a Pro tier model (e.g. gemini-3.1-pro / gemini-2.5-pro / o3-mini).
 	IsHeavy bool
@@ -36,21 +50,58 @@ var (
 		`investigate\s*why|tại\s*sao\s*bị\s*lỗi` +
 		`)\b`)
 
+	reAnalysisIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`phân\s*tích|analyze|analysis|explain|giải\s*thích|hiểu\s*code|understand|` +
+		`investigate|điều\s*tra|explore|tìm\s*hiểu|overview|tổng\s*quan` +
+		`)\b`)
+
+	reReviewIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`review|code\s*review|kiểm\s*tra\s*(?:pr|code|diff)|pull\s*request|\bpr\b|` +
+		`nhận\s*xét|đánh\s*giá\s*(?:code|pr|diff)` +
+		`)\b`)
+
+	reCompactIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`tóm\s*tắt|summarize|summary|compact|rút\s*gọn|condense|tl;?dr` +
+		`)\b`)
+
+	reQualityIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`quality|chất\s*lượng|evaluate\s*ux|đánh\s*giá\s*(?:sản\s*phẩm|ux|ui)|` +
+		`product\s*review|usability` +
+		`)\b`)
+
+	reFixIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`fix\s*bug|sửa\s*lỗi|bugfix|hotfix|patch|resolve\s*error|` +
+		`broken|không\s*chạy|failing\s*test|flaky` +
+		`)\b`)
+
+	reCodingIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`implement|viết\s*code|write\s*(?:code|a\s*function|tests?)|` +
+		`add\s*(?:feature|endpoint|function)|create\s*(?:file|component)|` +
+		`refactor|generate\s*code|coding` +
+		`)\b`)
+
 	// Stack trace or crash dump signatures in tool results.
 	reCrashOrStackTrace = regexp.MustCompile(`(?i)(?:panic:|Traceback \(most recent call last\):|fatal error:|NullPointerException|SIGSEGV|segmentation fault)`)
 
 	// Explicit pro / reasoning model names requested by client.
 	reProModelName = regexp.MustCompile(`(?i)(?:o1|o3|gemini-(?:3\.1|2\.5|1\.5)-pro|claude-3-7-sonnet|deepseek-r1|\br1\b|kimi-(?:k\d+|latest|thinking|research)[\w.-]*|moonshot-v1(?:-\w+)?|grok-(?:2|3|beta)[\w.-]*)`)
+
+	mutatingToolNames = map[string]bool{
+		"bash": true, "edit": true, "write": true, "notebookedit": true,
+		"exec_command": true, "apply_diff": true, "write_to_file": true,
+		"run_command": true, "delete": true, "movefile": true,
+	}
 )
 
-// ClassifyTask evaluates an incoming ChatRequest to determine if it needs
-// Pro tier escalation and extended thinking mode.
+// ClassifyTask evaluates an incoming ChatRequest for pro/thinking escalation
+// and a soft task Kind used only for account-group preference.
 func ClassifyTask(req *types.ChatRequest) TaskClassification {
 	if req == nil {
-		return TaskClassification{ReasoningEffort: "medium"}
+		return TaskClassification{Kind: TaskGeneral, ReasoningEffort: "medium"}
 	}
 
 	var res TaskClassification
+	res.Kind = TaskGeneral
 	res.ReasoningEffort = "medium"
 
 	// 1. Explicit client signals.
@@ -94,6 +145,14 @@ func ClassifyTask(req *types.ChatRequest) TaskClassification {
 		codeBlockCount += strings.Count(m.Content, "```")
 	}
 
+	hasMutating := requestHasMutatingTools(req)
+
+	// Soft task intent (keywords win over generic tool catalogs).
+	res.Kind = detectTaskKind(lastUserText, hasMutating, hasDiff, hasStackTrace)
+	if res.Kind != TaskGeneral {
+		res.Reasons = append(res.Reasons, "task kind: "+res.Kind)
+	}
+
 	// 2. Trivial prompt check — do not auto-escalate trivial greetings or quick commands
 	// unless explicitly requested by the client.
 	if len(lastUserText) < 50 && reTrivialPrompt.MatchString(lastUserText) && !req.Thinking && !strings.EqualFold(req.TargetTier, "pro") {
@@ -108,6 +167,9 @@ func ClassifyTask(req *types.ChatRequest) TaskClassification {
 		matches := reHeavyKeywords.FindAllString(lastUserText, 5)
 		keywordCount = len(matches)
 		res.Reasons = append(res.Reasons, "heavy task keywords: "+strings.Join(matches, ", "))
+		if res.Kind == TaskGeneral {
+			res.Kind = TaskAnalysis
+		}
 	}
 
 	// 4. Code & context volume heuristic.
@@ -115,12 +177,18 @@ func ClassifyTask(req *types.ChatRequest) TaskClassification {
 		res.IsHeavy = true
 		res.NeedsThinking = true
 		res.Reasons = append(res.Reasons, "code diff review task")
+		if res.Kind == TaskGeneral {
+			res.Kind = TaskReview
+		}
 	}
 
 	if hasStackTrace {
 		res.IsHeavy = true
 		res.NeedsThinking = true
 		res.Reasons = append(res.Reasons, "stack trace / crash investigation")
+		if res.Kind == TaskGeneral || res.Kind == TaskCoding {
+			res.Kind = TaskFix
+		}
 	}
 
 	// Long conversation context or multiple substantial code blocks (> 3000 chars of code)
@@ -135,4 +203,56 @@ func ClassifyTask(req *types.ChatRequest) TaskClassification {
 	}
 
 	return res
+}
+
+func detectTaskKind(text string, hasMutating, hasDiff, hasStackTrace bool) string {
+	if text != "" {
+		switch {
+		case reFixIntent.MatchString(text) || hasStackTrace:
+			return TaskFix
+		case reReviewIntent.MatchString(text) && (hasDiff || !hasMutating):
+			return TaskReview
+		case reCompactIntent.MatchString(text):
+			return TaskCompact
+		case reQualityIntent.MatchString(text):
+			return TaskQuality
+		case reAnalysisIntent.MatchString(text) && !hasMutating:
+			return TaskAnalysis
+		case reAnalysisIntent.MatchString(text) && !reCodingIntent.MatchString(text):
+			// "phân tích" with a full agent tool catalog still leans analysis.
+			return TaskAnalysis
+		case reCodingIntent.MatchString(text):
+			return TaskCoding
+		case reReviewIntent.MatchString(text):
+			return TaskReview
+		}
+	}
+	if hasMutating {
+		return TaskCoding
+	}
+	if hasDiff {
+		return TaskReview
+	}
+	return TaskGeneral
+}
+
+func requestHasMutatingTools(req *types.ChatRequest) bool {
+	if req == nil {
+		return false
+	}
+	for _, t := range req.Tools {
+		name := strings.ToLower(strings.TrimSpace(t.Name))
+		if mutatingToolNames[name] {
+			return true
+		}
+		// MCP / namespaced tools: mcp__x__write_file
+		base := name
+		if i := strings.LastIndex(name, "__"); i >= 0 && i+2 < len(name) {
+			base = name[i+2:]
+		}
+		if mutatingToolNames[base] {
+			return true
+		}
+	}
+	return false
 }
