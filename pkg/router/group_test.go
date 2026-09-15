@@ -164,3 +164,96 @@ func TestAccountPoolRouter_GroupPriorityAndIntraGroupRotation(t *testing.T) {
 		t.Fatalf("Turn 7 expected return to codex:01, got: %s", chunk.Content)
 	}
 }
+
+func TestGroupPriorityForIDE_NativeFirst(t *testing.T) {
+	claude := GroupPriorityForIDE(IDEClaude)
+	if claude[0] != GroupClaudeSub || claude[1] != GroupClaudeFree {
+		t.Fatalf("claude main should be claude_sub then claude_free, got %v", claude[:2])
+	}
+	if claude[2] != GroupCodexSub {
+		t.Fatalf("claude failover should start at codex_sub, got %s", claude[2])
+	}
+
+	codex := GroupPriorityForIDE(IDECodex)
+	if codex[0] != GroupCodexSub || codex[1] != GroupCodexFree {
+		t.Fatalf("codex main should be codex_sub then codex_free, got %v", codex[:2])
+	}
+
+	agy := GroupPriorityForIDE(IDEAGY)
+	if agy[0] != GroupAGYSub || agy[1] != GroupAGYFree {
+		t.Fatalf("agy main should be agy_sub then agy_free, got %v", agy[:2])
+	}
+
+	if got := GroupPriorityForIDE(""); len(got) != len(GroupPriority) || got[0] != GroupPriority[0] {
+		t.Fatalf("empty IDE should keep global order")
+	}
+}
+
+func TestIDEFromClientDialect(t *testing.T) {
+	if IDEFromClientDialect("claude") != IDEClaude {
+		t.Fatal("claude dialect")
+	}
+	if IDEFromClientDialect("codex") != IDECodex {
+		t.Fatal("codex dialect")
+	}
+	if IDEFromClientDialect("gemini") != IDEAGY {
+		t.Fatal("gemini dialect")
+	}
+	if IDEFromClientDialect("cursor") != "" {
+		t.Fatal("cursor has no native subscription group")
+	}
+}
+
+func TestAccountPoolRouter_ClaudeDialectPrefersClaudeSub(t *testing.T) {
+	codex := &mockGroupAdapter{id: "codex:dialect:01", priority: 1, group: GroupCodexSub}
+	claude := &mockGroupAdapter{id: "claude:dialect:01", priority: 9, group: GroupClaudeSub}
+	r := NewAccountPoolRouter([]types.ProviderAdapter{codex, claude})
+	req := &types.ChatRequest{
+		ClientDialect: "claude",
+		Messages:      []types.ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	ch, err := r.Send(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := <-ch
+	if chunk.Content != "response from claude:dialect:01" {
+		t.Fatalf("claude IDE should use claude_sub first, got %s", chunk.Content)
+	}
+}
+
+func TestAccountPoolRouter_CodexDialectPrefersCodexSub(t *testing.T) {
+	codex := &mockGroupAdapter{id: "codex:dialect:02", priority: 9, group: GroupCodexSub}
+	claude := &mockGroupAdapter{id: "claude:dialect:02", priority: 1, group: GroupClaudeSub}
+	r := NewAccountPoolRouter([]types.ProviderAdapter{claude, codex})
+	req := &types.ChatRequest{
+		ClientDialect: "codex",
+		Messages:      []types.ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	ch, err := r.Send(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := <-ch
+	if chunk.Content != "response from codex:dialect:02" {
+		t.Fatalf("codex IDE should use codex_sub first, got %s", chunk.Content)
+	}
+}
+
+func TestAccountPoolRouter_AGYDialectPrefersAGYSub(t *testing.T) {
+	agy := &mockGroupAdapter{id: "agy:dialect:01", priority: 9, group: GroupAGYSub}
+	claude := &mockGroupAdapter{id: "claude:dialect:03", priority: 1, group: GroupClaudeSub}
+	r := NewAccountPoolRouter([]types.ProviderAdapter{claude, agy})
+	req := &types.ChatRequest{
+		ClientDialect: "gemini",
+		Messages:      []types.ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	ch, err := r.Send(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := <-ch
+	if chunk.Content != "response from agy:dialect:01" {
+		t.Fatalf("agy IDE should use agy_sub first, got %s", chunk.Content)
+	}
+}

@@ -30,9 +30,10 @@ func LaunchctlUnsetenv(key string) error {
 // way a fresh shell does via `am env` — instead of staying pointed at a
 // dead local port once the proxy goes down.
 //
-// proxyUp true  -> setenv ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN at proxyBase.
-// proxyUp false -> unsetenv both, so claude falls through to api.anthropic.com
-// using whatever ANTHROPIC_API_KEY / subscription login it already has.
+// proxyUp true  -> setenv Anthropic/OpenAI/Gemini gateway BASE + dummy keys
+//                 at proxyBase. Gemini-only keys (GEMINI_API_KEY /
+//                 GOOGLE_GENAI_API_KEY), never GOOGLE_API_KEY (Maps/gcloud).
+// proxyUp false -> unsetenv those, plus leftover GOOGLE_API_KEY.
 func SyncLaunchctlEnv(proxyUp bool, proxyBase string) {
 	if proxyUp {
 		_ = LaunchctlSetenv("ANTHROPIC_BASE_URL", proxyBase)
@@ -41,6 +42,9 @@ func SyncLaunchctlEnv(proxyUp bool, proxyBase string) {
 		_ = LaunchctlSetenv("OPENAI_API_KEY", "am-proxy")
 		_ = LaunchctlSetenv("GEMINI_API_BASE", proxyBase)
 		_ = LaunchctlSetenv("GOOGLE_GENAI_BASE_URL", proxyBase)
+		_ = LaunchctlSetenv("GOOGLE_GEMINI_BASE_URL", proxyBase)
+		_ = LaunchctlSetenv("GEMINI_API_KEY", "am-proxy")
+		_ = LaunchctlSetenv("GOOGLE_GENAI_API_KEY", "am-proxy")
 		return
 	}
 	_ = LaunchctlUnsetenv("ANTHROPIC_BASE_URL")
@@ -49,4 +53,8 @@ func SyncLaunchctlEnv(proxyUp bool, proxyBase string) {
 	_ = LaunchctlUnsetenv("OPENAI_API_KEY")
 	_ = LaunchctlUnsetenv("GEMINI_API_BASE")
 	_ = LaunchctlUnsetenv("GOOGLE_GENAI_BASE_URL")
+	_ = LaunchctlUnsetenv("GOOGLE_GEMINI_BASE_URL")
+	_ = LaunchctlUnsetenv("GEMINI_API_KEY")
+	_ = LaunchctlUnsetenv("GOOGLE_GENAI_API_KEY")
+	_ = LaunchctlUnsetenv("GOOGLE_API_KEY")
 }

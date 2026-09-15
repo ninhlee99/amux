@@ -275,6 +275,22 @@ func TestBuildAdapter_DefaultsAndMissing(t *testing.T) {
 		t.Errorf("expected default model gpt-4o, got %s", oa.TargetModel)
 	}
 
+	grouped, err := BuildAdapter(ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.test.com", Group: "codex_sub"})
+	if err != nil {
+		t.Fatalf("group plumbing: %v", err)
+	}
+	if grouped.(*OpenAICompatibleAdapter).Group() != "codex_sub" {
+		t.Fatalf("explicit group must reach adapter, got %q", grouped.(*OpenAICompatibleAdapter).Group())
+	}
+
+	codex, err := BuildAdapter(ProviderConfig{Type: "codex_cli", Group: "codex_free"})
+	if err != nil {
+		t.Fatalf("codex_cli: %v", err)
+	}
+	if codex.(*CodexCLIAdapter).Group() != "codex_free" {
+		t.Fatalf("codex_cli explicit group must reach adapter, got %q", codex.(*CodexCLIAdapter).Group())
+	}
+
 	if _, err := BuildAdapter(ProviderConfig{Type: "unknown"}); err == nil {
 		t.Fatal("expected unknown type to be unsupported")
 	}
@@ -454,5 +470,20 @@ func TestProvider_IsConfigured(t *testing.T) {
 	p4 := ProviderConfig{Type: "openai_compatible", APIKey: "sk-x", Enabled: &f}
 	if p4.IsConfigured() {
 		t.Errorf("expected disabled provider to be unconfigured")
+	}
+}
+
+func TestInferIDE(t *testing.T) {
+	if InferIDE("codex_cli", "", "codex:01") != "codex" {
+		t.Fatal("codex")
+	}
+	if InferIDE("antigravity", "", "agy:01") != "agy" {
+		t.Fatal("agy")
+	}
+	if InferIDE("openai_compatible", "", "groq:api:01") != "api" {
+		t.Fatal("api")
+	}
+	if InferIDE("claude_web", "", "claude:web:01") != "web" {
+		t.Fatal("web")
 	}
 }

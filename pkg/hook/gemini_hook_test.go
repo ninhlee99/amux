@@ -47,14 +47,21 @@ func TestGeminiHookInstallUninstall(t *testing.T) {
 	if _, ok := m["my-custom-hook"]; !ok {
 		t.Fatalf("expected my-custom-hook to be preserved")
 	}
+	if !IsOurStatusLine(LoadAGYSettings()) {
+		t.Fatal("expected AGY statusLine command")
+	}
 
 	// 2. Uninstall Gemini hook
 	n, err := GeminiHookUninstall()
 	if err != nil {
 		t.Fatalf("GeminiHookUninstall failed: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 hook removed, got %d", n)
+	if n != 2 {
+		t.Fatalf("expected 2 removed (hooks + statusline), got %d", n)
+	}
+
+	if IsOurStatusLine(LoadAGYSettings()) {
+		t.Fatal("expected AGY statusLine removed")
 	}
 
 	if GeminiHookInstalled() {
@@ -79,6 +86,13 @@ func TestCodexHookInstallUninstall(t *testing.T) {
 	}
 	if !CodexHookInstalled() {
 		t.Fatalf("expected CodexHookInstalled() to be true")
+	}
+	cfg, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("codex config.toml: %v", err)
+	}
+	if !reCodexStatusLine.Match(cfg) {
+		t.Fatalf("expected tui.status_line 5h/weekly, got %s", cfg)
 	}
 
 	n, err := CodexHookUninstall()

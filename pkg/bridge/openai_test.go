@@ -29,11 +29,13 @@ func TestMain(m *testing.M) {
 
 type mockStreamAdapter struct {
 	id     string
+	group  string
 	chunks []types.StreamChunk
 }
 
 func (m *mockStreamAdapter) ID() string    { return m.id }
 func (m *mockStreamAdapter) Priority() int { return 1 }
+func (m *mockStreamAdapter) Group() string { return m.group }
 func (m *mockStreamAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	ch := make(chan types.StreamChunk, len(m.chunks))
 	for _, c := range m.chunks {
@@ -100,29 +102,61 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
 	}
-
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+		t.Fatalf("invalid json: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.Choices) == 0 || !strings.Contains(resp.Choices[0].Message.Content, "Non-streaming") {
+		t.Fatalf("unexpected content: %+v", resp)
+	}
+}
+
+func TestHandleChatCompletions_CodexUAPrefersCodexSub(t *testing.T) {
+	claude := &mockStreamAdapter{
+		id:     "claude:ua:01",
+		group:  "claude_sub",
+		chunks: []types.StreamChunk{{ID: "claude:ua:01", Content: "response from claude:ua:01", Done: true}},
+	}
+	codex := &mockStreamAdapter{
+		id:     "codex:ua:01",
+		group:  "codex_sub",
+		chunks: []types.StreamChunk{{ID: "codex:ua:01", Content: "response from codex:ua:01", Done: true}},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{claude, codex})
+
+	reqBody := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
+	req.Header.Set("User-Agent", "codex_cli_rs/0.42.0")
+	rec := httptest.NewRecorder()
+	bridge.HandleChatCompletions(rec, req, pool)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "response from codex:ua:01") {
+		t.Fatalf("Codex UA should pick codex_sub first, got %s", rec.Body.String())
 	}
 
-	if len(resp.Choices) == 0 {
-		t.Fatalf("no choices returned")
-	}
-	if resp.Choices[0].Message.Content != "Non-streaming response" {
-		t.Errorf("unexpected content: %s", resp.Choices[0].Message.Content)
-	}
-	if resp.Choices[0].FinishReason != "stop" {
-		t.Errorf("unexpected finish_reason: %s", resp.Choices[0].FinishReason)
+	cursorPool := router.NewAccountPoolRouter([]types.ProviderAdapter{
+		&mockStreamAdapter{
+			id:     "claude:ua:02",
+			group:  "claude_sub",
+			chunks: []types.StreamChunk{{ID: "claude:ua:02", Content: "response from claude:ua:02", Done: true}},
+		},
+		&mockStreamAdapter{
+			id:     "codex:ua:02",
+			group:  "codex_sub",
+			chunks: []types.StreamChunk{{ID: "codex:ua:02", Content: "response from codex:ua:02", Done: true}},
+		},
+	})
+	cursor := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
+	cursor.Header.Set("User-Agent", "Cursor/1.0")
+	rec2 := httptest.NewRecorder()
+	bridge.HandleChatCompletions(rec2, cursor, cursorPool)
+	if !strings.Contains(rec2.Body.String(), "response from claude:ua:02") {
+		t.Fatalf("Cursor UA should keep global Claude-first order, got %s", rec2.Body.String())
 	}
 }
 

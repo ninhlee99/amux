@@ -41,6 +41,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
 	}
+	req.ClientDialect = openaiClientDialect(r)
 
 	var initialFlusher http.Flusher
 	if req.Stream {
@@ -281,6 +282,23 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	_ = json.NewEncoder(w).Encode(resp)
 	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens)
 	logChatRequest(r, pool, req, pickLogOutput(full.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
+}
+
+// openaiClientDialect maps OpenAI-shaped clients onto pool IDE order.
+// /v1/chat/completions is shared; Cursor stays Cursor, Codex UA/originator
+// must not inherit Claude-first GroupPriority.
+func openaiClientDialect(r *http.Request) string {
+	if r == nil {
+		return tools.DialectCursor
+	}
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	if strings.Contains(ua, "codex") {
+		return tools.DialectCodex
+	}
+	if strings.Contains(strings.ToLower(r.Header.Get("originator")), "codex") {
+		return tools.DialectCodex
+	}
+	return tools.DialectCursor
 }
 
 // openAIBodyToChatRequest parses a Cursor/Codex OpenAI chat.completions body

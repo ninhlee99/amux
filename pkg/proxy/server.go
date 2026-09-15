@@ -220,6 +220,9 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 		},
 		Transport: &dynamicProxyRoundTripper{rot: rot},
 		ModifyResponse: func(resp *http.Response) error {
+			if !shouldObserveUpstream(resp) {
+				return nil
+			}
 			rot.Observe(resp)
 			usage.WrapUsageCapture(resp, rot.Active())
 			active := rot.Active()
@@ -302,6 +305,11 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	mux.HandleFunc("/models", bridge.HandleModels)
 
 	// 2. Admin / Monitoring Endpoints
+	//
+	// /_am/* is amux's own control plane (status, rotate, shutdown).
+	// It is not a Claude Code / Codex command bus. Slash commands, /model,
+	// /compact, /login, MCP, etc. stay in the client; this proxy only
+	// speaks the upstream HTTP APIs those clients already use.
 	mux.HandleFunc("/_am/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		s := rot.Status()
@@ -440,7 +448,19 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			return
 		}
 
-		if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") || path == "/v1/models" || path == "/models" {
+		if strings.HasSuffix(path, "/chat/completions") || strings.HasSuffix(path, "/responses") {
+			mux.ServeHTTP(w, r)
+			return
+		}
+
+		// /v1/models is shared: OpenAI SDKs and Claude Code both hit it.
+		// Anthropic clients must see Anthropic's real catalog (so /model and
+		// related Claude Code commands work). OpenAI clients keep the local list.
+		if path == "/v1/models" || path == "/models" {
+			if isAnthropicClient(r) && anthropicUpstreamReady(rot, r, authToken) {
+				rp.ServeHTTP(w, r)
+				return
+			}
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -459,7 +479,14 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			return
 		}
 
+		// Claude Code /compact, context meter, auto-compact call this.
+		// Forward to Anthropic when a Claude credential is usable; otherwise
+		// fall back to a local estimate so pool-only mode still answers.
 		if strings.HasSuffix(path, "/messages/count_tokens") || strings.HasSuffix(path, "/count_tokens") {
+			if anthropicUpstreamReady(rot, r, authToken) {
+				rp.ServeHTTP(w, r)
+				return
+			}
 			bridge.HandleClaudeCountTokens(w, r)
 			return
 		}
@@ -596,8 +623,66 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			return
 		}
 
+		// Any other Anthropic (or unknown) path — files, models/{id}, betas,
+		// whatever Claude Code adds next — reverse-proxy. Do not invent a
+		// matching /_am/* command for each client feature.
 		rp.ServeHTTP(w, r)
 	})
+}
+
+// isAnthropicClient reports whether the caller is speaking Anthropic's API
+// (Claude Code, Anthropic SDK) rather than OpenAI's. Same path (/v1/models)
+// must not return OpenAI's list to Claude Code.
+func isAnthropicClient(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
+		return true
+	}
+	ua := r.Header.Get("User-Agent")
+	if strings.Contains(ua, "Claude") || strings.Contains(ua, "claude-cli") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(ua), "anthropic")
+}
+
+// shouldObserveUpstream is true for quota-bearing Anthropic hops
+// (POST /v1/messages). GET catalog and count_tokens 429/401 must not
+// rotate or quarantine the Claude profile — compact/MCP loops hit those
+// constantly.
+func shouldObserveUpstream(resp *http.Response) bool {
+	if resp == nil || resp.Request == nil {
+		return true
+	}
+	path := resp.Request.URL.Path
+	if strings.Contains(path, "count_tokens") {
+		return false
+	}
+	if resp.Request.Method == http.MethodGet {
+		return false
+	}
+	return true
+}
+
+// anthropicUpstreamReady is true when this proxy can authenticate an
+// Anthropic reverse-proxy hop: caller brought a real key, or the Claude
+// rotator has a usable OAuth profile.
+func anthropicUpstreamReady(rot *Rotator, r *http.Request, authToken string) bool {
+	if hasCallerCredential(r, authToken) {
+		return true
+	}
+	if rot == nil || rot.ShouldFailoverToProviderPool() {
+		return false
+	}
+	if rot.Token() != "" {
+		return true
+	}
+	if rot.ProfileCount() > 0 {
+		rot.EnsureUsableActive()
+		return rot.Token() != ""
+	}
+	return false
 }
 
 // anthropicRequestHasTools reports whether a /v1/messages body includes a
