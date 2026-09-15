@@ -77,6 +77,14 @@ Monitoring & Utilities:
                             update amux to latest version from github (keeps all accounts)
   amux usage [day|week|month|all] [-D|--detail] [-d YYYY-MM-DD] [-p PROJECT]
                             token usage analytics
+  amux map init [dir]         FULL scan → sinh map (0 token API) — chỉ lần đầu
+  amux map update [dir]       FULL regenerate cấu trúc (giữ annotations)
+  amux map recent [--needs-learn]  CHỈ git∪touched — check/update hẹp
+  amux map touch --file F [--func N]  ghi focus session
+  amux map get --file F --func N     1 dòng summary (không đọc full MODULES)
+  amux map learn --file F --func N --summary S
+  amux map show [dir]         đường dẫn workspace + file map
+
   amux statusline             session tokens · 5h / 7d remaining (Claude · AGY)
   amux logs [--count] [--errors] [--clean]
                             log statistics, errors, and 7-day retention cleanup
@@ -327,6 +335,9 @@ func Run(rawArgs []string) {
 
 	case "usage":
 		usage.PrintUsageReport(args)
+
+	case "map":
+		cmdMap(args)
 
 	case "logs", "log":
 		cmdLogs(args)

@@ -17,7 +17,8 @@
   <a href="#-luồng-claude-code--proxy--tools">Claude Code & Tools</a> •
   <a href="#-antigravity--agy-google-genai">Antigravity (AGY)</a> •
   <a href="#️-cấu-hình-provider-pool-amaccountsjson">Provider Pool</a> •
-  <a href="STRUCT.md">Kiến Trúc</a>
+  <a href="STRUCT.md">Kiến Trúc</a> •
+  <a href="docs/AI_CODEBASE_MAP.md">Bản đồ AI</a>
 </p>
 
 ---

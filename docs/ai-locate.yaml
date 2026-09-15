@@ -1,0 +1,215 @@
+# amux — AI locate index (machine-readable)
+# Workflow: match task → read_first → grep symbols in search_in → verify tests
+# Human map: docs/AI_CODEBASE_MAP.md | Architecture depth: STRUCT.md
+
+version: 1
+scope: amux-repository
+project: amux
+module: amux-accounts
+entrypoint: main.go → pkg/cli/cli.go
+
+per_project_navigation:
+  doc: docs/PROJECT_NAVIGATION.md
+  cli_init: am map init          # FULL — lần đầu only
+  cli_update: am map update      # FULL cấu trúc
+  cli_check: am map recent --needs-learn   # HẸP git∪touched
+  cli_touch: am map touch --file F [--func N]
+  cli_get: am map get --file F --func N
+  cli_learn: am map learn --file F --func N --summary S
+  cli_show: am map show
+  proxy_api: GET /_am/project-nav?root=<git-root>
+  token_rule: "init=full; check/update/learn=recent+touched only; never dump MODULES.md to LLM"
+  client_files:
+    - docs/AI_CODEBASE_MAP.md
+    - docs/ai-locate.yaml
+    - AGENTS.md
+  workspace_store: ~/.am/workspaces/<project-name>/
+
+layers:
+  - id: cli
+    path: pkg/cli/
+    role: "Lệnh am/amux, dispatch subcommands"
+  - id: ui
+    path: pkg/ui/
+    role: "Hiển thị accounts/status/pool/login wizard"
+  - id: proxy
+    path: pkg/proxy/
+    role: "HTTP :8787, rotator Claude, /_am admin"
+  - id: bridge
+    path: pkg/bridge/
+    role: "OpenAI / Anthropic / Gemini / Responses wire → ChatRequest"
+  - id: router
+    path: pkg/router/
+    role: "Pool failover, group priority, session LB, task classify"
+  - id: provider
+    path: pkg/provider/
+    role: "Adapters + accounts.json load/save"
+  - id: tools
+    path: pkg/tools/
+    role: "Tool dialect + webloop text emulation"
+  - id: guard
+    path: pkg/guard/
+    role: "Anti-ban, affinity, pacer, health, quarantine"
+  - id: profile
+    path: pkg/profile/
+    role: "Claude/codex/agy CLI profile snapshots ~/.am"
+  - id: types
+    path: pkg/types/
+    role: "Contracts — no internal pkg imports"
+
+data_paths:
+  config_dir: "~/.am"
+  accounts: "~/.am/accounts.json"
+  profiles: "~/.am/profiles/"
+  logs: ["~/.am/events.log", "~/.am/requests.log", "~/.am/errors.log"]
+
+http:
+  openai: ["/v1/chat/completions", "/v1/responses", "/v1/models"]
+  anthropic: ["/v1/messages"]
+  gemini: ["/v1beta/models", ":generateContent", ":countTokens"]
+  admin_prefix: "/_am/"
+  admin_note: "Chỉ amux control plane — không thêm /_am/* theo slash command Claude"
+
+tasks:
+  - id: accounts-list-group-ui
+    keywords: [accounts, ls, pool, status, group, API provider section]
+    read_first:
+      - docs/AI_CODEBASE_MAP.md
+      - pkg/ui/account_groups.go
+      - pkg/ui/login.go
+      - pkg/ui/status.go
+    symbols: [forEachAccountGroup, ResolveAccountGroup, ResolveProfileGroup, apiProviderBrand]
+    tests: [pkg/ui/account_groups_test.go]
+
+  - id: session-own-account
+    keywords: [session, affinity, sticky, round-robin, per-tab, load balance]
+    read_first:
+      - pkg/router/pool.go
+      - pkg/guard/affinity.go
+      - pkg/router/session_lb.go
+    symbols: [ExtractSessionKey, pickSessionAdapter, GlobalAffinity, livingForSessionBalance, sessionRR]
+    tests: [pkg/router/session_lb_test.go]
+
+  - id: pool-failover-groups
+    keywords: [failover, group priority, codex_sub, api_other, skip web tools]
+    read_first:
+      - pkg/router/group.go
+      - pkg/router/pool.go
+      - pkg/router/task_prefer.go
+    symbols: [GroupPriority, ProxyGroupsForClient, GroupOrderForRequest, skipTextOnly, Send]
+    tests: [pkg/router/group_test.go, pkg/router/pool_test.go]
+
+  - id: soft-task-prefer
+    keywords: [task kind, coding, analysis, review, classify, thinking, pro tier]
+    read_first:
+      - pkg/router/classifier.go
+      - pkg/router/task_prefer.go
+      - pkg/types/chat.go
+    symbols: [ClassifyTask, applyTaskClassification, PreferredGroupsForTask, TaskKind]
+    tests: [pkg/router/classifier_test.go, pkg/router/task_prefer_test.go]
+
+  - id: claude-code-messages
+    keywords: [claude code, anthropic, tool_use, /v1/messages, bash read]
+    read_first:
+      - pkg/bridge/claude.go
+      - pkg/tools/claude.go
+      - pkg/proxy/server.go
+    symbols: [HandleClaudeMessages, writeAnthropicSSE]
+    tests: [pkg/bridge/claude_test.go, pkg/tools/dialect_loop_test.go]
+
+  - id: codex-openai-responses
+    keywords: [codex, responses, chat/completions, exec_command, tool_calls]
+    read_first:
+      - pkg/bridge/openai.go
+      - pkg/bridge/responses.go
+      - pkg/tools/codex.go
+      - pkg/provider/codex_cli.go
+    symbols: [openaiClientDialect, HandleOpenAIResponses, DialectCodex]
+    tests: [pkg/bridge/codex_loop_test.go, pkg/bridge/openai_test.go]
+
+  - id: agy-gemini-gateway
+    keywords: [antigravity, agy, gemini, GOOGLE_GEMINI_BASE_URL, generateContent]
+    read_first:
+      - pkg/bridge/gemini.go
+      - pkg/provider/agy.go
+      - pkg/cli/cli.go
+    symbols: [HandleGeminiGenerateContent, cmdRun]
+    tests: [pkg/bridge/agy_loop_test.go]
+
+  - id: web-tool-emulation
+    keywords: [webloop, tool_call, chatgpt web, claude web, text-only]
+    read_first:
+      - pkg/tools/webloop.go
+      - pkg/provider/chatgpt_web.go
+      - pkg/provider/claude_web.go
+    symbols: [MaybeWrapWebStream, SupportsTools]
+    tests: [pkg/tools/webloop_test.go, pkg/tools/webloop_emulate_test.go]
+
+  - id: claude-oauth-rotate
+    keywords: [rotator, 5h, 7d, claude subscription, oauth refresh]
+    read_first:
+      - pkg/proxy/rotator.go
+      - pkg/auth/token.go
+      - pkg/profile/manager.go
+    symbols: [Rotator, ForceSwitch, Status]
+    tests: [pkg/proxy/rotator_test.go]
+
+  - id: accounts-json-providers
+    keywords: [accounts.json, provider add, priority, enabled, group ide]
+    read_first:
+      - pkg/provider/config.go
+      - accounts.example.json
+      - pkg/types/id.go
+    symbols: [LoadConfigFile, ProviderConfig, Normalize, BuildAdapters]
+    tests: [pkg/provider/config_test.go]
+
+  - id: env-hooks-launchctl
+    keywords: [am env, hook install, launchctl, ANTHROPIC_BASE_URL, GOOGLE_API_KEY]
+    read_first:
+      - pkg/env/env.go
+      - pkg/hook/hook.go
+      - pkg/hook/launchctl.go
+    symbols: [PrintEnvExports, SyncLaunchctlEnv, HookInstall]
+    tests: [pkg/env/env_test.go, pkg/hook/settings_env_test.go]
+
+  - id: guard-antiban
+    keywords: [guard, quarantine, health score, pacer, 429]
+    read_first:
+      - pkg/guard/guard.go
+      - pkg/guard/health.go
+      - pkg/guard/pacer.go
+    symbols: [RecordError, IsQuarantined, Pace]
+    tests: [pkg/guard/guard_test.go]
+
+  - id: proxy-admin-status
+    keywords: [/_am/status, switch-provider, guard reset]
+    read_first:
+      - pkg/proxy/server.go
+      - pkg/ui/status.go
+    symbols: [newHandler, fetchProxyStatus, AccountPoolRouter.Status]
+    tests: [pkg/proxy/server_test.go]
+
+  - id: live-integration
+    keywords: [live test, real api, go:build live]
+    read_first:
+      - pkg/live/live_test.go
+    symbols: []
+    tests: ["go test -tags live ./pkg/live -count=1"]
+
+  - id: privacy-redact
+    keywords: [redact, privacy, outbound payload]
+    read_first:
+      - pkg/privacy/redact.go
+      - pkg/router/pool.go
+    symbols: [redactBeforeSend]
+    tests: [pkg/privacy/redact_test.go]
+
+invariants:
+  - "Tools thực thi trên client CLI — proxy không exec shell/file"
+  - "Không invent /_am/* cho từng Claude slash command"
+  - "Pool skip web/Codex text-only khi có native tool backend (skipTextOnly)"
+  - "Claude subscription group không làm pool proxy cho Claude IDE client"
+  - "pkg/types không import pkg nội bộ khác"
+  - "Sau đọc sâu function: am map learn — annotations sống qua am map update"
+  - "Check/update map chỉ recent∪touched (am map recent); init vẫn full scan"
+  - "Không dump full MODULES.md / full map vào context LLM khi chỉ check/update"

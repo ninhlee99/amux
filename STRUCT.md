@@ -1,5 +1,8 @@
 # Kiến Trúc Dự Án `amux` (STRUCT.md)
 
+> **AI / agent:** Tra cứu nhanh theo mục tiêu → [`docs/AI_CODEBASE_MAP.md`](docs/AI_CODEBASE_MAP.md) + [`docs/ai-locate.yaml`](docs/ai-locate.yaml) + [`AGENTS.md`](AGENTS.md).  
+> File này là tài liệu kiến trúc **đầy đủ**; không cần đọc hết trước khi sửa một chỗ nhỏ.
+
 Dự án `amux` (CLI `am`) được xây dựng theo **Standard Go Project Layout**, kết hợp tư tưởng **Domain-Driven Design (DDD)** và **Plugin/Adapter Architecture**.
 
 Tài liệu này mô tả chi tiết toàn bộ cây thư mục, cấu trúc mã nguồn, phân tầng trách nhiệm các package, cùng các luồng dữ liệu cốt lõi trong hệ thống.
@@ -14,6 +17,10 @@ amux/
 ├── accounts.example.json           # Schema mẫu cấu hình providers (ID brand[:method]:NN)
 ├── install.sh                      # Script cài đặt tự động từ source (macOS, Go 1.26+)
 ├── STRUCT.md                       # Kiến trúc & chi tiết thiết kế hệ thống
+├── AGENTS.md                       # Entry ngắn cho AI agent
+├── docs/
+│   ├── AI_CODEBASE_MAP.md          # Bản đồ tra cứu theo mục tiêu (đọc trước khi grep repo)
+│   └── ai-locate.yaml              # Index machine-readable: keywords → files → tests
 ├── README.md                       # Tài liệu hướng dẫn sử dụng và tra cứu CLI
 ├── go.mod / go.sum                 # Go modules & dependencies
 │

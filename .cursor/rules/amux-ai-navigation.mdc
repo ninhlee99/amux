@@ -1,0 +1,17 @@
+---
+description: Điều hướng codebase amux — đọc bản đồ trước khi quét repo
+alwaysApply: true
+---
+
+# amux — navigation layer
+
+Khi làm việc trong repo **amux** (`amux-accounts`):
+
+0. **Phân biệt scope:** sửa amux → map amux; sửa **project client** qua proxy → `~/.am/workspaces/<name>/` ([PROJECT_NAVIGATION.md](../../docs/PROJECT_NAVIGATION.md), `am map show`).
+0b. **Check/update map:** `am map recent [--needs-learn]` rồi `learn`/`touch`/`get` — **chỉ** git-changed ∪ touched. **Không** đọc full MODULES/repo. `am map init` vẫn FULL (chỉ lần đầu).
+1. **Đọc trước** [docs/AI_CODEBASE_MAP.md](../../docs/AI_CODEBASE_MAP.md) (chỉ amux) hoặc match task trong [docs/ai-locate.yaml](../../docs/ai-locate.yaml) (`keywords` → `read_first`).
+2. **Mở 1–3 file** trong `read_first`, grep `symbols` trong package đó — tránh full-repo grep ban đầu.
+3. **Xác nhận** bằng `tests` trong yaml hoặc bảng map.
+4. Kiến trúc sâu: [STRUCT.md](../../STRUCT.md). Entry CLI: `pkg/cli/cli.go`, HTTP: `pkg/proxy/server.go`.
+
+Ràng buộc: tools exec trên client CLI; không thêm `/_am/*` theo slash Claude; xem `invariants` trong `ai-locate.yaml`.
