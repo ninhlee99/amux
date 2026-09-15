@@ -97,3 +97,42 @@ func TestToken_DisabledSoleProfile(t *testing.T) {
 		t.Fatal("ForceSwitchExplicit must reject a disabled profile — X-Provider is not a bypass for `am off`")
 	}
 }
+
+func TestRefreshFromDisk_PrunesDeletedProfiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AM_HOME", dir)
+	tool := "claude"
+	_ = os.MkdirAll(profile.ProfileDir(tool), 0o700)
+	for _, name := range []string{"keep", "gone"} {
+		meta := types.ProfileMeta{Name: name, Tool: tool, Account: name + "@x.com", Saved: time.Now()}
+		b, _ := json.MarshalIndent(meta, "", "  ")
+		_ = os.WriteFile(filepath.Join(profile.ProfileDir(tool), name+".meta.json"), b, 0o600)
+		_ = os.WriteFile(filepath.Join(profile.ProfileDir(tool), name+".amp"), []byte("{}"), 0o600)
+	}
+	profile.WriteActivePointer(tool, "gone")
+
+	r := NewRotator(tool)
+	if r.Active() != "gone" {
+		t.Fatalf("active=%q want gone", r.Active())
+	}
+
+	_ = os.Remove(filepath.Join(profile.ProfileDir(tool), "gone.meta.json"))
+	_ = os.Remove(filepath.Join(profile.ProfileDir(tool), "gone.amp"))
+	profile.WriteActivePointer(tool, "keep")
+
+	r.RefreshFromDisk()
+	names := r.Names()
+	if len(names) != 1 || names[0] != "keep" {
+		t.Fatalf("names=%v want [keep]", names)
+	}
+	if r.Active() != "keep" {
+		t.Fatalf("active=%q want keep after prune", r.Active())
+	}
+	status := r.Status()
+	accts, _ := status["accounts"].([]map[string]any)
+	for _, a := range accts {
+		if a["profile"] == "gone" {
+			t.Fatal("deleted profile still in status")
+		}
+	}
+}
