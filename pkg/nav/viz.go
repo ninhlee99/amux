@@ -117,6 +117,10 @@ func RenderGraphHTML(scan ScanResult, g GraphSnapshot, focus string) ([]byte, er
 
 // WriteGraphHTML writes ~/.am/workspaces/<name>/GRAPH.html (and docs/ for amux).
 func WriteGraphHTML(startDir, focus string) (string, Bundle, error) {
+	focus = strings.TrimSpace(focus)
+	if focus == "." || focus == ".." {
+		focus = ""
+	}
 	scan, g, err := LoadGraphForDir(startDir)
 	if err != nil {
 		return "", Bundle{}, err
@@ -271,16 +275,19 @@ DATA.modules.forEach(m => {
 
 function resize() {
   const wrap = document.getElementById('canvas-wrap');
-  canvas.width = wrap.clientWidth * devicePixelRatio;
-  canvas.height = wrap.clientHeight * devicePixelRatio;
-  canvas.style.width = wrap.clientWidth + 'px';
-  canvas.style.height = wrap.clientHeight + 'px';
+  const w = Math.max(wrap.clientWidth || 0, 640);
+  const h = Math.max(wrap.clientHeight || 0, 480);
+  canvas.width = w * devicePixelRatio;
+  canvas.height = h * devicePixelRatio;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
 window.addEventListener('resize', () => { resize(); });
 
 function loadView(mod) {
   focus = mod || '';
+  if (focus === '.' || focus === '..') focus = '';
   modSelect.value = focus;
   if (!focus) {
     subtitle.textContent = 'module mesh — A → B = import/depends';
@@ -288,12 +295,21 @@ function loadView(mod) {
     links = DATA.mesh.map(l => ({...l}));
   } else {
     const key = focus;
-    const sub = DATA.subnets[key] || DATA.subnets[key.replace(/^pkg\\//,'')] || {nodes:[], links:[]};
-    subtitle.textContent = 'subnet · ' + (nodesLabel(key)) + ' — func → func';
-    nodes = (sub.nodes || []).map(n => ({...n}));
-    links = (sub.links || []).map(l => ({...l}));
+    const sub = DATA.subnets[key] || DATA.subnets[key.replace(/^pkg\//,'')] || {nodes:[], links:[]};
+    const has = (sub.nodes && sub.nodes.length) || (sub.links && sub.links.length);
+    if (!has) {
+      subtitle.textContent = 'module mesh (subnet trống cho ' + key + ')';
+      nodes = DATA.modules.map(m => ({...m}));
+      links = DATA.mesh.map(l => ({...l}));
+      focus = '';
+      modSelect.value = '';
+    } else {
+      subtitle.textContent = 'subnet · ' + (nodesLabel(key)) + ' — func → func';
+      nodes = (sub.nodes || []).map(n => ({...n}));
+      links = (sub.links || []).map(l => ({...l}));
+    }
   }
-  const W = canvas.clientWidth || 800, H = canvas.clientHeight || 600;
+  const W = Math.max(canvas.clientWidth || 0, 800), H = Math.max(canvas.clientHeight || 0, 560);
   const map = {};
   nodes.forEach((n,i) => {
     const a = (i / Math.max(nodes.length,1)) * Math.PI * 2;
@@ -481,7 +497,8 @@ document.getElementById('btnReload').onclick = () => loadView(focus);
 modSelect.onchange = () => loadView(modSelect.value);
 
 resize();
-loadView(focus);
+loadView(DATA.focus || '');
+requestAnimationFrame(() => { resize(); if (!nodes.length) loadView(''); });
 loop();
 </script>
 </body>

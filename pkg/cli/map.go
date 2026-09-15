@@ -117,16 +117,22 @@ func cmdMapViz(args []string) {
 		case "--no-open":
 			noOpen = true
 		default:
-			if !strings.HasPrefix(a, "-") {
-				if mod == "" {
-					mod = a
-				} else {
-					dir = a
-				}
+			if strings.HasPrefix(a, "-") {
+				die("usage: am map viz [--module MOD] [--dir DIR] [--no-open]")
+			}
+			// "." / ".." / paths → directory; bare name → module
+			if a == "." || a == ".." || strings.Contains(a, "/") || strings.HasSuffix(a, string(filepath.Separator)) {
+				dir = a
+			} else if mod == "" {
+				mod = a
 			} else {
-				die("usage: am map viz [--module MOD] [--no-open] [dir]")
+				dir = a
 			}
 		}
+	}
+	mod = strings.TrimSpace(mod)
+	if mod == "." || mod == ".." {
+		mod = ""
 	}
 	path, b, err := nav.WriteGraphHTML(dir, mod)
 	if err != nil {
@@ -137,9 +143,10 @@ func cmdMapViz(args []string) {
 		fmt.Printf("  published: %s\n", filepath.Join(b.ProjectRoot, "docs", nav.FileGraphHTML))
 	}
 	if !noOpen {
-		u := "file://" + path
-		if err := nav.OpenInBrowser(u); err != nil {
+		if err := nav.OpenInBrowser(path); err != nil {
 			fmt.Printf("open browser failed: %v\nopen: %s\n", err, path)
+		} else {
+			fmt.Printf("opened in browser (mesh: kéo node · click module → subnet)\n")
 		}
 	}
 }
