@@ -5,7 +5,7 @@
 | Workspace | Đọc trước |
 |-----------|-----------|
 | **Repo amux** (module `amux-accounts`) | [docs/AI_CODEBASE_MAP.md](docs/AI_CODEBASE_MAP.md) → [docs/ai-locate.yaml](docs/ai-locate.yaml) |
-| **Project client** (app khác, traffic qua proxy) | `~/.am/workspaces/<project-name>/` — `init` (full) / `recent`+`learn` (hẹp). [docs/PROJECT_NAVIGATION.md](docs/PROJECT_NAVIGATION.md). |
+| **Client** (app qua proxy) | `~/.am/workspaces/<name>/` — `init` / `recent`+`learn`. [docs/WORKSPACE_MAP.md](docs/WORKSPACE_MAP.md). |
 
 Không dùng bản đồ amux để navigate codebase client.
 

@@ -1,4 +1,4 @@
-# Điều hướng AI — theo project (qua proxy)
+# Workspace map — client qua proxy
 
 amux phục vụ **nhiều repo client**. Mỗi project có bản đồ riêng tại
 `~/.am/workspaces/<project-name>/` — **không** dùng map repo amux khi code app khác.
@@ -54,7 +54,7 @@ Nội dung workspace:
 
 ## Agent dùng map thế nào
 
-1. `am map show` — chỉ paths  
+1. `am map show` hoặc `GET /_am/map?root=...` — chỉ paths  
 2. Match keywords trong `ai-locate.yaml` (hoặc `am map recent`)  
 3. Mở 1–3 source file — **không** dump MODULES  
 4. Đọc sâu xong → `am map learn` + `am map touch`  
@@ -75,4 +75,4 @@ Nội dung workspace:
 
 - `ProjectForRemoteAddr` → git root client
 - Chưa có map → tự `GenerateMap` (init)
-- Admin: `GET /_am/project-nav?root=/path/to/app`
+- Admin: `GET /_am/map?root=/path/to/app`

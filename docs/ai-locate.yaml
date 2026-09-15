@@ -8,8 +8,8 @@ project: amux
 module: amux-accounts
 entrypoint: main.go → pkg/cli/cli.go
 
-per_project_navigation:
-  doc: docs/PROJECT_NAVIGATION.md
+workspace_map:
+  doc: docs/WORKSPACE_MAP.md
   cli_init: am map init          # FULL — lần đầu only
   cli_update: am map update      # FULL cấu trúc
   cli_check: am map recent --needs-learn   # HẸP git∪touched
@@ -17,7 +17,7 @@ per_project_navigation:
   cli_get: am map get --file F --func N
   cli_learn: am map learn --file F --func N --summary S
   cli_show: am map show
-  proxy_api: GET /_am/project-nav?root=<git-root>
+  proxy_api: GET /_am/map?root=<git-root>
   token_rule: "init=full; check/update/learn=recent+touched only; never dump MODULES.md to LLM"
   client_files:
     - docs/AI_CODEBASE_MAP.md

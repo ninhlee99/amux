@@ -1,7 +1,7 @@
 # Bản đồ codebase cho AI — **repo amux** (tool gateway)
 
 > **Scope:** Chỉ dùng khi sửa **amux-accounts** (CLI + proxy).  
-> Project client qua proxy → [`PROJECT_NAVIGATION.md`](./PROJECT_NAVIGATION.md) + `am map init` → lưu `~/.am/workspaces/<project-name>/`.
+> Client qua proxy → [`WORKSPACE_MAP.md`](./WORKSPACE_MAP.md) + `am map init` → `~/.am/workspaces/<name>/`.
 
 > **Mục đích:** Trước khi quét cả repo amux, AI đọc file này (và `docs/ai-locate.yaml`) để biết **đi đâu trước**, **grep gì**, **test nào xác nhận**.  
 > Kiến trúc sâu: [`STRUCT.md`](../STRUCT.md).
@@ -158,11 +158,14 @@ go test -tags live ./pkg/live -count=1 -timeout 15m   # cần ~/.am thật
 
 ## 9. Cập nhật bản đồ
 
+**Inventory tự scan (Go, 0 token):** `am map update` → `docs/MODULES.md` + `docs/MAP_GENERATED.txt` (commit cùng repo).
+
 Khi thêm **package mới**, **route HTTP**, **lệnh CLI**, hoặc **khái niệm group/task** — cập nhật:
 
 1. Một dòng trong bảng §3  
 2. Một entry `tasks:` trong `docs/ai-locate.yaml`  
-3. (Tuỳ chọn) §2 diagram nếu luồng runtime đổi  
+3. Chạy `am map update` để refresh `MODULES.md`  
+4. (Tuỳ chọn) §2 diagram nếu luồng runtime đổi  
 
 ---
 

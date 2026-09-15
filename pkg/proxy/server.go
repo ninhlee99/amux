@@ -405,24 +405,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 
 	mux.HandleFunc("/_am/btw", HandleBtw)
 
-	// Project-scoped AI navigation (client repo map, not amux repo map).
-	mux.HandleFunc("/_am/project-nav", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		root := strings.TrimSpace(r.URL.Query().Get("root"))
-		if root == "" {
-			root = usage.ProjectForRemoteAddr(r.RemoteAddr)
-		}
-		if root == "" {
-			http.Error(w, "missing project root (use ?root=/path/to/repo or call from proxied client)", http.StatusBadRequest)
-			return
-		}
-		b := nav.Resolve(root)
-		if b.IsAmuxRepository() {
-			b.PrimaryMap = "docs/AI_CODEBASE_MAP.md (amux tool — in-repo path relative to amux root)"
-			b.PrimaryLocate = "docs/ai-locate.yaml"
-		}
-		_ = json.NewEncoder(w).Encode(b)
-	})
+	// Client workspace map paths (same as `am map show` JSON).
+	mux.HandleFunc("/_am/map", handleAmMapBundle)
 
 	mux.HandleFunc("/_am/sync", func(w http.ResponseWriter, r *http.Request) {
 		profile.SyncActiveFromSystem("claude")
@@ -711,6 +695,24 @@ func anthropicUpstreamReady(rot *Rotator, r *http.Request, authToken string) boo
 		return rot.Token() != ""
 	}
 	return false
+}
+
+func handleAmMapBundle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	root := strings.TrimSpace(r.URL.Query().Get("root"))
+	if root == "" {
+		root = usage.ProjectForRemoteAddr(r.RemoteAddr)
+	}
+	if root == "" {
+		http.Error(w, "missing project root (use ?root=/path/to/repo or call from proxied client)", http.StatusBadRequest)
+		return
+	}
+	b := nav.Resolve(root)
+	if b.IsAmuxRepository() {
+		b.PrimaryMap = "docs/AI_CODEBASE_MAP.md (amux tool — in-repo path relative to amux root)"
+		b.PrimaryLocate = "docs/ai-locate.yaml"
+	}
+	_ = json.NewEncoder(w).Encode(b)
 }
 
 // anthropicRequestHasTools reports whether a /v1/messages body includes a

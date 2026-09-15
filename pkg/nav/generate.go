@@ -70,7 +70,36 @@ func GenerateMap(startDir string, force bool) (Bundle, error) {
 		[]byte(fmt.Sprintf("generated_at=%s\nroot=%s\nmodules=%d\nfiles=%d\nfuncs=%d\nlearned=%d\nmode=local-scan\ntokens=0\n",
 			time.Now().Format(time.RFC3339), scan.Root, len(scan.Modules), totalFiles, totalFuncs, learned)), 0o644)
 
-	return Resolve(root), nil
+	b = Resolve(root)
+	if err := publishAmuxInventory(b); err != nil {
+		return b, err
+	}
+	return b, nil
+}
+
+// publishAmuxInventory copies scan inventory into docs/ for the amux tool repo
+// (does not overwrite hand-curated AI_CODEBASE_MAP.md or ai-locate.yaml).
+func publishAmuxInventory(b Bundle) error {
+	if !b.IsAmuxRepository() {
+		return nil
+	}
+	docs := filepath.Join(b.ProjectRoot, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		return err
+	}
+	srcMod := filepath.Join(b.WorkspaceDir, FileModulesMD)
+	if fileExists(srcMod) {
+		if err := copyFile(srcMod, filepath.Join(docs, FileModulesMD)); err != nil {
+			return err
+		}
+	}
+	srcGen := filepath.Join(b.WorkspaceDir, "GENERATED.txt")
+	if fileExists(srcGen) {
+		if err := copyFile(srcGen, filepath.Join(docs, "MAP_GENERATED.txt")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateMap regenerates map from current tree (same as init --force).

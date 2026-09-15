@@ -62,6 +62,9 @@ func cmdMap(args []string) {
 		fmt.Printf("map updated: %s\n", b.WorkspaceDir)
 		fmt.Printf("  map:    %s\n", b.WorkspaceMap)
 		fmt.Printf("  locate: %s\n", b.WorkspaceLocate)
+		if b.IsAmuxRepository() {
+			fmt.Printf("  published: docs/MODULES.md, docs/MAP_GENERATED.txt\n")
+		}
 	case "learn", "annotate", "enrich":
 		cmdMapLearn(args[1:])
 	case "recent", "touched", "check":
