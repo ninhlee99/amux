@@ -125,9 +125,10 @@ func isPrimaryProxyLayer(group string) bool {
 
 // livingForSessionBalance returns adapters eligible for a new session
 // assignment: not Claude-sub, not cooling/quarantined, and usable for the
-// request's tool needs. Prefers primary proxy layers; falls back to API.
+// request's tool needs. Soft task preference reorders; never excludes a
+// living group. Falls back across all eligible adapters.
 func (r *AccountPoolRouter) livingForSessionBalance(adapters []types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) []types.ProviderAdapter {
-	var primary, api []types.ProviderAdapter
+	var living []types.ProviderAdapter
 	for _, a := range adapters {
 		grp := DetermineAdapterGroup(a)
 		if IsClaudeSubscriptionGroup(grp) {
@@ -142,16 +143,13 @@ func (r *AccountPoolRouter) livingForSessionBalance(adapters []types.ProviderAda
 		if r.cooling(a.ID()) {
 			continue
 		}
-		if isPrimaryProxyLayer(grp) {
-			primary = append(primary, a)
-		} else if grp == GroupAPIOther {
-			api = append(api, a)
-		}
+		living = append(living, a)
 	}
-	if len(primary) > 0 {
-		return sortForSessionBalance(primary)
+	order := GroupOrderForRequest(req)
+	if len(order) == 0 {
+		order = SessionBalanceOrder
 	}
-	return sortForSessionBalance(api)
+	return sortAdaptersByGroupOrder(living, order)
 }
 
 // AdapterIDPrefix matches common pool id shapes for role lookup by string.
