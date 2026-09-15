@@ -1,10 +1,112 @@
 # GRAPH — amux
 
-> Neural map · 21 modules · 97 files · 1129 funcs · 0 LLM tokens  
+> Neural map · 21 modules · 98 files · 1141 funcs · 0 LLM tokens  
 > docs/GRAPH.md (portable · root=.)  
 > AI: đọc **mesh + hubs + 1 subnet** — cấm dump toàn bộ. Chi tiết 1 func: `am map get`.
 
 ## Mesh (module → module)
+
+### Sơ đồ nơ-ron (Mermaid — xem trên GitHub / IDE)
+
+```mermaid
+flowchart LR
+  auth["auth"]
+  types["types"]
+  auth --> types
+  bridge["bridge"]
+  guard["guard"]
+  bridge --> guard
+  monitor["monitor"]
+  bridge --> monitor
+  privacy["privacy"]
+  bridge --> privacy
+  router["router"]
+  bridge --> router
+  tools["tools"]
+  bridge --> tools
+  bridge --> types
+  usage["usage"]
+  bridge --> usage
+  cli["cli"]
+  env["env"]
+  cli --> env
+  hook["hook"]
+  cli --> hook
+  cli --> monitor
+  nav["nav"]
+  cli --> nav
+  cli --> privacy
+  profile["profile"]
+  cli --> profile
+  provider["provider"]
+  cli --> provider
+  proxy["proxy"]
+  cli --> proxy
+  cli --> types
+  ui["ui"]
+  cli --> ui
+  cli --> usage
+  env --> types
+  guard --> types
+  hook --> types
+  term["term"]
+  monitor --> term
+  monitor --> types
+  privacy --> monitor
+  privacy --> types
+  profile --> auth
+  profile --> types
+  provider --> auth
+  browser["browser"]
+  provider --> browser
+  provider --> guard
+  provider --> profile
+  provider --> tools
+  provider --> types
+  proxy --> auth
+  proxy --> bridge
+  proxy --> guard
+  proxy --> hook
+  proxy --> monitor
+  proxy --> nav
+  proxy --> privacy
+  proxy --> profile
+  proxy --> provider
+  proxy --> router
+  proxy --> term
+  proxy --> types
+  proxy --> usage
+  router --> guard
+  router --> privacy
+  router --> term
+  router --> types
+  tools --> monitor
+  tools --> types
+  utils["utils"]
+  tools --> utils
+  ui --> browser
+  ui --> guard
+  ui --> hook
+  ui --> profile
+  ui --> provider
+  ui --> proxy
+  ui --> router
+  ui --> term
+  ui --> types
+  ui --> usage
+  usage --> nav
+  usage --> types
+```
+
+### Interactive
+
+```bash
+am map viz              # mở GRAPH.html (kéo node, click module → subnet)
+am map viz --module nav
+# hoặc proxy: http://127.0.0.1:8787/_am/map/viz?root=.
+```
+
+### Adjacency (text)
 
 ```
 auth → types
@@ -31,17 +133,17 @@ usage → nav types
 | `auth` | 3 | 16 | KCAccount, KCGet, KCSet, RefreshClaudeToken, RefreshLiveClaudeToken, RefreshedCredsJSON |
 | `bridge` | 6 | 62 | EstimateBytesTokens, EstimateInputTokens, EstimateStringTokens, HandleClaudeCountTokens, HandleClaudeMessages, ToChatRequest |
 | `browser` | 3 | 32 | CaptureCookieViaBrowser, CaptureWebAuthViaBrowser, RefreshWebAuthFromProfile, BrowserInfo, CapturedWebAuth, ChatGPTSession |
-| `cli` | 3 | 53 | Run, accountRef, accountToggleHint, applyAccountEnabled, bytesTrim, cmdAdd |
+| `cli` | 3 | 54 | Run, accountRef, accountToggleHint, applyAccountEnabled, bytesTrim, cmdAdd |
 | `env` | 1 | 5 | EnvPath, LoadEnvVars, PrintEnvExports, SaveEnvVars, ShellQuote |
 | `guard` | 6 | 54 | Unpin, ActivePinsCount, ExtractSessionKey, GetPinned, NewSessionAffinity, Pin |
 | `hook` | 5 | 62 | AutoUpdateConfigFile, IsAutoUpdateEnabled, LaunchAgentPath, SetupAutoUpdate, AddHook, AppendLine |
 | `live` | 0 | 0 |  |
 | `monitor` | 3 | 35 | GetLogStats, GetRequestMetrics, ResetRequestMetrics, ResetStats, SetDiagnosticAllBodies, SetLogAllBodies |
-| `nav` | 8 | 100 | GitRoot, LearnFuncs, Resolve, WorkspaceDir, ApplyAnnotations, GenerateMap |
+| `nav` | 9 | 110 | GitRoot, LearnFuncs, Resolve, WorkspaceDir, ApplyAnnotations, GenerateMap |
 | `privacy` | 1 | 20 | RedactString, Kinds, LogHits, MergeResults, RedactBytes, RedactChatRequest |
 | `profile` | 2 | 62 | ActivePath, ApplyEntry, AutoBackup, BundlePath, CmdSave, CmdUse |
 | `provider` | 15 | 187 | AGYAuthAvailable, AGYCredentialsPath, Group, Priority, SendMessageStream, SupportsTools |
-| `proxy` | 11 | 123 | ComposeListenAddr, DialAddr, IsPublicListen, ListenAddr, ListenAddrPath, LoadListenAddr |
+| `proxy` | 11 | 124 | ComposeListenAddr, DialAddr, IsPublicListen, ListenAddr, ListenAddrPath, LoadListenAddr |
 | `router` | 5 | 53 | GroupIndex, DetermineAdapterGroup, GroupDisplayName, GroupPriorityForIDE, IDEFromClientDialect, NativeGroups |
 | `term` | 2 | 64 | CyanErr, DimErr, GreenErr, Log, LogAuth, LogDegraded |
 | `tools` | 7 | 62 | FromClaudeToolUseBlocks, ParseClaudeTools, ToClaudeToolUseBlocks, ToClaudeTools, ParseCodexResponsesTools, ToCodexResponsesTools |

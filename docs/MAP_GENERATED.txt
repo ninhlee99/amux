@@ -1,8 +1,8 @@
-generated_at=2026-09-15T15:57:57+07:00
+generated_at=2026-09-15T16:13:18+07:00
 root=.
 modules=21
-files=97
-funcs=1129
+files=98
+funcs=1141
 learned=0
 mode=local-scan
 tokens=0

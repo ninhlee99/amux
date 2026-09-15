@@ -58,6 +58,9 @@ func GenerateMap(startDir string, force bool) (Bundle, error) {
 	if err := write(graphPath, renderGraphMD(scan, graph, b.Workspace), true); err != nil {
 		return b, err
 	}
+	if htmlBytes, err := RenderGraphHTML(scan, graph, ""); err == nil {
+		_ = write(filepath.Join(ws, FileGraphHTML), string(htmlBytes), true)
+	}
 	if err := write(modulesPath, renderModulesMD(scan, b.Workspace), true); err != nil {
 		return b, err
 	}
@@ -107,6 +110,9 @@ func publishAmuxInventory(b Bundle, scan ScanResult, learned, totalFiles, totalF
 		if err := os.WriteFile(filepath.Join(docs, FileGraphMD), []byte(portable), 0o644); err != nil {
 			return err
 		}
+	}
+	if fileExists(filepath.Join(b.WorkspaceDir, FileGraphHTML)) {
+		_ = copyFile(filepath.Join(b.WorkspaceDir, FileGraphHTML), filepath.Join(docs, FileGraphHTML))
 	}
 	// MODULES.md = stub only (AI uses GRAPH); still publish stub for clarity
 	srcMod := filepath.Join(b.WorkspaceDir, FileModulesMD)

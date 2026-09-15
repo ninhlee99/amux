@@ -13,7 +13,8 @@ amux phục vụ **nhiều repo client**. Mỗi project có bản đồ riêng t
 | `am map update` | **FULL** regenerate cấu trúc | Đổi lớn kiến trúc (giữ `annotations.json`) |
 | `am map recent` | **HẸP** git-changed ∪ touched | Check / quyết định learn |
 | `am map touch` | ghi `focus.json` | Vừa mở 1 file/func |
-| `am map graph <mod>` | **1 subnet** nơ-ron con | Khi đã biết module |
+| `am map viz [--module M]` | **HTML nơ-ron** — kéo node, mũi tên A→B, click module → subnet |
+| `am map graph <module>` | **1 subnet** text |
 | `am map get` | **1 dòng** | Xem summary 1 func |
 | `am map learn` | **1–N func** đã đọc sâu | Update map kiến thức |
 

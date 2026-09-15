@@ -134,7 +134,8 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | `am map update [dir]` | **FULL** regenerate cấu trúc (giữ `annotations.json`) |
 | `am map recent [--needs-learn]` | **HẸP** — chỉ func git-changed ∪ session touched |
 | `am map touch --file F [--func N]` | Ghi focus session (`focus.json`) |
-| `am map graph <module>` | **1 subnet** func→func (nơ-ron con); `--list` = danh sách module |
+| `am map viz [--module M]` | Mở `GRAPH.html` — lực nơ-ron, mũi tên liên kết, click module → subnet func |
+| `am map graph <module>` | **1 subnet** func→func (text); `--list` = danh sách module |
 | `am map get --file F --func N` | 1 dòng summary — không đọc full inventory |
 | `am map learn --file F --func N --summary S` | Enrich mô tả function sau khi AI đọc sâu |
 | `am map show [dir]` | Đường dẫn workspace + file map |
@@ -156,7 +157,8 @@ am map show
 ```
 
 - Lưu tại `~/.am/workspaces/<project-name>/` (`AI_CODEBASE_MAP.md`, `MODULES.md`, `ai-locate.yaml`, `annotations.json`, `focus.json`, **`project_root.txt` = abs path máy**).
-- Repo **amux**: `docs/GRAPH.md` (+ stub MODULES / MAP_GENERATED) **commit + push** — máy khác clone dùng luôn.
+- Repo **amux**: `docs/GRAPH.md` (Mermaid) + `docs/GRAPH.html` (interactive) commit+push.
+- Xem liên kết: `am map viz` hoặc GitHub render Mermaid trong `GRAPH.md`; proxy `GET /_am/map/viz?root=…`.
 - Project **client**: map chỉ `~/.am/workspaces/<name>/` — không push vào git app.
 - Proxy lần đầu thấy project chưa có map → tự `EnsureMapIfMissing`.
 - Admin JSON: `GET http://127.0.0.1:8787/_am/map?root=/path/to/app`.

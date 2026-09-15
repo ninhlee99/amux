@@ -275,6 +275,34 @@ func TestPublishAmuxInventoryPortableRoot(t *testing.T) {
 	}
 }
 
+func TestRenderGraphHTMLAndMermaid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AMUX_HOME", home)
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "pkg", "a"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, "pkg", "b"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "pkg", "a", "a.go"), []byte("package a\nimport \"example.com/demo/pkg/b\"\nfunc A() { b.B() }\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "pkg", "b", "b.go"), []byte("package b\nfunc B() {}\n"), 0o644)
+
+	scan, err := ScanProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := buildGraph(root, scan)
+	if len(g.Mesh) == 0 {
+		t.Fatalf("expected mesh edge a→b: %+v", g.Mesh)
+	}
+	md := renderGraphMD(scan, g, "demo")
+	if !strings.Contains(md, "```mermaid") || !strings.Contains(md, "-->") {
+		t.Fatalf("GRAPH.md should include mermaid arrows: %s", md)
+	}
+	html, err := RenderGraphHTML(scan, g, "")
+	if err != nil || !strings.Contains(string(html), "canvas") || !strings.Contains(string(html), `"mesh"`) {
+		t.Fatalf("HTML viz missing canvas/mesh: err=%v len=%d", err, len(html))
+	}
+}
+
 func TestResolveAmuxRepo(t *testing.T) {
 	wd, _ := os.Getwd()
 	root := GitRoot(wd)

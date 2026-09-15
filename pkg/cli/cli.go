@@ -82,6 +82,7 @@ Monitoring & Utilities:
   amux map recent [--needs-learn]  CHỈ git∪touched — check/update hẹp
   amux map touch --file F [--func N]  ghi focus session
   amux map graph <module>|--list   subnet func (1 module) hoặc list neurons
+  amux map viz [--module M]        mở GRAPH.html — kéo node, xem mũi tên liên kết
   amux map get --file F --func N     1 dòng summary (không đọc full MODULES)
   amux map learn --file F --func N --summary S
   amux map show [dir]         đường dẫn workspace + file map

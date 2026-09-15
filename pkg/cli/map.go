@@ -63,7 +63,7 @@ func cmdMap(args []string) {
 		fmt.Printf("  map:    %s\n", b.WorkspaceMap)
 		fmt.Printf("  locate: %s\n", b.WorkspaceLocate)
 		if b.IsAmuxRepository() {
-			fmt.Printf("  published: docs/GRAPH.md, docs/MODULES.md (stub), docs/MAP_GENERATED.txt\n")
+			fmt.Printf("  published: docs/GRAPH.md, docs/GRAPH.html, docs/MODULES.md (stub), docs/MAP_GENERATED.txt\n")
 		}
 	case "learn", "annotate", "enrich":
 		cmdMapLearn(args[1:])
@@ -75,6 +75,8 @@ func cmdMap(args []string) {
 		cmdMapGet(args[1:])
 	case "graph", "mesh", "subnet":
 		cmdMapGraph(args[1:])
+	case "viz", "visual", "view":
+		cmdMapViz(args[1:])
 	case "show", "where", "paths":
 		dir := "."
 		if len(args) > 1 {
@@ -91,7 +93,54 @@ func cmdMap(args []string) {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(b)
 	default:
-		die("usage: am map [init|update|learn|recent|touch|get|graph|show|json] …")
+		die("usage: am map [init|update|learn|recent|touch|get|graph|viz|show|json] …")
+	}
+}
+
+func cmdMapViz(args []string) {
+	dir, mod := ".", ""
+	noOpen := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() string {
+			if i+1 >= len(args) {
+				die("missing value after %s", a)
+			}
+			i++
+			return args[i]
+		}
+		switch a {
+		case "--dir", "-C":
+			dir = next()
+		case "--module", "-m":
+			mod = next()
+		case "--no-open":
+			noOpen = true
+		default:
+			if !strings.HasPrefix(a, "-") {
+				if mod == "" {
+					mod = a
+				} else {
+					dir = a
+				}
+			} else {
+				die("usage: am map viz [--module MOD] [--no-open] [dir]")
+			}
+		}
+	}
+	path, b, err := nav.WriteGraphHTML(dir, mod)
+	if err != nil {
+		die("%v", err)
+	}
+	fmt.Printf("neuron viz → %s\n", path)
+	if b.IsAmuxRepository() {
+		fmt.Printf("  published: %s\n", filepath.Join(b.ProjectRoot, "docs", nav.FileGraphHTML))
+	}
+	if !noOpen {
+		u := "file://" + path
+		if err := nav.OpenInBrowser(u); err != nil {
+			fmt.Printf("open browser failed: %v\nopen: %s\n", err, path)
+		}
 	}
 }
 
@@ -428,6 +477,7 @@ func cmdMapShow(dir string) {
 	printPath("  workspace map", b.WorkspaceMap)
 	printPath("  workspace locate", b.WorkspaceLocate)
 	printPath("  graph (neural)", filepath.Join(b.WorkspaceDir, nav.FileGraphMD))
+	printPath("  graph viz (html)", filepath.Join(b.WorkspaceDir, nav.FileGraphHTML))
 	printPath("  modules stub", filepath.Join(b.WorkspaceDir, nav.FileModulesMD))
 	printPath("  learned annotations", filepath.Join(b.WorkspaceDir, nav.FileAnnotations))
 	printPath("  session focus", filepath.Join(b.WorkspaceDir, nav.FileFocus))

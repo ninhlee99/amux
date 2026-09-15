@@ -407,6 +407,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 
 	// Client workspace map paths (same as `am map show` JSON).
 	mux.HandleFunc("/_am/map", handleAmMapBundle)
+	mux.HandleFunc("/_am/map/viz", handleAmMapViz)
 
 	mux.HandleFunc("/_am/sync", func(w http.ResponseWriter, r *http.Request) {
 		profile.SyncActiveFromSystem("claude")
@@ -713,6 +714,30 @@ func handleAmMapBundle(w http.ResponseWriter, r *http.Request) {
 		b.PrimaryLocate = "docs/ai-locate.yaml"
 	}
 	_ = json.NewEncoder(w).Encode(b)
+}
+
+func handleAmMapViz(w http.ResponseWriter, r *http.Request) {
+	root := strings.TrimSpace(r.URL.Query().Get("root"))
+	if root == "" {
+		root = usage.ProjectForRemoteAddr(r.RemoteAddr)
+	}
+	if root == "" {
+		http.Error(w, "missing project root (use ?root=/path/to/repo)", http.StatusBadRequest)
+		return
+	}
+	focus := strings.TrimSpace(r.URL.Query().Get("module"))
+	scan, g, err := nav.LoadGraphForDir(root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	htmlBytes, err := nav.RenderGraphHTML(scan, g, focus)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(htmlBytes)
 }
 
 // anthropicRequestHasTools reports whether a /v1/messages body includes a

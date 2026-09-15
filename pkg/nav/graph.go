@@ -340,11 +340,16 @@ func renderGraphMD(scan ScanResult, g GraphSnapshot, workspace string) string {
 	b.WriteString("> AI: đọc **mesh + hubs + 1 subnet** — cấm dump toàn bộ. Chi tiết 1 func: `am map get`.\n\n")
 
 	b.WriteString("## Mesh (module → module)\n\n")
+	b.WriteString("### Sơ đồ nơ-ron (Mermaid — xem trên GitHub / IDE)\n\n")
+	b.WriteString(renderMermaidMesh(g))
+	b.WriteString("\n")
+	b.WriteString("### Interactive\n\n")
+	b.WriteString("```bash\nam map viz              # mở GRAPH.html (kéo node, click module → subnet)\nam map viz --module nav\n# hoặc proxy: http://127.0.0.1:8787/_am/map/viz?root=.\n```\n\n")
+	b.WriteString("### Adjacency (text)\n\n")
 	b.WriteString("```\n")
 	if len(g.Mesh) == 0 {
 		b.WriteString("(no import edges detected)\n")
 	} else {
-		// group by From
 		var cur string
 		var tos []string
 		flush := func() {
