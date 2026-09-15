@@ -217,9 +217,19 @@ func Badge(kind, text string) string {
 	return bg + fg + " " + t + " " + reset
 }
 
-// ProgressBar renders a filled bar for pct in [0,1].
-// Uses ASCII #/. so every terminal font renders correctly.
+// ProgressBar renders a filled bar for utilization pct in [0,1]
+// (full = used up → danger colors). Prefer RemainingBar for quota-left UIs.
 func ProgressBar(pct float64, width int) string {
+	return renderBar(pct, width, true)
+}
+
+// RemainingBar renders a filled bar for remaining fraction in [0,1]
+// (full = healthy → green; empty = exhausted → red).
+func RemainingBar(left float64, width int) string {
+	return renderBar(left, width, false)
+}
+
+func renderBar(pct float64, width int, usedSemantics bool) string {
 	if width <= 0 {
 		width = 12
 	}
@@ -233,18 +243,36 @@ func ProgressBar(pct float64, width int) string {
 	if filled > width {
 		filled = width
 	}
-	bar := strings.Repeat("#", filled) + strings.Repeat(".", width-filled)
+	// Block chars read clearly in status lines; ASCII fallback when NO_COLOR /
+	// tests disable styling (some CI fonts still fine with #/.).
+	fill, empty := "█", "░"
+	if !outOK() {
+		fill, empty = "#", "."
+	}
+	bar := strings.Repeat(fill, filled) + strings.Repeat(empty, width-filled)
 	if !outOK() {
 		return bar
 	}
 	col := cOK
-	switch {
-	case pct >= 0.9:
-		col = cErr
-	case pct >= 0.7:
-		col = cWarn
-	case pct >= 0.4:
-		col = cAccent
+	if usedSemantics {
+		switch {
+		case pct >= 0.9:
+			col = cErr
+		case pct >= 0.7:
+			col = cWarn
+		case pct >= 0.4:
+			col = cAccent
+		}
+	} else {
+		// remaining: low left is danger
+		switch {
+		case pct <= 0.1:
+			col = cErr
+		case pct <= 0.3:
+			col = cWarn
+		case pct <= 0.6:
+			col = cAccent
+		}
 	}
 	return col + bar + reset
 }

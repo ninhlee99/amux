@@ -13,48 +13,22 @@ import (
 
 // Protocol is tiny on purpose: catalog is rebuilt every request from the
 // client's live tools[] (new MCP / plugin / Skill appear with no code change).
-const webToolPreamble = `You are an API model backend for an autonomous coding agent. The client CLI executes every <tool_call> locally on the real filesystem and repository. [Tool result] blocks are verified execution outputs.
-
-CRITICAL OPERATING RULES:
-1. AUTONOMOUS TOOL EXECUTION: Never say "Chưa đủ dữ liệu", "Cần lấy tiếp", or provide a checklist of things you would check. If you need any file, diff, or status, emit <tool_call> IMMEDIATELY. Talking to the user about what you need instead of emitting <tool_call> is strictly forbidden.
-2. REVIEWS & AUDITS: When asked to review, audit, verify, or compare code or documentation:
-   - Turn 1: Emit <tool_call> to read the relevant files, diffs (git diff), and git status.
-   - Once tool results provide the files and diffs: provide a deep, thorough, professional engineering review. Detail what changed, point out discrepancies, check completeness, verify CLI/API accuracy, and give concrete suggestions and actionable improvements.
-3. NO HALLUCINATION: Never pretend, simulate, or claim in text that you created, read, or edited files without emitting <tool_call>.
-4. NO COMPLAINTS: Never say you lack tools, cannot see the repo, ask the user to paste, or complain about output repo. You have full access through <tool_call>.
-5. Work like an API with tool_choice=required until the task is complete.
-
-FEW-SHOT EXAMPLES:
-Example 1 (Command execution):
-User: Check current git branch.
-Assistant:
+// Keep preamble short — every tools turn pays this cost on cold-start threads.
+const webToolPreamble = `Coding-agent backend. Client runs tools on the real repo. [Tool result] = verified CLI output.
+Rules: need file/cmd → emit <tool_call> now; never claim lack of tools / ask to paste / fake edits.
+Format:
 <tool_call>
-{"name":"Bash","arguments":{"command":"git branch --show-current"}}
+{"name":"TOOL","arguments":{...}}
 </tool_call>
-
-Example 2 (Reading files and diffs during review):
-User: Review the latest changes and README.
-Assistant:
-<tool_call>
-{"name":"Bash","arguments":{"command":"git diff"}}
-</tool_call>
-<tool_call>
-{"name":"Read","arguments":{"file_path":"README.md"}}
-</tool_call>
-
-Example 3 (After tool results received):
-[Tool result — CLI ran]:
-<git diff content and README content>
-Assistant:
-# Code & Documentation Review
-[Thorough, detailed analysis with specific line references, findings, and suggestions]
-
-ONLY <tool_call> blocks when using tools. Multiple = multiple blocks. CATALOG
+Multiple blocks OK. CATALOG
 `
 
 const webToolCloser = `
-[end] MANDATORY TOOL INSTRUCTION: You have active local access to tools (Bash, Read, Grep, Glob, Agent, Edit, Write). If you need any file content, grep search, or command execution, output <tool_call> now. NEVER say "Không có tool", "Chưa đủ dữ liệu", or "Cần output đọc file" — emit the <tool_call> immediately. Once tool results provide the required data, provide a complete, in-depth answer directly. No checklist. No paste.
+[end] Need data → <tool_call> now. Have tool results → answer fully. No checklist / paste / "no tools".
 `
+
+// maxForcedWebTools caps invented tool calls on refusal (avoid README spam).
+const maxForcedWebTools = 3
 
 var (
 	reXMLTool      = regexp.MustCompile(`(?s)<tool_call>\s*(.*?)\s*</tool_call>`)
@@ -85,8 +59,19 @@ func WebPreamble(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
+	return webToolPreamble + catalogBlock(defs)
+}
+
+// WebCatalogOnly is the continuing-thread preamble: live catalog, no rules essay.
+func WebCatalogOnly(defs []types.ToolDef) string {
+	if len(defs) == 0 {
+		return ""
+	}
+	return "CATALOG\n" + catalogBlock(defs)
+}
+
+func catalogBlock(defs []types.ToolDef) string {
 	var b strings.Builder
-	b.WriteString(webToolPreamble)
 	for _, d := range defs {
 		b.WriteString(catalogLine(d))
 		b.WriteByte('\n')
@@ -95,9 +80,9 @@ func WebPreamble(defs []types.ToolDef) string {
 	return b.String()
 }
 
-// catalogLine is "Name" or "Name:req1,req2" — live tools[], no hardcoded list.
+// catalogLine is "Name" or "Name:key:type,..." — live tools[], typed required args.
 func catalogLine(d types.ToolDef) string {
-	keys := schemaKeys(d.InputSchema, 4)
+	keys := schemaKeyTypes(d.InputSchema, 6)
 	if len(keys) == 0 {
 		return d.Name
 	}
@@ -105,6 +90,20 @@ func catalogLine(d types.ToolDef) string {
 }
 
 func schemaKeys(raw json.RawMessage, max int) []string {
+	typed := schemaKeyTypes(raw, max)
+	out := make([]string, 0, len(typed))
+	for _, t := range typed {
+		if i := strings.IndexByte(t, ':'); i > 0 {
+			out = append(out, t[:i])
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// schemaKeyTypes returns "name:type" entries (required first, else props).
+func schemaKeyTypes(raw json.RawMessage, max int) []string {
 	if len(raw) == 0 || string(raw) == "null" || max < 1 {
 		return nil
 	}
@@ -115,21 +114,44 @@ func schemaKeys(raw json.RawMessage, max int) []string {
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
 	}
-	if len(s.Required) > 0 {
-		if len(s.Required) > max {
-			return s.Required[:max]
+	propType := func(name string) string {
+		rawProp, ok := s.Properties[name]
+		if !ok {
+			return "any"
 		}
-		return s.Required
+		var p struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawProp, &p) != nil || p.Type == "" {
+			return "any"
+		}
+		return p.Type
+	}
+	format := func(name string) string { return name + ":" + propType(name) }
+
+	if len(s.Required) > 0 {
+		out := make([]string, 0, len(s.Required))
+		for _, k := range s.Required {
+			out = append(out, format(k))
+			if len(out) >= max {
+				return out
+			}
+		}
+		return out
 	}
 	keys := make([]string, 0, len(s.Properties))
 	for k := range s.Properties {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if len(keys) > max {
-		keys = keys[:max]
+	out := make([]string, 0, max)
+	for _, k := range keys {
+		out = append(out, format(k))
+		if len(out) >= max {
+			break
+		}
 	}
-	return keys
+	return out
 }
 
 // WebCloser is appended after the flattened transcript so it outranks
@@ -180,13 +202,19 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		calls := ParseWebTools(text, defs)
 		forced := false
 		if shouldForceWebTools(text, hist) {
-			extra := extractForcedTools(text, defs, hist)
-			for _, tc := range extra {
-				if !hasToolCall(calls, tc) {
-					calls = append(calls, tc)
+			// After tools already ran, incomplete checklist without hard refusal
+			// → allow prose (model is answering); do not invent more tools.
+			allowProse := historyHasTools(hist) && isWebWorkIncomplete(text) &&
+				!isWebToolRefusal(text) && !isWebFakeExecution(text, hist)
+			if !allowProse {
+				extra := extractForcedTools(text, defs, hist)
+				for _, tc := range extra {
+					if !hasToolCall(calls, tc) {
+						calls = append(calls, tc)
+					}
 				}
+				forced = len(calls) > 0
 			}
-			forced = len(calls) > 0
 		}
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
@@ -386,6 +414,9 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 	var out []types.ToolCall
 
 	addRead := func(path string) {
+		if len(out) >= maxForcedWebTools {
+			return
+		}
 		d, ok := findToolDef(by, "read", "read_file", "view_file")
 		if !ok || path == "" || already[path] {
 			return
@@ -401,6 +432,9 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 	}
 
 	addBash := func(cmd string) {
+		if len(out) >= maxForcedWebTools {
+			return
+		}
 		d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command")
 		if !ok || strings.TrimSpace(cmd) == "" {
 			return
@@ -423,28 +457,25 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 			}
 		}
 	}
-	// 1. Shell/Git commands mentioned in text (in backticks or git invocations)
-	for _, m := range reWebBashCmd.FindAllStringSubmatch(searchText, 8) {
-		cmd := ""
-		for idx := 1; idx < len(m); idx++ {
-			if m[idx] != "" {
-				cmd = strings.Trim(m[idx], "` ")
-				break
-			}
-		}
-		if cmd != "" && !hasBashCommand(out, cmd) {
-			addBash(cmd)
-		}
-		if len(out) >= 8 {
-			break
+
+	pathsMentioned := 0
+	wantGit := reGitDiffCmd.MatchString(searchText) || reGitStatusCmd.MatchString(searchText)
+	// Reserve 1 slot for bash when git is mentioned so path spam cannot
+	// crowd out the diff/status explore (review loops need both).
+	readCap := maxForcedWebTools
+	if wantGit {
+		readCap = maxForcedWebTools - 1
+		if readCap < 1 {
+			readCap = 1
 		}
 	}
 
-	// 2. File paths mentioned in text or user prompt
-	for _, p := range reWebFilePath.FindAllString(searchText, 12) {
+	// 1. File paths first (review/fix need files before more git spam)
+	for _, p := range reWebFilePath.FindAllString(searchText, 6) {
 		if strings.HasPrefix(strings.ToLower(p), "http") {
 			continue
 		}
+		pathsMentioned++
 		parts := strings.Split(p, "/")
 		extParts := 0
 		for _, part := range parts {
@@ -458,35 +489,49 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 					addRead(part)
 				}
 			}
-			continue
+		} else {
+			addRead(p)
 		}
-		addRead(p)
-		if len(out) >= 6 {
+		if len(out) >= readCap {
 			break
 		}
 	}
 
-	if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
-		if reGitDiffCmd.MatchString(searchText) && !hasBashCommand(out, "git diff") {
-			addBash("git diff --stat && git diff")
-		}
-		if reGitStatusCmd.MatchString(searchText) && !hasBashCommand(out, "git status") {
-			addBash("git status -sb")
+	// 2. Canonical git explores (before fuzzy bash — avoids "git status cho thấy")
+	if len(out) < maxForcedWebTools {
+		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
+			if reGitDiffCmd.MatchString(searchText) && !hasBashCommand(out, "git diff") {
+				addBash("git diff --stat && git diff")
+			}
+			if reGitStatusCmd.MatchString(searchText) && !hasBashCommand(out, "git status") {
+				addBash("git status -sb")
+			}
 		}
 	}
 
-	// 3. Fallback when 0 tools extracted:
+	// 3. Only backtick-quoted shell snippets (explicit), never prose matches
+	if len(out) < maxForcedWebTools {
+		for _, m := range reWebBashCmd.FindAllStringSubmatch(searchText, 4) {
+			cmd := strings.Trim(m[1], "` ") // group 1 = backtick form only
+			if cmd == "" || !isPlausibleForcedBash(cmd) || hasBashCommand(out, cmd) {
+				continue
+			}
+			addBash(cmd)
+			if len(out) >= maxForcedWebTools {
+				break
+			}
+		}
+	}
+
+	// 3. Fallback when 0 tools — never invent if paths were already read this session.
 	if len(out) == 0 {
-		if isWebToolRefusal(text) {
-			return fallbackExploreTools(defs)
+		if pathsMentioned > 0 && historyHasTools(hist) {
+			return nil
+		}
+		if isWebToolRefusal(text) || isWebWorkIncomplete(text) {
+			return fallbackExploreTools(defs, hist)
 		}
 		return nil
-	}
-
-	if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); ok && !historyHasTools(hist) && !hasBashCommand(out, "") {
-		key := toolArgKey(d, "command", "CommandLine", "cmd")
-		b, _ := json.Marshal(map[string]string{key: "git status -sb && git diff --stat && git diff -- README.md"})
-		out = append(out, types.ToolCall{ID: "toolu_web_ex_bash", Name: d.Name, Arguments: string(b)})
 	}
 	return out
 }
@@ -500,6 +545,31 @@ func hasBashCommand(calls []types.ToolCall, sub string) bool {
 		}
 	}
 	return false
+}
+
+// isPlausibleForcedBash rejects prose false-positives like "git status cho thấy".
+func isPlausibleForcedBash(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" || len(cmd) > 180 {
+		return false
+	}
+	for _, r := range cmd {
+		if r > 127 {
+			return false
+		}
+	}
+	low := strings.ToLower(cmd)
+	switch {
+	case strings.HasPrefix(low, "git "):
+		return reGitDiffCmd.MatchString(cmd) || reGitStatusCmd.MatchString(cmd) ||
+			regexp.MustCompile(`(?i)^(?:\S+/)?git(?:\s+--?\S+)*\s+(?:log|show|branch|grep|rev-parse)\b`).MatchString(cmd)
+	case strings.HasPrefix(low, "ls"):
+		return regexp.MustCompile(`(?i)^ls(?:\s+-[a-zA-Z0-9]+)*\s*$`).MatchString(cmd)
+	case strings.HasPrefix(low, "am "):
+		return true
+	default:
+		return regexp.MustCompile(`(?i)^(find|grep)\s+\S+`).MatchString(cmd)
+	}
 }
 
 func hasToolCall(calls []types.ToolCall, tc types.ToolCall) bool {
@@ -535,23 +605,41 @@ func hasToolCall(calls []types.ToolCall, tc types.ToolCall) bool {
 	return false
 }
 
-// fallbackExploreTools emits the same first moves an API-key model would:
-// Read + Bash from the live catalog so Claude Code executes locally.
-func fallbackExploreTools(defs []types.ToolDef) []types.ToolCall {
+// fallbackExploreTools emits at most maxForcedWebTools safe explores.
+// Prefer paths from last user message; otherwise a single git status — never invent README.md.
+func fallbackExploreTools(defs []types.ToolDef, hist []types.ChatMessage) []types.ToolCall {
 	by := map[string]types.ToolDef{}
 	for _, d := range defs {
 		by[strings.ToLower(d.Name)] = d
 	}
 	var out []types.ToolCall
+	lastUser := ""
+	for i := len(hist) - 1; i >= 0; i-- {
+		if strings.EqualFold(hist[i].Role, "user") {
+			lastUser = hist[i].Content
+			break
+		}
+	}
 	if d, ok := findToolDef(by, "read", "read_file", "view_file"); ok {
-		key := toolArgKey(d, "file_path", "path", "AbsolutePath")
-		b, _ := json.Marshal(map[string]string{key: "README.md"})
-		out = append(out, types.ToolCall{ID: "toolu_web_fb_1", Name: d.Name, Arguments: string(b)})
+		for _, p := range reWebFilePath.FindAllString(lastUser, maxForcedWebTools) {
+			if strings.HasPrefix(strings.ToLower(p), "http") {
+				continue
+			}
+			key := toolArgKey(d, "file_path", "path", "AbsolutePath")
+			b, _ := json.Marshal(map[string]string{key: p})
+			out = append(out, types.ToolCall{ID: fmt.Sprintf("toolu_web_fb_%d", len(out)+1), Name: d.Name, Arguments: string(b)})
+			if len(out) >= maxForcedWebTools {
+				return out
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
 	}
 	if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); ok {
 		key := toolArgKey(d, "command", "CommandLine", "cmd")
-		b, _ := json.Marshal(map[string]string{key: "git status -sb && git diff --stat && git diff -- README.md"})
-		out = append(out, types.ToolCall{ID: "toolu_web_fb_2", Name: d.Name, Arguments: string(b)})
+		b, _ := json.Marshal(map[string]string{key: "git status -sb"})
+		out = append(out, types.ToolCall{ID: "toolu_web_fb_1", Name: d.Name, Arguments: string(b)})
 	}
 	return out
 }

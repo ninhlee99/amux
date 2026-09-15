@@ -80,7 +80,7 @@ func SoftPreferGroups(base, prefer []string) []string {
 }
 
 // GroupOrderForRequest is the try-order for pool failover: IDE proxy rules,
-// then soft task preference. Manual pin / affinity still win before this list.
+// then soft task preference, then webPolicy lift. Manual pin / affinity still win.
 func GroupOrderForRequest(req *types.ChatRequest) []string {
 	ide := ""
 	kind := ""
@@ -89,7 +89,19 @@ func GroupOrderForRequest(req *types.ChatRequest) []string {
 		kind = req.TaskKind
 	}
 	base := ProxyGroupsForClient(ide)
-	return SoftPreferGroups(base, PreferredGroupsForTask(kind))
+	order := SoftPreferGroups(base, PreferredGroupsForTask(kind))
+	switch EffectiveWebPolicy() {
+	case WebPolicyForce:
+		return SoftPreferGroups(order, []string{GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb})
+	case WebPolicyPrefer:
+		// Lift web ahead of free tiers for coding/fix too (still after native IDE).
+		return SoftPreferGroups(order, []string{
+			GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb,
+			GroupAPIOther,
+		})
+	default:
+		return order
+	}
 }
 
 func groupRankIn(order []string, group string) int {

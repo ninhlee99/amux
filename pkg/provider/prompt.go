@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -27,14 +28,17 @@ func PromptWithSystem(messages []types.ChatMessage, userPrompt string) string {
 	return sys.String() + "\n\n" + userPrompt
 }
 
-const contextHandoffPreamble = `[xfer] Continue latest User. [Tool result] blocks are REAL CLI output already executed on the machine. You have active tool capabilities. Emit <tool_call> for any file or command you need. Do NOT explain you lack tools or ask user to paste. Once tool results are present, answer the user request directly.
+const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output. Emit <tool_call> if you need files/commands; else answer.
 
 `
 
 // WebBackendPrompt builds the single string web UIs accept.
-// FullContext (Claude Code / Codex via proxy): flatten entire history and
-// skip server-side thread continuity. Interactive am chat: last user (+ system)
-// when continuing a thread; flatten when starting fresh.
+//
+// Token policy:
+//   - Cold start / new thread: flatten (compacted) history once.
+//   - Continuing server thread + tools: delta only (recent tool results + last user)
+//     so we do not re-pay full hist every turn.
+//   - Interactive am chat (!FullContext): last user (+ system) when continuing.
 func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
@@ -46,29 +50,91 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		// show up automatically, no proxy code change.
 		msgs = slimWebMessages(msgs)
 	}
+	msgs = ctxshrink.CompactMessages(msgs)
+
 	var body string
-	if req.FullContext {
+	useDelta := req.FullContext && continuingThread && len(req.Tools) > 0 && historyHasToolTurns(msgs)
+	switch {
+	case useDelta:
+		body = BuildDeltaWebPrompt(msgs)
+		if body == "" {
+			body = BuildConcatenatedPrompt(msgs)
+		}
+		body = contextHandoffPreamble + body
+	case req.FullContext:
 		body = BuildConcatenatedPrompt(msgs)
 		if body == "" {
 			return ""
 		}
 		body = contextHandoffPreamble + body
-	} else if continuingThread {
+	case continuingThread:
 		body = PromptWithSystem(msgs, lastUserPrompt(msgs))
-	} else {
+	default:
 		body = BuildConcatenatedPrompt(msgs)
 	}
-	if len(req.Tools) > 0 {
-		closer := tools.WebCloser()
-		trimmedBody := strings.TrimSpace(body)
-		if strings.HasSuffix(trimmedBody, "Assistant:") {
-			trimmedBody = strings.TrimSuffix(trimmedBody, "Assistant:")
-			body = strings.TrimSpace(trimmedBody) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
-			return tools.WebPreamble(req.Tools) + body
-		}
-		return tools.WebPreamble(req.Tools) + body + closer
+	if len(req.Tools) == 0 {
+		return body
 	}
-	return body
+	closer := tools.WebCloser()
+	preamble := tools.WebPreamble(req.Tools)
+	if continuingThread {
+		// Thread already saw full protocol; catalog-only saves ~2k tokens/turn.
+		preamble = tools.WebCatalogOnly(req.Tools)
+	}
+	trimmedBody := strings.TrimSpace(body)
+	if strings.HasSuffix(trimmedBody, "Assistant:") {
+		trimmedBody = strings.TrimSuffix(trimmedBody, "Assistant:")
+		body = strings.TrimSpace(trimmedBody) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
+		return preamble + body
+	}
+	return preamble + body + closer
+}
+
+// historyHasToolTurns is true when the client already ran tools this session.
+func historyHasToolTurns(msgs []types.ChatMessage) bool {
+	for _, m := range msgs {
+		if strings.EqualFold(m.Role, "tool") || len(m.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// BuildDeltaWebPrompt sends only the latest user turn plus recent tool
+// results/assistant tool calls — for live web threads that already hold prior context.
+func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	// Keep from the last user message that is NOT only a tool-result wrapper,
+	// including subsequent assistant tool_calls and tool results.
+	start := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(messages[i].Role, "user") {
+			start = i
+			// Include immediately preceding assistant tool_calls if any.
+			if i > 0 && strings.EqualFold(messages[i-1].Role, "assistant") && len(messages[i-1].ToolCalls) > 0 {
+				start = i - 1
+			}
+			break
+		}
+	}
+	// Also pull the trailing tool-result chain before that user if the last
+	// messages are tool results (Claude Code pattern: user → assistant tools → tools → user).
+	slice := messages[start:]
+	// Prepend up to 2 prior tool results if start skipped them.
+	if start > 0 {
+		extra := 0
+		for i := start - 1; i >= 0 && extra < 2; i-- {
+			if strings.EqualFold(messages[i].Role, "tool") {
+				slice = append([]types.ChatMessage{messages[i]}, slice...)
+				extra++
+				continue
+			}
+			break
+		}
+	}
+	return BuildConcatenatedPrompt(slice)
 }
 
 // slimWebMessages drops client harness system turns. User/tool/assistant stay.

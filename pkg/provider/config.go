@@ -154,7 +154,10 @@ func NormalizeAccountsFile(f *AccountsFile) {
 
 type AccountsFile struct {
 	// Version 2 = ide/group/plan on each provider. Missing/0 is treated as 2 on load.
-	Version   int              `json:"version,omitempty"`
+	Version int `json:"version,omitempty"`
+	// WebPolicy: last_resort (default) | prefer | force — when web adapters may
+	// serve client tools[] (override with AM_WEB_POLICY).
+	WebPolicy string           `json:"webPolicy,omitempty"`
 	Providers []ProviderConfig `json:"providers"`
 }
 

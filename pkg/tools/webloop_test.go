@@ -72,17 +72,30 @@ func TestWebPreamble_IncludesSchemaAndMCPRule(t *testing.T) {
 	if !strings.Contains(got, "CATALOG") || !strings.Contains(got, "<tool_call>") {
 		t.Fatal(got)
 	}
-	if !strings.Contains(got, "Read:file_path") {
+	if !strings.Contains(got, "Read:file_path:string") {
 		t.Fatal("read schema", got)
 	}
-	if !strings.Contains(got, "mcp__github__list_prs:repo") {
+	if !strings.Contains(got, "mcp__github__list_prs:repo:string") {
 		t.Fatal("mcp schema", got)
 	}
-	if !strings.Contains(got, "Skill:skill") {
+	if !strings.Contains(got, "Skill:skill:string") {
 		t.Fatal("skill schema", got)
 	}
 	if strings.Contains(got, "Read a file") {
 		t.Fatal("descriptions waste tokens")
+	}
+	if strings.Contains(got, "FEW-SHOT") || strings.Contains(got, "Example 1") {
+		t.Fatal("few-shot must stay out of preamble")
+	}
+}
+
+func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
+	got := WebCatalogOnly([]types.ToolDef{{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)}})
+	if !strings.Contains(got, "CATALOG") || !strings.Contains(got, "Bash:command:string") {
+		t.Fatal(got)
+	}
+	if strings.Contains(got, "Coding-agent backend") {
+		t.Fatal("catalog-only must omit full preamble")
 	}
 }
 
@@ -118,8 +131,12 @@ func TestWrapWebStream_RefusalBecomesToolUse(t *testing.T) {
 			calls = ch.ToolCalls
 		}
 	}
-	if len(calls) != 2 {
+	if len(calls) < 1 || len(calls) > maxForcedWebTools {
 		t.Fatalf("calls=%+v", calls)
+	}
+	// No path with extension → bash git status only (never invent README.md).
+	if calls[0].Name != "Bash" || !strings.Contains(calls[0].Arguments, "git status") {
+		t.Fatalf("want safe bash explore, got %+v", calls)
 	}
 	if strings.Contains(content, "Gửi cho tôi") {
 		t.Fatal("refusal leaked")
@@ -131,15 +148,18 @@ func TestFallbackExploreTools_UsesCatalogKeys(t *testing.T) {
 		{Name: "Read", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
 		{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
 	}
-	calls := fallbackExploreTools(defs)
-	if len(calls) != 2 || calls[0].Name != "Read" || calls[1].Name != "Bash" {
-		t.Fatalf("%+v", calls)
+	calls := fallbackExploreTools(defs, nil)
+	if len(calls) != 1 || calls[0].Name != "Bash" {
+		t.Fatalf("no path → bash only: %+v", calls)
 	}
-	if !strings.Contains(calls[0].Arguments, "file_path") || !strings.Contains(calls[0].Arguments, "README.md") {
+	if !strings.Contains(calls[0].Arguments, "git status") || strings.Contains(calls[0].Arguments, "README.md") {
 		t.Fatal(calls[0].Arguments)
 	}
-	if !strings.Contains(calls[1].Arguments, "git") {
-		t.Fatal(calls[1].Arguments)
+	withPath := fallbackExploreTools(defs, []types.ChatMessage{
+		{Role: "user", Content: "review pkg/cli/cli.go please"},
+	})
+	if len(withPath) != 1 || withPath[0].Name != "Read" || !strings.Contains(withPath[0].Arguments, "cli.go") {
+		t.Fatalf("path from user: %+v", withPath)
 	}
 }
 

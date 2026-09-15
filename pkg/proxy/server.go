@@ -104,6 +104,9 @@ func RunProxy(addr, upstream string) error {
 	if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 		pool.SetDirectory(all)
 	}
+	if f, err := provider.LoadConfigFile(provider.DefaultAccountsPath()); err == nil && f != nil {
+		router.SetWebPolicy(f.WebPolicy)
+	}
 
 	// Wire the /btw queue into the bridge so in-flight user notes get
 	// injected into the next outgoing LLM request automatically.
@@ -418,6 +421,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			if toolPool != chatPool {
 				toolPool.Reload(reloaded)
 			}
+		}
+		if f, err := provider.LoadConfigFile(provider.DefaultAccountsPath()); err == nil && f != nil {
+			router.SetWebPolicy(f.WebPolicy)
 		}
 		if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 			chatPool.SetDirectory(all)

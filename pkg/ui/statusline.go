@@ -65,11 +65,12 @@ func ReadStatuslineInput(r io.Reader) (StatuslineInput, error) {
 	return in, err
 }
 
-// RenderStatusline: `10k  5h [bar] N%left  7d [bar] N%left` — no window size.
+// RenderStatusline: `10k tok  ·  5h left 75% ████  ·  7d left 60% ██░░` — no window size.
 func RenderStatusline(in StatuslineInput, extra LimitWindows) string {
 	var b strings.Builder
 	if used, ok := sessionTokens(in); ok {
 		b.WriteString(usage.FormatTokens(used))
+		b.WriteString(" tok")
 	}
 	five, seven := mergeLimits(in, extra)
 	writeLimit(&b, "5h", five)
@@ -107,7 +108,7 @@ func writeLimit(b *strings.Builder, label string, used *float64) {
 		return
 	}
 	if b.Len() > 0 {
-		b.WriteString("  ")
+		b.WriteString("  ·  ")
 	}
 	left := 1 - *used
 	if left < 0 {
@@ -116,10 +117,10 @@ func writeLimit(b *strings.Builder, label string, used *float64) {
 	if left > 1 {
 		left = 1
 	}
-	b.WriteString(label)
-	b.WriteByte(' ')
-	b.WriteString(term.ProgressBar(left, 6))
-	b.WriteString(fmt.Sprintf(" %d%%left", int(left*100+0.5)))
+	pct := int(left*100 + 0.5)
+	// "5h left 75% ██████" — label + remaining % first, bar last (scan-friendly).
+	b.WriteString(fmt.Sprintf("%s left %d%% ", label, pct))
+	b.WriteString(term.RemainingBar(left, 8))
 }
 
 func mergeLimits(in StatuslineInput, extra LimitWindows) (fiveH, sevenD *float64) {

@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "webPolicy": "last_resort",
   "providers": [
     {
       "id": "github:api:01",

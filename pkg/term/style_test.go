@@ -15,13 +15,27 @@ func TestProgressBarBounds(t *testing.T) {
 		t.Fatalf("full bar len=%d", n)
 	}
 	if got := ProgressBar(1, 10); got != strings.Repeat("#", 10) {
-		t.Fatalf("full want all #, got %q", got)
+		t.Fatalf("full want all # (no-color), got %q", got)
 	}
 	if got := ProgressBar(0, 10); got != strings.Repeat(".", 10) {
 		t.Fatalf("empty want all ., got %q", got)
 	}
 	if n := len([]rune(ProgressBar(0.5, 10))); n != 10 {
 		t.Fatalf("half bar len=%d", n)
+	}
+}
+
+func TestRemainingBarBounds(t *testing.T) {
+	Disable()
+	defer Enable()
+	if got := RemainingBar(1, 8); got != strings.Repeat("#", 8) {
+		t.Fatalf("full remaining: %q", got)
+	}
+	if got := RemainingBar(0, 8); got != strings.Repeat(".", 8) {
+		t.Fatalf("empty remaining: %q", got)
+	}
+	if n := len([]rune(RemainingBar(0.5, 8))); n != 8 {
+		t.Fatalf("half len=%d", n)
 	}
 }
 

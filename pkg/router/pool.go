@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/term"
@@ -96,6 +98,7 @@ func (r *AccountPoolRouter) SetDirectory(adapters []types.ProviderAdapter) {
 // applyTaskClassification inspects the request and dynamically enables thinking
 // mode or escalates to Pro tier when heavy analytical reasoning is required.
 // Also stamps a soft TaskKind used only for account-group preference.
+// Token-aware: coding/fix do not auto-think/pro unless client/model/crash signal.
 func applyTaskClassification(req *types.ChatRequest) {
 	if req == nil {
 		return
@@ -104,20 +107,72 @@ func applyTaskClassification(req *types.ChatRequest) {
 	if c.Kind != "" {
 		req.TaskKind = c.Kind
 	}
+
+	explicit := classificationExplicit(c)
 	if c.IsHeavy && req.TargetTier == "" {
-		req.TargetTier = "pro"
-		log.Printf("router: heavy task detected (%s) -> escalated to Pro tier", strings.Join(c.Reasons, ", "))
+		if shouldEscalatePro(c.Kind, explicit) {
+			req.TargetTier = "pro"
+			log.Printf("router: heavy task detected (%s) -> escalated to Pro tier", strings.Join(c.Reasons, ", "))
+		}
 	}
 	if c.NeedsThinking && !req.Thinking {
-		req.Thinking = true
-		if req.ReasoningEffort == "" {
-			req.ReasoningEffort = c.ReasoningEffort
+		if shouldAutoThink(c.Kind, explicit) {
+			req.Thinking = true
+			if req.ReasoningEffort == "" {
+				req.ReasoningEffort = c.ReasoningEffort
+			}
+			if req.ThinkingBudget <= 0 {
+				req.ThinkingBudget = thinkingBudgetForKind(c.Kind)
+			}
+			log.Printf("router: auto-enabled thinking mode (effort: %s, budget: %d, reasons: %s)",
+				req.ReasoningEffort, req.ThinkingBudget, strings.Join(c.Reasons, ", "))
 		}
-		if req.ThinkingBudget <= 0 {
-			req.ThinkingBudget = 2048
+	}
+
+	// Real compact path for TaskCompact — shrink mid-history before adapters.
+	if req.TaskKind == TaskCompact && len(req.Messages) > 8 {
+		req.Messages = ctxshrink.CompactTranscript(req.Messages)
+	}
+}
+
+func classificationExplicit(c TaskClassification) bool {
+	for _, r := range c.Reasons {
+		low := strings.ToLower(r)
+		if strings.Contains(low, "client requested") ||
+			strings.Contains(low, "model name specifies") ||
+			strings.Contains(low, "stack trace") {
+			return true
 		}
-		log.Printf("router: auto-enabled thinking mode (effort: %s, budget: %d, reasons: %s)",
-			req.ReasoningEffort, req.ThinkingBudget, strings.Join(c.Reasons, ", "))
+	}
+	return false
+}
+
+func shouldEscalatePro(kind string, explicit bool) bool {
+	switch kind {
+	case TaskCoding, TaskFix:
+		return explicit
+	default:
+		return true
+	}
+}
+
+func shouldAutoThink(kind string, explicit bool) bool {
+	switch kind {
+	case TaskCoding, TaskFix:
+		return explicit
+	default:
+		return true
+	}
+}
+
+func thinkingBudgetForKind(kind string) int {
+	switch kind {
+	case TaskReview, TaskCompact, TaskCoding, TaskFix:
+		return 512
+	case TaskAnalysis, TaskQuality:
+		return 1024
+	default:
+		return 1024
 	}
 }
 
@@ -231,10 +286,59 @@ func adapterSupportsTools(a types.ProviderAdapter) bool {
 
 // Client tool loops require native structured tool calls. Web adapters can
 // generate text that resembles a call but cannot preserve execution semantics.
-const skipWebWhenTools = true
+//
+// WebPolicy controls when text-only (web) adapters may serve tools[]:
+//   - last_resort (default): skip web when a native tool backend is usable
+//   - prefer / force: allow web even when native exists (force = same skip rule off)
+// Override via AM_WEB_POLICY or accounts.json "webPolicy".
+const (
+	WebPolicyLastResort = "last_resort"
+	WebPolicyPrefer     = "prefer"
+	WebPolicyForce      = "force"
+)
+
+var webPolicyMu sync.RWMutex
+var webPolicy = WebPolicyLastResort
+
+// SetWebPolicy updates runtime web routing policy (empty → last_resort).
+func SetWebPolicy(policy string) {
+	p := strings.ToLower(strings.TrimSpace(policy))
+	switch p {
+	case WebPolicyPrefer, WebPolicyForce, WebPolicyLastResort:
+		// ok
+	case "":
+		p = WebPolicyLastResort
+	default:
+		p = WebPolicyLastResort
+	}
+	webPolicyMu.Lock()
+	webPolicy = p
+	webPolicyMu.Unlock()
+}
+
+// EffectiveWebPolicy returns AM_WEB_POLICY if set, else the configured policy.
+func EffectiveWebPolicy() string {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("AM_WEB_POLICY"))); v != "" {
+		switch v {
+		case WebPolicyPrefer, WebPolicyForce, WebPolicyLastResort:
+			return v
+		}
+	}
+	webPolicyMu.RLock()
+	defer webPolicyMu.RUnlock()
+	return webPolicy
+}
 
 func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest, nativeAvailable bool) bool {
-	return skipWebWhenTools && nativeAvailable && req != nil && len(req.Tools) > 0 && !adapterSupportsTools(a)
+	if req == nil || len(req.Tools) == 0 || adapterSupportsTools(a) {
+		return false
+	}
+	switch EffectiveWebPolicy() {
+	case WebPolicyForce, WebPolicyPrefer:
+		return false
+	default:
+		return nativeAvailable
+	}
 }
 
 func (r *AccountPoolRouter) usableToolBackend(adapters []types.ProviderAdapter) bool {

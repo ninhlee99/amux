@@ -88,11 +88,37 @@ func TestWebBackendPrompt_LiveCatalogNoCodeChange(t *testing.T) {
 		},
 	}
 	got := WebBackendPrompt(req, false)
-	if !strings.Contains(got, "mcp__new__search:q") || !strings.Contains(got, "Skill:skill") {
+	if !strings.Contains(got, "mcp__new__search:q:string") || !strings.Contains(got, "Skill:skill:string") {
 		t.Fatalf("live catalog: %s", got)
 	}
 	if strings.Contains(got, "You are Claude Code") {
 		t.Fatal("harness leaked")
+	}
+}
+
+func TestWebBackendPrompt_ContinuingToolsUsesDelta(t *testing.T) {
+	req := &types.ChatRequest{
+		FullContext: true,
+		Tools:       []types.ToolDef{{Name: "Read"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "old task about foo.go"},
+			{Role: "assistant", Content: "", ToolCalls: []types.ToolCall{{Name: "Read", Arguments: `{"file_path":"foo.go"}`}}},
+			{Role: "tool", Content: "package foo"},
+			{Role: "user", Content: "now fix the bug"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	if strings.Contains(got, "old task about foo.go") {
+		t.Fatalf("should delta-skip early user: %q", got)
+	}
+	if !strings.Contains(got, "now fix the bug") || !strings.Contains(got, "package foo") {
+		t.Fatalf("delta must keep latest: %q", got)
+	}
+	if strings.Contains(got, "Coding-agent backend") {
+		t.Fatal("continuing must use catalog-only preamble")
+	}
+	if !strings.Contains(got, "CATALOG") {
+		t.Fatal("missing catalog")
 	}
 }
 

@@ -310,10 +310,18 @@ func printAutoUpdate() {
 }
 
 func printLimitBar(label string, used float64, resetISO string) {
-	term.Row(fmt.Sprintf("      %s  %s  %s%s",
+	if used < 0 {
+		used = 0
+	}
+	if used > 1 {
+		used = 1
+	}
+	left := 1 - used
+	term.Row(fmt.Sprintf("      %s  %s  %s used · %s left%s",
 		term.Dim(fmt.Sprintf("%-4s", label)),
-		term.ProgressBar(used, 14),
+		term.RemainingBar(left, 14),
 		term.Bold(fmt.Sprintf("%3.0f%%", used*100)),
+		term.Bold(fmt.Sprintf("%3.0f%%", left*100)),
 		term.Dim(resetSuffix(resetISO)),
 	))
 }

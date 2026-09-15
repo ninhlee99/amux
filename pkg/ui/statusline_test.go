@@ -20,8 +20,8 @@ func TestRenderStatusline_SessionTokensNoWindow(t *testing.T) {
 		},
 	}
 	line := RenderStatusline(in, LimitWindows{})
-	if !strings.Contains(line, "10k") {
-		t.Fatalf("expected session 10k, got %q", line)
+	if !strings.Contains(line, "10k tok") {
+		t.Fatalf("expected session 10k tok, got %q", line)
 	}
 	if strings.Contains(line, "/") || strings.Contains(line, "128k") || strings.Contains(line, "200k") || strings.Contains(line, "1M") {
 		t.Fatalf("must not show context window, got %q", line)
@@ -32,8 +32,8 @@ func TestRenderStatusline_ClearShowsZero(t *testing.T) {
 	term.Disable()
 	in := StatuslineInput{ContextWindow: &statuslineContext{}}
 	line := RenderStatusline(in, LimitWindows{})
-	if line != "0" {
-		t.Fatalf("empty session should show 0, got %q", line)
+	if line != "0 tok" {
+		t.Fatalf("empty session should show 0 tok, got %q", line)
 	}
 }
 
@@ -50,14 +50,14 @@ func TestRenderStatusline_FiveHSevenDLeft(t *testing.T) {
 		},
 	}
 	line := RenderStatusline(in, LimitWindows{})
-	if !strings.Contains(line, "5h") || !strings.Contains(line, "7d") {
-		t.Fatalf("missing 5h/7d, got %q", line)
+	if !strings.Contains(line, "5h left 75%") || !strings.Contains(line, "7d left 60%") {
+		t.Fatalf("want clear left labels, got %q", line)
 	}
-	if !strings.Contains(line, "75%left") {
-		t.Fatalf("5h remaining should be 75%%left, got %q", line)
+	if !strings.Contains(line, " · ") {
+		t.Fatalf("want · separators, got %q", line)
 	}
-	if !strings.Contains(line, "60%left") {
-		t.Fatalf("7d remaining should be 60%%left, got %q", line)
+	if strings.Contains(line, "%left") {
+		t.Fatalf("old %%left format must go, got %q", line)
 	}
 	if strings.Contains(line, "ctx") || strings.Contains(line, "context") {
 		t.Fatalf("must not show context window, got %q", line)

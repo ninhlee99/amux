@@ -107,9 +107,10 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			}
 			sb.WriteString(":\n")
 			content := m.Content
-			if idx < len(messages)-3 && len([]rune(content)) > 1500 {
+			// Keep last 2 tool results full; older ones hard-cap (token save).
+			if idx < len(messages)-2 && len([]rune(content)) > 800 {
 				r := []rune(content)
-				content = string(r[:600]) + "\n... [output truncated for brevity] ...\n" + string(r[len(r)-200:])
+				content = string(r[:500]) + "\n... [truncated] ...\n" + string(r[len(r)-150:])
 			}
 			sb.WriteString(content)
 			sb.WriteString("\n\n")
@@ -199,7 +200,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			"parent_message_id":             parentID,
 			"model":                         model,
 			"timezone_offset_min":           -420,
-			"history_and_training_disabled": false,
+			"history_and_training_disabled": true,
 			"conversation_mode":             map[string]string{"kind": "primary_assistant"},
 		}
 		if convID != "" {
