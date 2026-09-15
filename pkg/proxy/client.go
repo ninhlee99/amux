@@ -167,8 +167,8 @@ func CmdProxyUpFlags(f UpFlags) {
 	}
 	postAndClose(ProxyBase() + "/_am/sync")
 	hook.SyncLaunchctlEnv(true, ProxyBase())
-	if err := hook.SyncClaudeSettingsEnv(true, ProxyBase()); err != nil {
-		fmt.Fprintf(os.Stderr, "amux: sync claude settings env: %v\n", err)
+	if err := hook.SyncClientSettingsEnv(true, ProxyBase()); err != nil {
+		fmt.Fprintf(os.Stderr, "amux: sync client settings env: %v\n", err)
 	}
 
 	if IsPublic() || IsPublicBind(listen) {
@@ -241,8 +241,8 @@ func CmdProxyDown(force, yesIKnow bool) {
 		postAndClose(ProxyBase() + "/_am/shutdown")
 		_ = ClearAuthToken()
 		hook.SyncLaunchctlEnv(false, "")
-		if err := hook.SyncClaudeSettingsEnv(false, ""); err != nil {
-			fmt.Fprintf(os.Stderr, "amux: sync claude settings env: %v\n", err)
+		if err := hook.SyncClientSettingsEnv(false, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "amux: sync client settings env: %v\n", err)
 		}
 		fmt.Println("amux proxy stopped")
 		return
@@ -256,8 +256,8 @@ func CmdProxyDown(force, yesIKnow bool) {
 	postAndClose(ProxyBase() + "/_am/shutdown")
 	_ = ClearAuthToken()
 	hook.SyncLaunchctlEnv(false, "")
-	if err := hook.SyncClaudeSettingsEnv(false, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "amux: sync claude settings env: %v\n", err)
+	if err := hook.SyncClientSettingsEnv(false, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "amux: sync client settings env: %v\n", err)
 	}
 	fmt.Println("amux proxy stopped")
 }

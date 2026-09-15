@@ -42,8 +42,8 @@ I'll list files.
 func TestParseWebTools_DialectAliases(t *testing.T) {
 	// Cursor-style catalog: model emits Bash/Read → map to client names.
 	defs := []types.ToolDef{
-		{Name: "run_terminal_command"},
-		{Name: "read_file"},
+		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
 	}
 	xml := ParseWebTools(`<tool_call>
 {"name": "Bash", "arguments": {"command": "ls"}}
@@ -60,9 +60,40 @@ func TestParseWebTools_DialectAliases(t *testing.T) {
 	if xml[1].Name != "read_file" {
 		t.Fatalf("read alias → %q", xml[1].Name)
 	}
+	if !strings.Contains(xml[1].Arguments, "file_path") {
+		t.Fatalf("path coerced to file_path: %s", xml[1].Arguments)
+	}
 	fence := ParseWebTools("```bash\necho hi\n```", defs)
 	if len(fence) != 1 || fence[0].Name != "run_terminal_command" {
 		t.Fatalf("bash fence alias: %+v", fence)
+	}
+}
+
+func TestFinalizeWebToolCalls_AllowProseDropsFence(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Bash"}, {Name: "Read"}}
+	hist := []types.ChatMessage{
+		{Role: "assistant", ToolCalls: []types.ToolCall{{Name: "Read", Arguments: `{"path":"a.go"}`}}},
+		{Role: "tool", Content: "ok"},
+	}
+	// Incomplete checklist + prior tools → prose path; bash fence must not invent calls.
+	text := "Need to verify remaining cases after the Read above.\n```bash\ngit status\n```\n"
+	calls, forced := FinalizeWebToolCalls(text, defs, hist)
+	if forced {
+		t.Fatal("allowProse must not force")
+	}
+	if len(calls) != 0 {
+		t.Fatalf("allowProse dropped fence heuristics, got %+v", calls)
+	}
+}
+
+func TestSchemaKeyTypes_RequiredNeverTruncated(t *testing.T) {
+	raw := []byte(`{"required":["a","b","c","d","e","f","g"],"properties":{"a":{"type":"string"},"b":{"type":"string"},"c":{"type":"string"},"d":{"type":"string"},"e":{"type":"string"},"f":{"type":"string"},"g":{"type":"string"},"opt":{"type":"number"}}}`)
+	got := schemaKeyTypes(raw, 1)
+	if len(got) < 7 {
+		t.Fatalf("all required kept, got %v", got)
+	}
+	if !strings.Contains(strings.Join(got, ","), "opt:number") {
+		t.Fatalf("one optional after required: %v", got)
 	}
 }
 

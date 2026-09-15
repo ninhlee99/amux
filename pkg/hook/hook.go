@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -325,6 +326,85 @@ func SyncClaudeSettingsEnv(proxyUp bool, proxyBase string) error {
 		m["env"] = env
 	}
 	return SaveClaudeSettings(m)
+}
+
+// SyncCodexSettingsEnv upserts openai_base_url into ~/.codex/config.toml so
+// Codex CLI sessions opened after proxy up/down hit the gateway without
+// relying solely on launchctl/shell env.
+func SyncCodexSettingsEnv(proxyUp bool, proxyBase string) error {
+	path := CodexConfigPath()
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(b)
+	next, changed := syncCodexBaseURL(content, proxyUp, proxyBase)
+	if !changed {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(next), 0o600)
+}
+
+var (
+	reCodexOpenAIBase = regexp.MustCompile(`(?m)^\s*openai_base_url\s*=\s*.*$`)
+	reCodexOpenAIKey  = regexp.MustCompile(`(?m)^\s*openai_api_key\s*=\s*"am-proxy".*$`)
+)
+
+func syncCodexBaseURL(content string, proxyUp bool, proxyBase string) (string, bool) {
+	changed := false
+	if proxyUp {
+		base := strings.TrimRight(proxyBase, "/") + "/v1"
+		line := fmt.Sprintf(`openai_base_url = %q`, base)
+		keyLine := `openai_api_key = "am-proxy"`
+		if loc := reCodexOpenAIBase.FindStringIndex(content); loc != nil {
+			if strings.TrimSpace(content[loc[0]:loc[1]]) != line {
+				content = content[:loc[0]] + line + content[loc[1]:]
+				changed = true
+			}
+		} else {
+			content = strings.TrimRight(content, "\n")
+			if content != "" {
+				content += "\n"
+			}
+			content += line + "\n"
+			changed = true
+		}
+		if !reCodexOpenAIKey.MatchString(content) {
+			if loc := reCodexOpenAIBase.FindStringIndex(content); loc != nil {
+				insertAt := loc[1]
+				content = content[:insertAt] + "\n" + keyLine + content[insertAt:]
+				changed = true
+			}
+		}
+		return content, changed
+	}
+	if loc := reCodexOpenAIBase.FindStringIndex(content); loc != nil {
+		content = content[:loc[0]] + content[loc[1]:]
+		changed = true
+	}
+	if loc := reCodexOpenAIKey.FindStringIndex(content); loc != nil {
+		content = content[:loc[0]] + content[loc[1]:]
+		changed = true
+	}
+	if changed {
+		content = strings.ReplaceAll(content, "\n\n\n", "\n\n")
+	}
+	return content, changed
+}
+
+// SyncClientSettingsEnv mirrors proxy reachability into Claude + Codex client configs.
+func SyncClientSettingsEnv(proxyUp bool, proxyBase string) error {
+	var first error
+	if err := SyncClaudeSettingsEnv(proxyUp, proxyBase); err != nil && first == nil {
+		first = err
+	}
+	if err := SyncCodexSettingsEnv(proxyUp, proxyBase); err != nil && first == nil {
+		first = err
+	}
+	return first
 }
 
 // ShellRC returns the user's shell rc file for zsh/bash, or "" if the shell

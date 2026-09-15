@@ -170,7 +170,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 
 		// If tool calls were accumulated (or extracted from text prompt for web loops)
 		if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-			if parsed := tools.ParseWebTools(fullContent.String(), req.Tools); len(parsed) > 0 {
+			if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 				toolCalls = parsed
 			}
 		}
@@ -308,7 +308,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-		if parsed := tools.ParseWebTools(fullContent.String(), req.Tools); len(parsed) > 0 {
+		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
 		}
 	}

@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
 
@@ -619,13 +621,28 @@ func CmdDoctorProviders() {
 		return
 	}
 	probeFreeWeb := os.Getenv("AM_DOCTOR_WEB") == "1"
+	probeTools := os.Getenv("AM_DOCTOR_TOOLS") == "1"
 	fmt.Println(term.Bold("=== am doctor providers (live 1-turn probe) ==="))
 	if !probeFreeWeb {
 		fmt.Println(term.Dim("free web skipped (set AM_DOCTOR_WEB=1 to probe)"))
 	}
+	if probeTools {
+		fmt.Println(term.Dim("AM_DOCTOR_TOOLS=1: requesting Bash tool_call when supported"))
+	}
 	req := &types.ChatRequest{
 		Model:    "default",
 		Messages: []types.ChatMessage{{Role: "user", Content: "Reply with exactly: OK"}},
+	}
+	if probeTools {
+		req.Tools = []types.ToolDef{{
+			Name:        "Bash",
+			Description: "run shell",
+			InputSchema: json.RawMessage(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
+		}}
+		req.Messages = []types.ChatMessage{{
+			Role:    "user",
+			Content: "Use a tool_call for Bash with command: echo doctor-ok. Do not answer in prose.",
+		}}
 	}
 	for _, a := range adapters {
 		tag := doctorWebTag(a)
@@ -642,12 +659,16 @@ func CmdDoctorProviders() {
 		}
 		var got strings.Builder
 		var streamErr error
+		var gotTools []types.ToolCall
 		for chunk := range ch {
 			if chunk.Error != nil {
 				streamErr = chunk.Error
 				break
 			}
 			got.WriteString(chunk.Content)
+			if len(chunk.ToolCalls) > 0 {
+				gotTools = append(gotTools, chunk.ToolCalls...)
+			}
 		}
 		cancel()
 		if streamErr != nil {
@@ -657,6 +678,14 @@ func CmdDoctorProviders() {
 		preview := strings.ReplaceAll(strings.TrimSpace(got.String()), "\n", " ")
 		if len(preview) > 60 {
 			preview = preview[:60] + "…"
+		}
+		if probeTools {
+			if len(gotTools) == 0 {
+				fmt.Printf("%s  %-16s%s  no tool_calls (got %q)\n", term.Red("FAIL"), a.ID(), tag, preview)
+				continue
+			}
+			fmt.Printf("%s    %-16s%s  tools=%s\n", term.Green("OK"), a.ID(), tag, tools.FormatToolCalls(gotTools))
+			continue
 		}
 		if preview == "" {
 			fmt.Printf("%s  %-16s%s  empty reply\n", term.Red("FAIL"), a.ID(), tag)

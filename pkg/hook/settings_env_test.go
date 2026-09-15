@@ -3,6 +3,8 @@ package hook
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -104,5 +106,37 @@ func TestInstallStatusLine_WritesOurs(t *testing.T) {
 	InstallStatusLine(m, `"/usr/local/bin/am" statusline`)
 	if !IsOurStatusLine(m) {
 		t.Fatal("expected our statusline")
+	}
+}
+
+func TestSyncCodexSettingsEnv_SetThenUnset(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	_ = os.MkdirAll(filepath.Join(tmp, ".codex"), 0o755)
+	seed := "[tui]\nstatus_line_use_colors = true\n"
+	if err := os.WriteFile(CodexConfigPath(), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SyncCodexSettingsEnv(true, "http://127.0.0.1:8787"); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	b, _ := os.ReadFile(CodexConfigPath())
+	body := string(b)
+	if !strings.Contains(body, `openai_base_url = "http://127.0.0.1:8787/v1"`) {
+		t.Fatalf("missing base url: %s", body)
+	}
+	if !strings.Contains(body, `openai_api_key = "am-proxy"`) {
+		t.Fatalf("missing api key: %s", body)
+	}
+	if err := SyncCodexSettingsEnv(false, ""); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	b, _ = os.ReadFile(CodexConfigPath())
+	body = string(b)
+	if strings.Contains(body, "openai_base_url") || strings.Contains(body, "am-proxy") {
+		t.Fatalf("expected cleared, got %s", body)
+	}
+	if !strings.Contains(body, "status_line_use_colors") {
+		t.Fatal("unrelated tui config must survive")
 	}
 }

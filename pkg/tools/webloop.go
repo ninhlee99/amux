@@ -102,10 +102,14 @@ func schemaKeys(raw json.RawMessage, max int) []string {
 	return out
 }
 
-// schemaKeyTypes returns "name:type" entries (required first, else props).
-func schemaKeyTypes(raw json.RawMessage, max int) []string {
-	if len(raw) == 0 || string(raw) == "null" || max < 1 {
+// schemaKeyTypes returns "name:type" entries — all required first (never truncated),
+// then optional props up to maxOptional.
+func schemaKeyTypes(raw json.RawMessage, maxOptional int) []string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil
+	}
+	if maxOptional < 0 {
+		maxOptional = 0
 	}
 	var s struct {
 		Required   []string                   `json:"required"`
@@ -129,27 +133,28 @@ func schemaKeyTypes(raw json.RawMessage, max int) []string {
 	}
 	format := func(name string) string { return name + ":" + propType(name) }
 
-	if len(s.Required) > 0 {
-		out := make([]string, 0, len(s.Required))
-		for _, k := range s.Required {
-			out = append(out, format(k))
-			if len(out) >= max {
-				return out
-			}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(s.Required)+maxOptional)
+	for _, k := range s.Required {
+		if k == "" || seen[k] {
+			continue
 		}
-		return out
+		seen[k] = true
+		out = append(out, format(k))
 	}
 	keys := make([]string, 0, len(s.Properties))
 	for k := range s.Properties {
-		keys = append(keys, k)
+		if !seen[k] {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
-	out := make([]string, 0, max)
 	for _, k := range keys {
-		out = append(out, format(k))
-		if len(out) >= max {
+		if maxOptional <= 0 {
 			break
 		}
+		out = append(out, format(k))
+		maxOptional--
 	}
 	return out
 }
@@ -199,23 +204,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			buf.WriteString(ch.Content)
 		}
 		text := buf.String()
-		calls := ParseWebTools(text, defs)
-		forced := false
-		if shouldForceWebTools(text, hist) {
-			// After tools already ran, incomplete checklist without hard refusal
-			// → allow prose (model is answering); do not invent more tools.
-			allowProse := historyHasTools(hist) && isWebWorkIncomplete(text) &&
-				!isWebToolRefusal(text) && !isWebFakeExecution(text, hist)
-			if !allowProse {
-				extra := extractForcedTools(text, defs, hist)
-				for _, tc := range extra {
-					if !hasToolCall(calls, tc) {
-						calls = append(calls, tc)
-					}
-				}
-				forced = len(calls) > 0
-			}
-		}
+		calls, forced := FinalizeWebToolCalls(text, defs, hist)
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
 			cleanText := text
@@ -243,6 +232,46 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		}
 	}()
 	return out
+}
+
+// FinalizeWebToolCalls parses web text into tool calls, optionally force-fills
+// explore tools, and coerces arg keys to the client dialect schema.
+// When allowProse (post-tool incomplete checklist), drops bash-fence heuristics.
+func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMessage) (calls []types.ToolCall, forced bool) {
+	if strings.TrimSpace(text) == "" || len(defs) == 0 {
+		return nil, false
+	}
+	allowProse := shouldForceWebTools(text, hist) &&
+		historyHasTools(hist) && isWebWorkIncomplete(text) &&
+		!isWebToolRefusal(text) && !isWebFakeExecution(text, hist)
+
+	if allowProse {
+		// Final answer path: only honor explicit markup, never invent from fences.
+		if hasExplicitWebToolMarkup(text) {
+			calls = parseWebTools(text, defs, false)
+		}
+		return coerceAllToolArgs(calls, defs), false
+	}
+
+	calls = parseWebTools(text, defs, true)
+	if shouldForceWebTools(text, hist) {
+		extra := extractForcedTools(text, defs, hist)
+		for _, tc := range extra {
+			if !hasToolCall(calls, tc) {
+				calls = append(calls, tc)
+			}
+		}
+		forced = len(calls) > 0
+	}
+	return coerceAllToolArgs(calls, defs), forced
+}
+
+func hasExplicitWebToolMarkup(text string) bool {
+	return strings.Contains(text, "<tool_call>") ||
+		strings.Contains(text, "[tool_call") ||
+		strings.Contains(text, "<<<AMUX_TOOL") ||
+		(strings.Contains(text, `"name"`) &&
+			(strings.Contains(text, `"arguments"`) || strings.Contains(text, `"input"`)))
 }
 
 // FormatToolCalls is a one-line preview: `Bash {"command":"ls"} · Read {"path":"a"}`.
@@ -677,6 +706,10 @@ func logWebTools(source string, calls []types.ToolCall, raw string) {
 
 // ParseWebTools extracts tool calls from a web model's text reply.
 func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
+	return coerceAllToolArgs(parseWebTools(text, defs, true), defs)
+}
+
+func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []types.ToolCall {
 	allow := map[string]string{} // lower → canonical client name
 	by := map[string]types.ToolDef{}
 	for _, d := range defs {
@@ -685,7 +718,6 @@ func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
 			by[strings.ToLower(d.Name)] = d
 		}
 	}
-	// Dialect aliases: model may emit Bash/Read while Cursor/Codex use other names.
 	canonical := func(name string) (string, bool) {
 		if name == "" {
 			return "", false
@@ -723,7 +755,6 @@ func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
 			args = "{}"
 		}
 		if !json.Valid([]byte(args)) {
-			// treat as shell command / raw string
 			b, _ := json.Marshal(map[string]string{"command": args})
 			args = string(b)
 		}
@@ -776,21 +807,77 @@ func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
 		}
 		add(probe.Name, probe.ID, string(args))
 	}
-	if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok || len(allow) == 0 {
-		bashName := "Bash"
-		if ok {
-			bashName = d.Name
-		}
-		for _, m := range reBashFence.FindAllStringSubmatch(text, -1) {
-			cmd := strings.TrimSpace(m[1])
-			if cmd == "" {
-				continue
+	if allowBashFence {
+		if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok || len(allow) == 0 {
+			bashName := "Bash"
+			if ok {
+				bashName = d.Name
 			}
-			b, _ := json.Marshal(map[string]string{"command": cmd})
-			add(bashName, "", string(b))
+			for _, m := range reBashFence.FindAllStringSubmatch(text, -1) {
+				cmd := strings.TrimSpace(m[1])
+				if cmd == "" {
+					continue
+				}
+				b, _ := json.Marshal(map[string]string{"command": cmd})
+				add(bashName, "", string(b))
+			}
 		}
 	}
 	return out
+}
+
+func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.ToolCall {
+	if len(calls) == 0 || len(defs) == 0 {
+		return calls
+	}
+	by := map[string]types.ToolDef{}
+	for _, d := range defs {
+		by[strings.ToLower(d.Name)] = d
+	}
+	for i := range calls {
+		if d, ok := by[strings.ToLower(calls[i].Name)]; ok {
+			calls[i].Arguments = coerceToolArgs(calls[i].Arguments, d)
+		}
+	}
+	return calls
+}
+
+// coerceToolArgs remaps common aliases (path↔file_path, cmd↔command) to the
+// keys the client dialect schema expects.
+func coerceToolArgs(argsJSON string, def types.ToolDef) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(argsJSON), &m) != nil || len(m) == 0 {
+		return argsJSON
+	}
+	changed := false
+	remap := func(want string, alts ...string) {
+		if want == "" {
+			return
+		}
+		if _, has := m[want]; has {
+			return
+		}
+		for _, alt := range alts {
+			if v, ok := m[alt]; ok {
+				m[want] = v
+				delete(m, alt)
+				changed = true
+				return
+			}
+		}
+	}
+	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath")
+	remap(wantPath, "file_path", "path", "AbsolutePath", "file", "filename")
+	wantCmd := toolArgKey(def, "command", "CommandLine", "cmd")
+	remap(wantCmd, "command", "CommandLine", "cmd", "script", "code")
+	if !changed {
+		return argsJSON
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return argsJSON
+	}
+	return string(b)
 }
 
 func repairJSON(s string) string {

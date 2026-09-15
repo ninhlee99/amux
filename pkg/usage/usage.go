@@ -173,6 +173,7 @@ func printUsageByDay(entries []types.UsageEntry) {
 
 func printUsageDetail(entries []types.UsageEntry) {
 	byAccount := map[string]*usageAgg{}
+	byChannel := map[string]*usageAgg{}
 	byModel := map[string]*usageAgg{}
 	byProject := map[string]*usageAgg{}
 	bySession := map[string]*usageAgg{}
@@ -188,6 +189,7 @@ func printUsageDetail(entries []types.UsageEntry) {
 			model = "-"
 		}
 		bump(byAccount, acct, e)
+		bump(byChannel, ChannelLabel(acct), e)
 		bump(byModel, model, e)
 		bump(byProject, ProjectLabel(e.Project), e)
 		sid := SessionLabel(e.Session)
@@ -202,6 +204,9 @@ func printUsageDetail(entries []types.UsageEntry) {
 
 	fmt.Println(term.Bold("by account:"))
 	printUsageTable(byAccount)
+	fmt.Println()
+	fmt.Println(term.Bold("by channel (web|api):"))
+	printUsageTable(byChannel)
 	fmt.Println()
 	fmt.Println(term.Bold("by model:"))
 	printUsageTable(byModel)
@@ -222,6 +227,20 @@ func ProjectLabel(dir string) string {
 		return "-"
 	}
 	return filepath.Base(dir)
+}
+
+// ChannelLabel buckets an account id into web vs api for burn visibility.
+func ChannelLabel(account string) string {
+	a := strings.ToLower(account)
+	switch {
+	case a == "" || a == "-":
+		return "-"
+	case strings.Contains(a, ":web") || strings.Contains(a, "_web") ||
+		strings.HasPrefix(a, "chatgpt:"):
+		return "web"
+	default:
+		return "api"
+	}
 }
 
 func SessionLabel(id string) string {

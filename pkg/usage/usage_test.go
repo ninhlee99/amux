@@ -77,3 +77,21 @@ func TestUsage_Aggregations(t *testing.T) {
 		t.Errorf("agg mismatch: in=%d, out=%d, reqs=%d", totalIn, totalOut, totalReqs)
 	}
 }
+
+func TestChannelLabel(t *testing.T) {
+	cases := map[string]string{
+		"":                  "-",
+		"-":                 "-",
+		"claude:web:ninhle": "web",
+		"chatgpt:tungnt":    "web",
+		"gemini:web:01":     "web",
+		"codex:01":          "api",
+		"agy:01":            "api",
+		"openai:groq":       "api",
+	}
+	for in, want := range cases {
+		if got := ChannelLabel(in); got != want {
+			t.Errorf("ChannelLabel(%q)=%q want %q", in, got, want)
+		}
+	}
+}
