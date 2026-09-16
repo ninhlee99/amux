@@ -386,9 +386,47 @@ func skipFreeWebHardTask(a types.ProviderAdapter, req *types.ChatRequest, strong
 	}
 }
 
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, types.ErrRateLimitReached) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "429") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "tpm") ||
+		strings.Contains(s, "quota exceeded")
+}
+
+func isAdapterEligibleForRequest(a types.ProviderAdapter, req *types.ChatRequest) bool {
+	if req == nil {
+		return true
+	}
+	ide := IDEFromClientDialect(req.ClientDialect)
+	grp := DetermineAdapterGroup(a)
+	if ide == IDEClaude && IsClaudeSubscriptionGroup(grp) {
+		return false
+	}
+	return true
+}
+
 func (r *AccountPoolRouter) hasStrongerThanFreeWeb(adapters []types.ProviderAdapter, req *types.ChatRequest) bool {
-	native := r.usableToolBackend(adapters)
+	return r.hasStrongerThanFreeWebExcluding(adapters, req, nil)
+}
+
+func (r *AccountPoolRouter) hasStrongerThanFreeWebExcluding(adapters []types.ProviderAdapter, req *types.ChatRequest, exclude map[string]bool) bool {
+	native := r.usableToolBackendExcluding(adapters, req, exclude)
 	for _, a := range adapters {
+		if exclude != nil && exclude[a.ID()] {
+			continue
+		}
+		if !isAdapterEligibleForRequest(a, req) {
+			continue
+		}
 		if isFreeWebAdapter(a) {
 			continue
 		}
@@ -407,7 +445,17 @@ func (r *AccountPoolRouter) hasStrongerThanFreeWeb(adapters []types.ProviderAdap
 }
 
 func (r *AccountPoolRouter) usableToolBackend(adapters []types.ProviderAdapter) bool {
+	return r.usableToolBackendExcluding(adapters, nil, nil)
+}
+
+func (r *AccountPoolRouter) usableToolBackendExcluding(adapters []types.ProviderAdapter, req *types.ChatRequest, exclude map[string]bool) bool {
 	for _, a := range adapters {
+		if exclude != nil && exclude[a.ID()] {
+			continue
+		}
+		if !isAdapterEligibleForRequest(a, req) {
+			continue
+		}
 		if !adapterSupportsTools(a) {
 			continue
 		}
@@ -451,8 +499,8 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	r.mu.RUnlock()
 
 	sessionKey := guard.ExtractSessionKey(nil, req)
-	nativeAvailable := r.usableToolBackend(adapters)
-	strongerThanFree := r.hasStrongerThanFreeWeb(adapters, req)
+	nativeAvailable := r.usableToolBackendExcluding(adapters, req, nil)
+	strongerThanFree := r.hasStrongerThanFreeWebExcluding(adapters, req, nil)
 
 	// 1. Affinity wins for an in-flight session (unless account is dead).
 	if sessionKey != "" {
@@ -524,7 +572,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if sessionKey != "" {
 				guard.GlobalAffinity().Unpin(sessionKey)
 			}
-			if errors.Is(err, types.ErrRateLimitReached) {
+			if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
 				r.setCooldown(a.ID())
 				skippedPreferred = true
 				term.LogFailover("preferred %s rate-limited — failing over", a.ID())
@@ -541,6 +589,11 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			log.Printf("router: preferred adapter %q not in pool — clearing preference", preferredID)
 			r.ClearPreferred()
 		}
+	}
+
+	failedInReq := make(map[string]bool)
+	if preferredID != "" && skippedPreferred {
+		failedInReq[preferredID] = true
 	}
 
 	// Partition adapters into priority groups
@@ -567,10 +620,12 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			currIdx := (startIdx + step) % len(grpAdapters)
 			a := grpAdapters[currIdx]
 
-			if preferredID != "" && a.ID() == preferredID {
+			if preferredID != "" && a.ID() == preferredID && !skippedPreferred {
 				continue
 			}
-			if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
+			curNative := r.usableToolBackendExcluding(adapters, req, failedInReq)
+			curStronger := r.hasStrongerThanFreeWebExcluding(adapters, req, failedInReq)
+			if shouldSkipAdapter(a, req, curNative, curStronger) {
 				continue
 			}
 			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
@@ -604,8 +659,9 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				}
 				return ch, nil
 			}
+			failedInReq[a.ID()] = true
 			guard.RecordError(a.ID(), err)
-			if errors.Is(err, types.ErrRateLimitReached) {
+			if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
 				r.setCooldown(a.ID())
 			}
 			term.LogWarn("%s failed (%s), next: %v", a.ID(), GroupDisplayName(grpKey), err)
@@ -622,6 +678,9 @@ func (r *AccountPoolRouter) adapterAlive(adapters []types.ProviderAdapter, id st
 	for _, a := range adapters {
 		if a.ID() != id {
 			continue
+		}
+		if !isAdapterEligibleForRequest(a, req) {
+			return nil
 		}
 		if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {
 			return nil

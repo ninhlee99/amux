@@ -18,8 +18,10 @@ type GeminiFunctionDeclaration struct {
 
 // GeminiFunctionCall is a model-emitted functionCall part.
 type GeminiFunctionCall struct {
-	Name string          `json:"name"`
-	Args json.RawMessage `json:"args,omitempty"`
+	Name             string          `json:"name"`
+	Args             json.RawMessage `json:"args,omitempty"`
+	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
+	ThoughtSigSnake  string          `json:"thought_signature,omitempty"`
 }
 
 // ToGeminiFunctions converts canonical defs to Gemini functionDeclarations.
@@ -60,7 +62,19 @@ func FromGeminiFunctionCalls(calls []GeminiFunctionCall) []types.ToolCall {
 			args = string(c.Args)
 		}
 		id := fmt.Sprintf("gemini_call_%d", i+1)
-		out = append(out, types.ToolCall{ID: id, Name: c.Name, Arguments: args})
+		sig := c.ThoughtSignature
+		if sig == "" {
+			sig = c.ThoughtSigSnake
+		}
+		if sig != "" {
+			RecordThoughtSignature(id, sig)
+		}
+		out = append(out, types.ToolCall{
+			ID:               id,
+			Name:             c.Name,
+			Arguments:        args,
+			ThoughtSignature: sig,
+		})
 	}
 	return out
 }
@@ -73,7 +87,15 @@ func ToGeminiFunctionCalls(calls []types.ToolCall) []GeminiFunctionCall {
 		if strings.TrimSpace(c.Arguments) != "" {
 			args = json.RawMessage(c.Arguments)
 		}
-		out = append(out, GeminiFunctionCall{Name: c.Name, Args: args})
+		sig := c.ThoughtSignature
+		if sig == "" && c.ID != "" {
+			sig = LookupThoughtSignature(c.ID)
+		}
+		out = append(out, GeminiFunctionCall{
+			Name:             c.Name,
+			Args:             args,
+			ThoughtSignature: sig,
+		})
 	}
 	return out
 }

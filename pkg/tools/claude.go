@@ -11,9 +11,10 @@ import (
 
 // ClaudeTool is the tools[] entry Claude Code sends on /v1/messages.
 type ClaudeTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	CacheControl any             `json:"cache_control,omitempty"`
 }
 
 // ClaudeToolUseBlock is a content block type=tool_use.
@@ -37,24 +38,32 @@ func ParseClaudeTools(body []byte) ([]types.ToolDef, error) {
 		if strings.TrimSpace(t.Name) == "" {
 			continue
 		}
+		hasCache := t.CacheControl != nil
 		out = append(out, types.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: utils.NormalizeJSONSchema(t.InputSchema),
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  utils.NormalizeJSONSchema(t.InputSchema),
+			CacheControl: hasCache,
 		})
 	}
 	return out, nil
 }
 
 // ToClaudeTools converts canonical defs to Claude Code tools[].
+// If prompt caching is desired, Anthropic expects cache_control: {"type": "ephemeral"}
+// on the last tool declaration.
 func ToClaudeTools(defs []types.ToolDef) []ClaudeTool {
 	out := make([]ClaudeTool, 0, len(defs))
-	for _, d := range defs {
-		out = append(out, ClaudeTool{
+	for i, d := range defs {
+		ct := ClaudeTool{
 			Name:        d.Name,
 			Description: d.Description,
 			InputSchema: utils.NormalizeJSONSchema(d.InputSchema),
-		})
+		}
+		if d.CacheControl || i == len(defs)-1 {
+			ct.CacheControl = map[string]string{"type": "ephemeral"}
+		}
+		out = append(out, ct)
 	}
 	return out
 }
@@ -207,20 +216,33 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 			if strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 {
 				continue
 			}
+			block := anthropicBlock{
+				"type": "text",
+				"text": m.Content,
+			}
+			if m.CacheControl {
+				block["cache_control"] = map[string]string{"type": "ephemeral"}
+			}
 			rawMsgs = append(rawMsgs, anthropicMsg{
-				Role: "user",
-				Content: []anthropicBlock{
-					{
-						"type": "text",
-						"text": m.Content,
-					},
-				},
+				Role:    "user",
+				Content: []anthropicBlock{block},
 			})
 		}
 	}
 
 	if len(systemInstructions) > 0 {
-		payload["system"] = strings.Join(systemInstructions, "\n\n")
+		sysText := strings.Join(systemInstructions, "\n\n")
+		if req.SystemCacheControl {
+			payload["system"] = []anthropicBlock{
+				{
+					"type":          "text",
+					"text":          sysText,
+					"cache_control": map[string]string{"type": "ephemeral"},
+				},
+			}
+		} else {
+			payload["system"] = sysText
+		}
 	}
 
 	// Coalesce messages to enforce Anthropic alternating role requirement:
@@ -253,6 +275,29 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 				Role:    "user",
 				Content: []anthropicBlock{{"type": "text", "text": "Hello"}},
 			},
+		}
+	}
+
+	// Ensure at least one message-level cache breakpoint near the conversation tail
+	// so multi-turn conversations achieve prompt cache hits on past turns.
+	hasMsgCache := false
+	for _, fm := range finalMsgs {
+		for _, b := range fm.Content {
+			if b["cache_control"] != nil {
+				hasMsgCache = true
+				break
+			}
+		}
+		if hasMsgCache {
+			break
+		}
+	}
+	if !hasMsgCache && len(finalMsgs) >= 2 {
+		// Place cache breakpoint on the turn before the latest turn
+		targetIdx := len(finalMsgs) - 2
+		if len(finalMsgs[targetIdx].Content) > 0 {
+			lastBlk := finalMsgs[targetIdx].Content[len(finalMsgs[targetIdx].Content)-1]
+			lastBlk["cache_control"] = map[string]string{"type": "ephemeral"}
 		}
 	}
 

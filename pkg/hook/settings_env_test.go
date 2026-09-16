@@ -60,6 +60,57 @@ func TestSyncClaudeSettingsEnv_DownWithNoPriorEnv(t *testing.T) {
 	}
 }
 
+func TestHookUninstall_ClearsSettingsEnv(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	m := map[string]any{
+		"env": map[string]any{
+			"ANTHROPIC_BASE_URL":   "http://127.0.0.1:8787",
+			"ANTHROPIC_AUTH_TOKEN": "am-proxy",
+			"CUSTOM_VAR":           "keep-me",
+		},
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{"type": "command", "command": `"/usr/local/bin/am" hook claude start`},
+					},
+				},
+			},
+		},
+	}
+	if err := SaveClaudeSettings(m); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	n, err := HookUninstall()
+	if err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if n == 0 {
+		t.Fatalf("expected entries removed, got %d", n)
+	}
+
+	saved := LoadClaudeSettings()
+	env, _ := saved["env"].(map[string]any)
+	if env == nil {
+		t.Fatal("expected env map with CUSTOM_VAR preserved")
+	}
+	if env["CUSTOM_VAR"] != "keep-me" {
+		t.Fatalf("expected CUSTOM_VAR preserved, got %v", env["CUSTOM_VAR"])
+	}
+	if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		t.Fatal("expected ANTHROPIC_BASE_URL removed")
+	}
+	if _, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok {
+		t.Fatal("expected ANTHROPIC_AUTH_TOKEN removed")
+	}
+	if _, ok := saved["hooks"]; ok {
+		t.Fatal("expected hooks map removed")
+	}
+}
+
 func readSettingsEnv(t *testing.T) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(ClaudeSettingsPath())

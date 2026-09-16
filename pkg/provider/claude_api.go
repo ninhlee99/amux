@@ -159,9 +159,10 @@ func (a *ClaudeAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	if isOAuth {
 		httpReq.Header.Set("Authorization", "Bearer "+token)
-		httpReq.Header.Set("anthropic-beta", anthropicOAuthBeta)
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31,"+anthropicOAuthBeta)
 	} else {
 		httpReq.Header.Set("x-api-key", token)
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	}
 
 	resp, err := a.client().Do(httpReq)
@@ -191,6 +192,16 @@ func (a *ClaudeAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 type anthropicEvent struct {
 	Type         string `json:"type"`
 	Index        int    `json:"index"`
+	Message      *struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Usage *struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
 	ContentBlock *struct {
 		Type string `json:"type"` // "text", "thinking", "tool_use"
 		ID   string `json:"id"`
@@ -203,6 +214,9 @@ type anthropicEvent struct {
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
+	Usage *struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 	Error *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
@@ -223,6 +237,7 @@ func streamClaudeSSE(ctx context.Context, id string, resp *http.Response, out ch
 	}
 	activeTools := map[int]*toolCallBuilder{}
 	var completedCalls []types.ToolCall
+	var usageStats types.UsageStats
 	finishReason := "stop"
 	doneSent := false
 
@@ -252,6 +267,7 @@ func streamClaudeSSE(ctx context.Context, id string, resp *http.Response, out ch
 			ID:           id,
 			ToolCalls:    completedCalls,
 			FinishReason: fr,
+			Usage:        &usageStats,
 			Done:         true,
 		})
 		doneSent = true
@@ -287,6 +303,13 @@ func streamClaudeSSE(ctx context.Context, id string, resp *http.Response, out ch
 		}
 
 		switch evt.Type {
+		case "message_start":
+			if evt.Message != nil && evt.Message.Usage != nil {
+				usageStats.InputTokens = evt.Message.Usage.InputTokens
+				usageStats.OutputTokens = evt.Message.Usage.OutputTokens
+				usageStats.CacheCreationInputTokens = evt.Message.Usage.CacheCreationInputTokens
+				usageStats.CacheReadInputTokens = evt.Message.Usage.CacheReadInputTokens
+			}
 		case "content_block_start":
 			if evt.ContentBlock != nil && evt.ContentBlock.Type == "tool_use" {
 				activeTools[evt.Index] = &toolCallBuilder{
@@ -331,6 +354,9 @@ func streamClaudeSSE(ctx context.Context, id string, resp *http.Response, out ch
 		case "message_delta":
 			if evt.Delta != nil && evt.Delta.StopReason != "" {
 				finishReason = evt.Delta.StopReason
+			}
+			if evt.Usage != nil && evt.Usage.OutputTokens > 0 {
+				usageStats.OutputTokens = evt.Usage.OutputTokens
 			}
 		case "message_stop":
 			finish()

@@ -166,10 +166,10 @@ func CmdProxyUpFlags(f UpFlags) {
 		postAndClose(fmt.Sprintf("%s/_am/session?pid=%d&event=start&op=start", ProxyBase(), ppid))
 	}
 	postAndClose(ProxyBase() + "/_am/sync")
-	hook.SyncLaunchctlEnv(true, ProxyBase())
 	if err := hook.SyncClientSettingsEnv(true, ProxyBase()); err != nil {
 		fmt.Fprintf(os.Stderr, "amux: sync client settings env: %v\n", err)
 	}
+
 
 	if IsPublic() || IsPublicBind(listen) {
 		tok, _ := LoadAuthToken()

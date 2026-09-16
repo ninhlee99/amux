@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/usage"
@@ -19,6 +20,8 @@ import (
 
 // StatuslineInput is JSON Claude Code / AGY pipe to a statusLine command.
 type StatuslineInput struct {
+	Account       string                     `json:"account,omitempty"`
+	Profile       string                     `json:"profile,omitempty"`
 	ContextWindow *statuslineContext         `json:"context_window"`
 	RateLimits    *statuslineRates           `json:"rate_limits"`
 	Quota         map[string]statuslineQuota `json:"quota"`
@@ -50,8 +53,9 @@ type statuslineRates struct {
 }
 
 // LimitWindows is 0–1 utilization from the proxy rotator when the client
-// omits rate_limits / quota (API-key mode).
+// omits rate_limits / quota (API-key mode), plus active account info.
 type LimitWindows struct {
+	Account    string
 	FiveHUsed  *float64
 	SevenDUsed *float64
 }
@@ -67,7 +71,7 @@ type limitSeg struct {
 func CmdStatusline() {
 	term.ForceColor()
 	in, _ := ReadStatuslineInput(os.Stdin)
-	line := RenderStatusline(in, fetchProxyLimits())
+	line := RenderStatusline(in, fetchProxyLimits(in))
 	line = appendCavemanBadge(line)
 	fmt.Println(line)
 }
@@ -80,11 +84,14 @@ func ReadStatuslineInput(r io.Reader) (StatuslineInput, error) {
 
 // RenderStatusline Codex-style footer:
 //
-//	12k  ·  5h ████████ 100%  ·  Gemini 7d ███████░ 94%  ·  Claude 7d ███░░░░░ 40%
+//	account  ·  10k tok  ·  5h ████████ 100%
 //
 // No context-window size. Colors/bars assume term.ForceColor for pipes.
 func RenderStatusline(in StatuslineInput, extra LimitWindows) string {
 	var parts []string
+	if acct := resolveAccount(in, extra); acct != "" {
+		parts = append(parts, term.Cyan(acct))
+	}
 	if used, ok := sessionTokens(in); ok {
 		parts = append(parts, term.Bold(usage.FormatTokens(used))+term.Dim(" tok"))
 	}
@@ -95,6 +102,64 @@ func RenderStatusline(in StatuslineInput, extra LimitWindows) string {
 		return ""
 	}
 	return strings.Join(parts, term.Dim("  ·  "))
+}
+
+func resolveAccount(in StatuslineInput, extra LimitWindows) string {
+	raw := in.Account
+	if raw == "" {
+		raw = in.Profile
+	}
+	if raw == "" {
+		raw = extra.Account
+	}
+	if raw == "" {
+		return ""
+	}
+	tool := "claude"
+	if len(in.Quota) > 0 {
+		tool = "agy"
+	}
+	return formatGroupAccount(raw, tool)
+}
+
+func formatGroupAccount(acct string, tool string) string {
+	acct = strings.TrimSpace(acct)
+	if acct == "" {
+		return ""
+	}
+	if tool == "" {
+		tool = "claude"
+	}
+	if tool == "antigravity" {
+		tool = "agy"
+	}
+
+	// Clean any existing angle brackets like <ninhle>
+	acct = strings.ReplaceAll(acct, "<", "")
+	acct = strings.ReplaceAll(acct, ">", "")
+
+	// If already has colon, e.g. "gemini:api:01", "claude:code:01", "chatgpt:ninhle21199", "codex:01"
+	if strings.Contains(acct, ":") {
+		return acct
+	}
+
+	// Bare name or email, e.g. "ninhle" or "ninhle21199@gmail.com"
+	group := tool
+	name := acct
+	if strings.Contains(acct, "@") {
+		if prof := profile.MatchProfileByAccount(tool, acct); prof != "" {
+			name = prof
+		} else if prof := profile.MatchProfileByAccount("claude", acct); prof != "" {
+			group = "claude"
+			name = prof
+		} else if prof := profile.MatchProfileByAccount("antigravity", acct); prof != "" {
+			group = "agy"
+			name = prof
+		} else {
+			name = strings.Split(acct, "@")[0]
+		}
+	}
+	return fmt.Sprintf("%s:%s", group, name)
 }
 
 func formatLimitSeg(seg limitSeg) string {
@@ -122,29 +187,50 @@ func colorPct(pct int) string {
 	}
 }
 
-func sessionTokens(in StatuslineInput) (int, bool) {
+func tokenStats(in StatuslineInput) (inTok, outTok, totalTok int, ok bool) {
 	cw := in.ContextWindow
 	if cw == nil {
-		return 0, false
+		return 0, 0, 0, false
 	}
 	if cu := cw.CurrentUsage; cu != nil {
-		n := cu.InputTokens + cu.OutputTokens + cu.CacheCreationInputTokens + cu.CacheReadInputTokens
-		if n < 0 {
-			n = 0
+		inTok = cu.InputTokens + cu.CacheCreationInputTokens + cu.CacheReadInputTokens
+		outTok = cu.OutputTokens
+		if inTok < 0 {
+			inTok = 0
 		}
-		return n, true
+		if outTok < 0 {
+			outTok = 0
+		}
+		if inTok > 0 || outTok > 0 || (cw.TotalInputTokens == nil && cw.TotalOutputTokens == nil) {
+			return inTok, outTok, inTok + outTok, true
+		}
 	}
-	n := 0
+	nIn := 0
+	nOut := 0
+	hasTokens := false
 	if cw.TotalInputTokens != nil {
-		n += *cw.TotalInputTokens
+		nIn = *cw.TotalInputTokens
+		hasTokens = true
 	}
 	if cw.TotalOutputTokens != nil {
-		n += *cw.TotalOutputTokens
+		nOut = *cw.TotalOutputTokens
+		hasTokens = true
 	}
-	if n < 0 {
-		n = 0
+	if nIn < 0 {
+		nIn = 0
 	}
-	return n, true
+	if nOut < 0 {
+		nOut = 0
+	}
+	if !hasTokens {
+		return 0, 0, 0, true
+	}
+	return nIn, nOut, nIn + nOut, true
+}
+
+func sessionTokens(in StatuslineInput) (int, bool) {
+	_, _, total, ok := tokenStats(in)
+	return total, ok
 }
 
 // collectLimitSegs builds display segments. AGY quota map keeps every bucket
@@ -255,30 +341,170 @@ func clamp01(x float64) float64 {
 	return x
 }
 
-func fetchProxyLimits() LimitWindows {
+func fetchProxyLimits(in ...StatuslineInput) LimitWindows {
+	var input StatuslineInput
+	if len(in) > 0 {
+		input = in[0]
+	}
+
+	isAGY := len(input.Quota) > 0
+	targetTool := "claude"
+	if isAGY {
+		targetTool = "antigravity"
+	}
+
 	if !proxy.ProxyUp() {
-		return LimitWindows{}
+		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
 	}
 	client := &http.Client{Timeout: 150 * time.Millisecond}
 	resp, err := client.Get(proxy.ProxyBase() + "/_am/status")
 	if err != nil {
-		return LimitWindows{}
+		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return LimitWindows{}
+		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
 	}
 	var s proxyStatus
 	if json.NewDecoder(resp.Body).Decode(&s) != nil {
-		return LimitWindows{}
+		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
 	}
+
+	var lw LimitWindows
+	if isAGY {
+		lw.Account = activeGeminiPoolAccount(s.Pool)
+		if lw.Account == "" {
+			lw.Account = activeGeminiPoolAccount(s.ToolPool)
+		}
+		if lw.Account == "" {
+			lw.Account = activePoolAccount(s.Pool)
+		}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount("antigravity")
+		}
+	} else {
+		if s.Mode == "provider" {
+			lw.Account = activePoolAccount(s.ToolPool)
+			if lw.Account == "" {
+				lw.Account = activePoolAccount(s.Pool)
+			}
+		}
+		if lw.Account == "" {
+			for _, a := range s.Accounts {
+				if a.Active && !a.Disabled && !a.Dead {
+					lw.Account = a.Account
+					if lw.Account == "" {
+						lw.Account = a.Profile
+					}
+					break
+				}
+			}
+		}
+		if lw.Account == "" {
+			// All Claude subscription accounts are disabled/dead — failover to tool pool
+			lw.Account = activePoolAccount(s.ToolPool)
+			if lw.Account == "" {
+				lw.Account = activePoolAccount(s.Pool)
+			}
+		}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount("claude")
+		}
+	}
+
 	for _, a := range s.Accounts {
 		if !a.Active || a.Dead || a.Disabled {
 			continue
 		}
-		return LimitWindows{FiveHUsed: a.FiveHUsed, SevenDUsed: a.SevenDUsed}
+		lw.FiveHUsed = a.FiveHUsed
+		lw.SevenDUsed = a.SevenDUsed
+		break
 	}
-	return LimitWindows{}
+	return lw
+}
+
+func activeGeminiPoolAccount(pool []map[string]any) string {
+	for _, p := range pool {
+		id, _ := p["id"].(string)
+		if !strings.Contains(id, "gemini") {
+			continue
+		}
+		cooling, _ := p["cooling"].(bool)
+		lastUsed, _ := p["last_used"].(bool)
+		if lastUsed && !cooling && id != "" {
+			return id
+		}
+	}
+	for _, p := range pool {
+		id, _ := p["id"].(string)
+		if !strings.Contains(id, "gemini") {
+			continue
+		}
+		cooling, _ := p["cooling"].(bool)
+		preferred, _ := p["preferred"].(bool)
+		if preferred && !cooling && id != "" {
+			return id
+		}
+	}
+	for _, p := range pool {
+		id, _ := p["id"].(string)
+		if !strings.Contains(id, "gemini") {
+			continue
+		}
+		cooling, _ := p["cooling"].(bool)
+		if !cooling && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func activePoolAccount(pool []map[string]any) string {
+	for _, p := range pool {
+		cooling, _ := p["cooling"].(bool)
+		lastUsed, _ := p["last_used"].(bool)
+		if lastUsed && !cooling {
+			if id, ok := p["id"].(string); ok && id != "" {
+				return id
+			}
+		}
+	}
+	for _, p := range pool {
+		cooling, _ := p["cooling"].(bool)
+		preferred, _ := p["preferred"].(bool)
+		if preferred && !cooling {
+			if id, ok := p["id"].(string); ok && id != "" {
+				return id
+			}
+		}
+	}
+	for _, p := range pool {
+		cooling, _ := p["cooling"].(bool)
+		if !cooling {
+			if id, ok := p["id"].(string); ok && id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func fallbackActiveAccount(tool string) string {
+	if tool == "" {
+		tool = "claude"
+	}
+	name := profile.ReadActivePointer(tool)
+	if name == "" {
+		return ""
+	}
+	if profile.IsDisabled(tool, name) {
+		return ""
+	}
+	meta := profile.ReadMeta(tool, name)
+	if meta.Account != "" {
+		return meta.Account
+	}
+	return name
 }
 
 // appendCavemanBadge runs the local caveman statusline script when present so

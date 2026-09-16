@@ -72,8 +72,13 @@ func WebCatalogOnly(defs []types.ToolDef) string {
 }
 
 func catalogBlock(defs []types.ToolDef) string {
+	sorted := make([]types.ToolDef, len(defs))
+	copy(sorted, defs)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Name < sorted[j].Name
+	})
 	var b strings.Builder
-	for _, d := range defs {
+	for _, d := range sorted {
 		b.WriteString(catalogLine(d))
 		b.WriteByte('\n')
 	}
