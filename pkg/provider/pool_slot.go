@@ -8,20 +8,55 @@ import (
 )
 
 // poolBrandMethod maps a ProviderConfig.Type to the brand + method segments
-// used in identity IDs ("claude:web:ninhle"). ChatGPT uses brand-only
-// ("chatgpt:ninhle") via NamedPoolID special-case.
+// used in identity IDs ("claude:web:ninhle"). ChatGPT, Codex, and Antigravity
+// use brand-only ("chatgpt:ninhle", "codex:ninhle", "antigravity:ninhle").
 var poolBrandMethod = map[string][2]string{
-	"claude_web": {"claude", "web"},
-	"gemini_web": {"gemini", "web"},
-	"gemini":     {"gemini", "api"},
+	"claude_web":  {"claude", "web"},
+	"gemini_web":  {"gemini", "web"},
+	"gemini":      {"gemini", "api"},
+	"claude_code": {"claude", "code"},
+	"claude_cli":  {"claude", "code"},
+}
+
+// isLegacyNumericID reports whether an ID is a legacy numeric ID (ends with :01, :02, etc.)
+// or old flat form like claudeweb:01 or codexcli:01, rather than a named identity ID.
+func isLegacyNumericID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if _, _, ok := types.ParseID(id); ok {
+		return true
+	}
+	// Check old flat form or uncolonized numeric suffix (e.g. claudeweb01)
+	parts := strings.Split(id, ":")
+	last := parts[len(parts)-1]
+	if len(last) >= 2 {
+		allDigits := true
+		for _, r := range last {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
 }
 
 // NamedPoolID returns the short identity ID for a provider type + email
 // (e.g. claude_web + ninhle@x.com → "claude:web:ninhle"; chatgpt_web →
-// "chatgpt:ninhle"), or "" if the type has no mapping / email unusable.
+// "chatgpt:ninhle"; codex_cli → "codex:ninhle"), or "" if unusable.
 func NamedPoolID(providerType, email string) string {
-	if providerType == "chatgpt_web" {
+	switch providerType {
+	case "chatgpt_web", "chatgpt":
 		return types.AccountBrandID("chatgpt", email)
+	case "codex_cli", "codex":
+		return types.AccountBrandID("codex", email)
+	case "antigravity", "agy":
+		return types.AccountBrandID("antigravity", email)
 	}
 	bm, ok := poolBrandMethod[providerType]
 	if !ok {
@@ -33,8 +68,13 @@ func NamedPoolID(providerType, email string) string {
 // NamedPoolIDWithDomain returns the disambiguated identity ID when two emails
 // share a local part: claude_web + ninhle@gmail.com → "claude:web:ninhle-gmailcom".
 func NamedPoolIDWithDomain(providerType, email string) string {
-	if providerType == "chatgpt_web" {
+	switch providerType {
+	case "chatgpt_web", "chatgpt":
 		return types.AccountBrandIDWithDomain("chatgpt", email)
+	case "codex_cli", "codex":
+		return types.AccountBrandIDWithDomain("codex", email)
+	case "antigravity", "agy":
+		return types.AccountBrandIDWithDomain("antigravity", email)
 	}
 	bm, ok := poolBrandMethod[providerType]
 	if !ok {
@@ -85,9 +125,18 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 
 	wanted := chooseNamedPoolID(providerType, email, sameType)
 
-	// Exact email match always wins (relogin keeps existing ID).
+	// Exact email match wins (relogin keeps existing ID or promotes legacy numeric ID).
 	for _, p := range sameType {
 		if email != "" && p.Account != "" && strings.EqualFold(p.Account, email) {
+			if isLegacyNumericID(p.ID) && wanted != "" {
+				return PoolSlot{
+					ID:         wanted,
+					Priority:   p.Priority,
+					Relogin:    true,
+					RenameFrom: p.ID,
+					Enabled:    p.Enabled,
+				}
+			}
 			return PoolSlot{
 				ID:       p.ID,
 				Priority: p.Priority,
@@ -113,7 +162,7 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 		}
 	}
 
-	// Promote a single anonymous (no Account) entry of this type to the
+	// Promote an anonymous (no Account) entry of this type to the
 	// named identity — avoids leaving an orphan claudeweb:01 after first
 	// identity-aware login.
 	if wanted != "" && email != "" {
@@ -123,7 +172,7 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 				anon = append(anon, p)
 			}
 		}
-		if len(anon) == 1 && !idTaken(f, wanted, anon[0].ID) {
+		if len(anon) >= 1 && !idTaken(f, wanted, anon[0].ID) {
 			return PoolSlot{
 				ID:         wanted,
 				Priority:   anon[0].Priority,
@@ -169,6 +218,10 @@ func chooseNamedPoolID(providerType, email string, sameType []ProviderConfig) st
 	conflict := false
 	for _, p := range sameType {
 		if p.Account != "" && strings.EqualFold(p.Account, email) {
+			if isLegacyNumericID(p.ID) {
+				// Don't retain legacy numeric ID; let chooseNamedPoolID generate named ID!
+				continue
+			}
 			return p.ID // already have this account — keep its ID
 		}
 		otherLocal := ""

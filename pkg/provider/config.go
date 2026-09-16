@@ -193,6 +193,12 @@ var poolIDPrefix = map[string]string{
 	"chatgpt_web": "chatgpt",
 	"gemini":      "gemini:api",
 	"gemini_web":  "gemini:web",
+	"codex_cli":   "codex",
+	"codex":       "codex",
+	"antigravity": "antigravity",
+	"agy":         "antigravity",
+	"claude_code": "claude:code",
+	"claude_cli":  "claude:code",
 }
 
 // PoolIDPrefix returns the unified-ID prefix for a built-in pool provider
@@ -1082,39 +1088,11 @@ func findDuplicateCredentialID(f *AccountsFile, p ProviderConfig, skipIDs ...str
 	return ""
 }
 
-// DeduplicateProvidersByCredential drops later entries that reuse an earlier
-// provider's API key / session token / session key. Keeps first occurrence.
+// DeduplicateProvidersByCredential drops duplicate entries across the pool,
+// keeping the one with the latest login timestamp, removing ghost entries,
+// and upgrading legacy numeric IDs.
 func DeduplicateProvidersByCredential(path string) (removed []string, err error) {
-	f, err := LoadConfigFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if f == nil || len(f.Providers) == 0 {
-		return nil, nil
-	}
-	var kept []ProviderConfig
-	seen := make([]ProviderConfig, 0, len(f.Providers))
-	for _, p := range f.Providers {
-		dupOf := ""
-		tmp := &AccountsFile{Providers: seen}
-		if id := findDuplicateCredentialID(tmp, p); id != "" {
-			dupOf = id
-		}
-		if dupOf != "" {
-			removed = append(removed, p.ID)
-			continue
-		}
-		seen = append(seen, p)
-		kept = append(kept, p)
-	}
-	if len(removed) == 0 {
-		return nil, nil
-	}
-	f.Providers = kept
-	return removed, SaveConfigFile(path, f)
+	return DeduplicateProviders(path)
 }
 
 func AddOrUpdateProvider(path string, p ProviderConfig) error {
@@ -1144,8 +1122,11 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 	if !updated && strings.TrimSpace(p.Account) != "" {
 		for i, existing := range f.Providers {
 			if existing.Type == p.Type && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
-				targetID := existing.ID
-				p.ID = targetID
+				if isLegacyNumericID(existing.ID) && !isLegacyNumericID(p.ID) {
+					// Upgrade legacy numeric ID (01, 02) to named ID: keep p.ID
+				} else {
+					p.ID = existing.ID
+				}
 				f.Providers[i] = p
 				updated = true
 				break
@@ -1157,25 +1138,11 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 		f.Providers = append(f.Providers, p)
 	}
 
-	// 3. Deduplicate: ensure only one row exists per (Type, Account)
-	var unique []ProviderConfig
-	seen := map[string]bool{}
-	for _, row := range f.Providers {
-		key := ""
-		if strings.TrimSpace(row.Account) != "" {
-			key = row.Type + ":" + strings.ToLower(strings.TrimSpace(row.Account))
-		}
-		if key != "" {
-			if seen[key] {
-				continue // deduplicate redundant entry
-			}
-			seen[key] = true
-		}
-		unique = append(unique, row)
+	if err := SaveConfigFile(path, f); err != nil {
+		return err
 	}
-	f.Providers = unique
-
-	return SaveConfigFile(path, f)
+	_, _ = DeduplicateProviders(path)
+	return nil
 }
 
 // UpdateProviderCookies merges a full Cookie header into an existing provider

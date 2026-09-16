@@ -81,10 +81,13 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 	// Clear previous session cookies so the user is required to log in anew
 	clearTargetSessionCookies(dir)
 
-	port, err := pickFreePort()
+	port, portHold, err := pickFreePort()
 	if err != nil {
 		return nil, err
 	}
+
+	// Release the reserved port in the last instant before the browser claims it.
+	_ = portHold.Close()
 
 	cmd := exec.Command(bin,
 		fmt.Sprintf("--remote-debugging-port=%d", port),
@@ -100,11 +103,11 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start browser: %w", err)
 	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		clearTargetSessionCookies(dir)
-	}()
+	// NOTE: do not wipe cookies on the way out. Clearing on entry forces a fresh
+	// login; clearing again on exit destroys the session we just captured, which
+	// breaks RefreshWebAuthFromProfile (it reopens this same profile expecting
+	// the cookie to still be there).
+	defer terminateBrowser(cmd)
 
 	deadline := time.Now().Add(timeout)
 	var wsURL string
@@ -168,7 +171,7 @@ func RefreshWebAuthFromProfile(target WebLoginTarget, timeout time.Duration) (*C
 	}
 	clearChromiumSingletonLocks(dir)
 
-	port, err := pickFreePort()
+	port, portHold, err := pickFreePort()
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +180,9 @@ func RefreshWebAuthFromProfile(target WebLoginTarget, timeout time.Duration) (*C
 	if target.CookieHost == "claude.ai" {
 		startURL = "https://claude.ai/"
 	}
+	// Release the reserved port in the last instant before the browser claims it.
+	_ = portHold.Close()
+
 	cmd := exec.Command(bin,
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		"--user-data-dir="+dir,
@@ -192,8 +198,7 @@ func RefreshWebAuthFromProfile(target WebLoginTarget, timeout time.Duration) (*C
 		return nil, fmt.Errorf("start browser: %w", err)
 	}
 	defer func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		terminateBrowser(cmd)
 	}()
 
 	deadline := time.Now().Add(timeout)
@@ -260,6 +265,27 @@ func cookieHeaderForHost(cookies []cdpCookie, hostSubstr string) string {
 		parts = append(parts, c.Name+"="+c.Value)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// terminateBrowser shuts down the browser amux launched. It asks politely first
+// so Chromium flushes its cookie jar to the profile directory; a hard Kill can
+// lose the session we just captured. Safe to call when the process never started.
+func terminateBrowser(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(done)
+	}()
+	_ = cmd.Process.Signal(os.Interrupt)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
 }
 
 func clearChromiumSingletonLocks(dir string) {
@@ -347,39 +373,69 @@ func profileDir(name string) (string, error) {
 	return dir, nil
 }
 
+// findChromiumBinary locates a Chromium-family browser that supports
+// --remote-debugging-port. AMUX_BROWSER_BINARY overrides the search.
+//
+// Arc is deliberately excluded: it ignores --new-window/--user-data-dir in the
+// way we rely on here, so CDP never observes the login window.
 func findChromiumBinary() (string, error) {
-	if runtime.GOOS != "darwin" {
-		return "", fmt.Errorf("--browser login currently supports macOS only")
+	if env := strings.TrimSpace(os.Getenv("AMUX_BROWSER_BINARY")); env != "" {
+		st, err := os.Stat(env)
+		if err != nil || st.IsDir() {
+			return "", fmt.Errorf("AMUX_BROWSER_BINARY=%q is not an executable file", env)
+		}
+		return env, nil
 	}
-	candidates := []string{
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Volumes/Macintosh HD/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-		"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-		"/Applications/Arc.app/Contents/MacOS/Arc",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Volumes/Macintosh HD/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		}
+	case "windows":
+		candidates = []string{
+			`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		}
+	default:
+		candidates = []string{
+			"/usr/bin/google-chrome",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+			"/usr/bin/microsoft-edge",
+		}
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
 			return c, nil
 		}
 	}
-	if p, err := exec.LookPath("google-chrome"); err == nil {
-		return p, nil
+	for _, name := range []string{"google-chrome", "chromium", "chromium-browser", "microsoft-edge", "msedge"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
 	}
-	if p, err := exec.LookPath("chromium"); err == nil {
-		return p, nil
-	}
-	return "", fmt.Errorf("no Chrome/Edge/Brave/Arc found — install one, or paste --cookie/--token instead")
+	return "", fmt.Errorf("no Chrome/Edge/Brave/Chromium found — install one, " +
+		"set AMUX_BROWSER_BINARY=/path/to/browser, or paste --cookie/--token instead")
 }
 
-func pickFreePort() (int, error) {
+// pickFreePort reserves an ephemeral port and hands back both the number and
+// the listener holding it. The caller must Close the listener immediately
+// before launching the browser: keeping it open until then stops another
+// process from claiming the port in the gap (TOCTOU), which previously showed
+// up as "browser DevTools not ready on port N".
+func pickFreePort() (int, net.Listener, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port, nil
+	return ln.Addr().(*net.TCPAddr).Port, ln, nil
 }
 
 func debuggerWSURL(port int) (string, error) {

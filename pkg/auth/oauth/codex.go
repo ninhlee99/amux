@@ -148,17 +148,21 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	}
 
 	// 3. Add or update in amux accounts.json
+	slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
 	id := customName
 	if id == "" {
-		slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
 		id = slot.ID
 		if slot.Relogin {
-			fmt.Printf("Account %s already exists — updating provider %s…\n", email, id)
+			if slot.RenameFrom != "" {
+				fmt.Printf("Account %s already exists — upgrading provider %s → %s…\n", email, slot.RenameFrom, id)
+			} else {
+				fmt.Printf("Account %s already exists — updating provider %s…\n", email, id)
+			}
 		} else {
 			fmt.Printf("New account %s detected — creating provider %s…\n", email, id)
 		}
 	}
-	err = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+	err = provider.UpsertPoolProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
 		ID:           id,
 		Type:         "codex_cli",
 		Priority:     5,
@@ -166,7 +170,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		Plan:         plan,
 		Model:        "gpt-4o",
 		RefreshToken: tokenResp.RefreshToken,
-	})
+	}, slot.RenameFrom)
 	if err != nil {
 		return "", fmt.Errorf("save provider: %w", err)
 	}
@@ -271,12 +275,12 @@ func syncExistingCodexAuth(customName string) (string, error) {
 	_ = profile.SaveDirectProfile("codex", profileName, email, entries)
 
 	// Add or update in amux accounts.json
+	slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
 	id := customName
 	if id == "" {
-		slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
 		id = slot.ID
 	}
-	err = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+	err = provider.UpsertPoolProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
 		ID:           id,
 		Type:         "codex_cli",
 		Priority:     5,
@@ -284,7 +288,7 @@ func syncExistingCodexAuth(customName string) (string, error) {
 		Plan:         plan,
 		Model:        "gpt-4o",
 		RefreshToken: doc.Tokens.RefreshToken,
-	})
+	}, slot.RenameFrom)
 	if err != nil {
 		return "", fmt.Errorf("save provider: %w", err)
 	}
