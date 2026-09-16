@@ -1,6 +1,7 @@
 package ctxshrink
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -355,8 +356,10 @@ func extractFastSemanticHandoff(middle []types.ChatMessage, droppedCount int) st
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("[amux switch handoff] Session rotated account. %d intermediate turns compacted to minimize token burn.\n", droppedCount))
 
-	// Track unique tools and user intents
+	// Track unique tools, files touched, commands executed, and user intents
 	toolActions := make(map[string]int)
+	filesTouched := make(map[string]bool)
+	var commandsRun []string
 	var userDirectives []string
 
 	for _, m := range middle {
@@ -376,6 +379,25 @@ func extractFastSemanticHandoff(middle []types.ChatMessage, droppedCount int) st
 			if tc.Name != "" {
 				toolActions[tc.Name]++
 			}
+			if len(tc.Arguments) > 0 && json.Valid([]byte(tc.Arguments)) {
+				var argsMap map[string]any
+				if err := json.Unmarshal([]byte(tc.Arguments), &argsMap); err == nil {
+					for _, k := range []string{"path", "file", "TargetFile", "AbsolutePath", "filepath", "target_file", "FilePath"} {
+						if v, ok := argsMap[k].(string); ok && strings.TrimSpace(v) != "" {
+							filesTouched[strings.TrimSpace(v)] = true
+						}
+					}
+					for _, k := range []string{"command", "CommandLine", "cmd"} {
+						if v, ok := argsMap[k].(string); ok && strings.TrimSpace(v) != "" && len(commandsRun) < 4 {
+							cmdTrim := strings.TrimSpace(v)
+							if len([]rune(cmdTrim)) > 60 {
+								cmdTrim = string([]rune(cmdTrim)[:60]) + "..."
+							}
+							commandsRun = append(commandsRun, cmdTrim)
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -388,8 +410,28 @@ func extractFastSemanticHandoff(middle []types.ChatMessage, droppedCount int) st
 		}
 	}
 
+	if len(filesTouched) > 0 {
+		sb.WriteString("Files Referenced in Prior Turns: ")
+		var fileList []string
+		for f := range filesTouched {
+			if len(fileList) >= 6 {
+				fileList = append(fileList, fmt.Sprintf("and %d more", len(filesTouched)-6))
+				break
+			}
+			fileList = append(fileList, f)
+		}
+		sb.WriteString(strings.Join(fileList, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(commandsRun) > 0 {
+		sb.WriteString("Commands Executed: ")
+		sb.WriteString(strings.Join(commandsRun, " | "))
+		sb.WriteString("\n")
+	}
+
 	if len(toolActions) > 0 {
-		sb.WriteString("Prior Actions Executed: ")
+		sb.WriteString("Prior Actions: ")
 		var acts []string
 		for name, count := range toolActions {
 			acts = append(acts, fmt.Sprintf("%s (%d)", name, count))

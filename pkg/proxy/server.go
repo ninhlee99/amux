@@ -640,6 +640,28 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				parsedReq = rReq
 			}
 
+			// Deterministic Replay Cache: identical requests (e.g. repeated prompt, linter, tests)
+			// return the exact cached response instantly with 0 tokens and 0 cost.
+			rawReplayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeRawHash(body)
+			if canReplay {
+				if cached, found := ctxshrink.GlobalReplayCache().Get(rawReplayKey); found {
+					isStream := false
+					if parsedReq != nil {
+						isStream = parsedReq.Stream
+					}
+					term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s] (0 upstream tokens, saved %d tokens, 0$)",
+						rawReplayKey[:8], cached.InputTokens)
+					usage.AppendUsageEntry(types.UsageEntry{
+						Time:      time.Now(),
+						Account:   "replay-cache",
+						Output:    cached.OutputTokens,
+						CacheRead: cached.InputTokens,
+					})
+					_ = cached.Serve(w, isStream)
+					return
+				}
+			}
+
 			isWebTask := false
 			if parsedReq != nil {
 				c := router.ClassifyTask(parsedReq)

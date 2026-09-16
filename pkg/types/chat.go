@@ -93,8 +93,10 @@ type ChatMessage struct {
 type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	Temperature float64       `json:"temperature,omitempty"`
+	Stream              bool          `json:"stream"`
+	Temperature         float64       `json:"temperature,omitempty"`
+	ExplicitTemperature bool          `json:"-"`
+	MaxTokens           int           `json:"max_tokens,omitempty"`
 	Tools       []ToolDef     `json:"tools,omitempty"`
 	// ToolChoice mirrors OpenAI/Anthropic tool_choice when set ("auto",
 	// "none", or a named tool). Adapters that don't support it ignore it.

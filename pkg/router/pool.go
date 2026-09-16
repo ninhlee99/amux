@@ -361,6 +361,11 @@ func skipTextOnly(a types.ProviderAdapter, req *types.ChatRequest, nativeAvailab
 	if req == nil || len(req.Tools) == 0 || adapterSupportsTools(a) {
 		return false
 	}
+	// Planning, clarify, analysis, review, compact, and quality tasks are explicitly routed
+	// to web proxies to conserve coding subscription quotas and API tokens, even if the IDE attached tools.
+	if IsWebTask(req.TaskKind) {
+		return false
+	}
 	switch EffectiveWebPolicy() {
 	case WebPolicyForce, WebPolicyPrefer:
 		return false
@@ -680,7 +685,15 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
 				continue
 			}
-			ch, err := a.SendMessageStream(ctx, req)
+			callReq := req
+			if (skippedPreferred || len(failedInReq) > 0) && req != nil && len(req.Messages) > 4 {
+				// Secondary / fallback adapter is a cold account: compact messages so it does not
+				// pay massive uncached token creation fees and burn its 5h/7d rate limit.
+				cloned := *req
+				cloned.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+				callReq = &cloned
+			}
+			ch, err := a.SendMessageStream(ctx, callReq)
 			if err == nil {
 				guard.RecordSuccess(a.ID())
 				if sessionKey != "" {

@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -110,8 +111,9 @@ func TestAccountPoolRouter_SkipTextOnlyWhenTools(t *testing.T) {
 	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web, api})
 	r.SetPreferred("chatgpt:01")
 
+	// Coding task with tools: text-only web adapter is skipped in favor of native tool backend
 	ch, err := r.Send(context.Background(), &types.ChatRequest{
-		Messages: []types.ChatMessage{{Role: "user", Content: "review readme"}},
+		Messages: []types.ChatMessage{{Role: "user", Content: "implement new authentication function"}},
 		Tools:    []types.ToolDef{{Name: "Bash"}},
 	})
 	if err != nil {
@@ -123,6 +125,29 @@ func TestAccountPoolRouter_SkipTextOnlyWhenTools(t *testing.T) {
 	}
 	if text != "ok" {
 		t.Fatalf("want native tool backend, got %q", text)
+	}
+}
+
+func TestAccountPoolRouter_WebTaskUsesWebEvenWithTools(t *testing.T) {
+	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "plan: step 1..."}}
+	api := &mockAdapter{id: "gemini:api:01", priority: 2, content: "native-api"}
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web, api})
+	r.SetPreferred("chatgpt:01")
+
+	// Planning/review task: web proxy is preferred even if tools were attached by client
+	ch, err := r.Send(context.Background(), &types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "lập kế hoạch kiến trúc hệ thống"}},
+		Tools:    []types.ToolDef{{Name: "Bash"}},
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		text += chunk.Content
+	}
+	if text != "plan: step 1..." {
+		t.Fatalf("want web proxy backend for plan task, got %q", text)
 	}
 }
 
@@ -278,4 +303,74 @@ func TestAccountPoolRouter_AdaptiveCooldownRetryAfter(t *testing.T) {
 		t.Fatalf("expected valid cooldown_until string, got %v", a1Status["cooldown_until"])
 	}
 }
+
+type capturingAdapter struct {
+	mockAdapter
+	lastReq *types.ChatRequest
+}
+
+func (c *capturingAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	c.lastReq = req
+	return c.mockAdapter.SendMessageStream(ctx, req)
+}
+
+func TestAccountPoolRouter_FailoverCompactsContextForColdAccount(t *testing.T) {
+	a1 := &mockAdapter{
+		id:       "adapter-failing",
+		priority: 1,
+		err:      types.ErrRateLimitReached,
+	}
+	a2 := &capturingAdapter{
+		mockAdapter: mockAdapter{
+			id:       "adapter-cold-backup",
+			priority: 2,
+			content:  "backup content",
+		},
+	}
+
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{a1, a2})
+
+	// Build a long conversation history (15 turns)
+	longMsgs := []types.ChatMessage{
+		{Role: "system", Content: "You are an expert assistant."},
+		{Role: "user", Content: "Root goal: optimize database queries"},
+	}
+	for i := 1; i <= 12; i++ {
+		longMsgs = append(longMsgs, types.ChatMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("Intermediate query %d with long log data...", i),
+		})
+	}
+	longMsgs = append(longMsgs, types.ChatMessage{
+		Role:    "user",
+		Content: "Final user turn: please run benchmark now",
+	})
+
+	ch, err := r.Send(context.Background(), &types.ChatRequest{
+		Messages: longMsgs,
+	})
+	if err != nil {
+		t.Fatalf("expected failover to succeed, got %v", err)
+	}
+	for range ch {
+	}
+
+	if a2.lastReq == nil {
+		t.Fatalf("adapter 2 was never called")
+	}
+
+	// Verify that adapter 2 received compacted messages, not the full 15 messages!
+	if len(a2.lastReq.Messages) >= len(longMsgs) {
+		t.Fatalf("expected messages to be compacted on failover, got %d messages (orig %d)",
+			len(a2.lastReq.Messages), len(longMsgs))
+	}
+	// Verify system and root prompt are preserved
+	if a2.lastReq.Messages[0].Role != "system" {
+		t.Fatalf("expected first message to be system, got %s", a2.lastReq.Messages[0].Role)
+	}
+	if a2.lastReq.Messages[1].Content != "Root goal: optimize database queries" {
+		t.Fatalf("expected root goal preserved, got %q", a2.lastReq.Messages[1].Content)
+	}
+}
+
 

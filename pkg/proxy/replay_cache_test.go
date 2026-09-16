@@ -11,8 +11,9 @@ func TestDeterministicReplayCache_HitAndMiss(t *testing.T) {
 	cache := NewDeterministicReplayCache(10 * time.Minute)
 
 	req := &types.ChatRequest{
-		Model:       "claude-3-7-sonnet-20250219",
-		Temperature: 0,
+		Model:               "claude-3-7-sonnet-20250219",
+		Temperature:         0,
+		ExplicitTemperature: true,
 		Messages: []types.ChatMessage{
 			{Role: "user", Content: "fmt.Println(\"hello\")"},
 		},

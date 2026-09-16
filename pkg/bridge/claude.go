@@ -9,7 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
@@ -34,7 +36,7 @@ type AnthropicMessageRequest struct {
 	System      json.RawMessage   `json:"system,omitempty"`
 	MaxTokens   int               `json:"max_tokens,omitempty"`
 	Stream      bool              `json:"stream,omitempty"`
-	Temperature float64           `json:"temperature,omitempty"`
+	Temperature *float64          `json:"temperature,omitempty"`
 	ToolChoice  any               `json:"tool_choice,omitempty"`
 	Thinking    *struct {
 		Type         string `json:"type"`
@@ -52,14 +54,23 @@ func ToChatRequest(body []byte) (*types.ChatRequest, error) {
 		return nil, fmt.Errorf("unmarshal anthropic request: %w", err)
 	}
 
+	temp := 0.0
+	explicitTemp := false
+	if aReq.Temperature != nil {
+		temp = *aReq.Temperature
+		explicitTemp = true
+	}
+
 	req := &types.ChatRequest{
-		Model:         aReq.Model,
-		Stream:        aReq.Stream,
-		Temperature:   aReq.Temperature,
-		ToolChoice:    aReq.ToolChoice,
-		Messages:      []types.ChatMessage{},
-		FullContext:   true,
-		ClientDialect: tools.DialectClaude,
+		Model:               aReq.Model,
+		Stream:              aReq.Stream,
+		Temperature:         temp,
+		ExplicitTemperature: explicitTemp,
+		MaxTokens:           aReq.MaxTokens,
+		ToolChoice:          aReq.ToolChoice,
+		Messages:            []types.ChatMessage{},
+		FullContext:         true,
+		ClientDialect:       tools.DialectClaude,
 	}
 
 	if aReq.Thinking != nil && aReq.Thinking.Type == "enabled" {
@@ -352,6 +363,20 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	started := time.Now()
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 
+	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHash(req)
+	if canReplay {
+		if cached, found := ctxshrink.GlobalReplayCache().Get(replayKey); found {
+			recordPoolUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens, 0)
+			logChatRequest(r, pool, req, "[cached replay]", "end_turn", "", 0, cached.OutputTokens, time.Now(), nil)
+			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s] (0 upstream tokens, saved %d tokens, 0$)",
+				replayKey[:8], cached.InputTokens)
+			return cached.Serve(w, req.Stream)
+		}
+	}
+
+	rec := ctxshrink.NewRecordingWriter(w)
+	w = rec
+
 	// Stream: flush message_start before the upstream call so Claude Code
 	// does not sit on "Waiting for API response / check your network" during
 	// ChatGPT sentinel + PoW + TTFB (often 30–90s).
@@ -383,7 +408,16 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	}
 
 	if req.Stream {
-		return writeAnthropicSSE(w, flusher, r, pool, req, stream, msgID, started)
+		serr := writeAnthropicSSE(w, flusher, r, pool, req, stream, msgID, started)
+		if serr == nil && canReplay && len(rec.Events()) > 0 {
+			ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+				ContentType:  "text/event-stream",
+				SSEEvents:    rec.Events(),
+				InputTokens:  estimateInputTokens(req),
+				OutputTokens: 256,
+			})
+		}
+		return serr
 	}
 
 	var fullContent strings.Builder
@@ -496,6 +530,14 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		"usage":         usageObj,
 	}
 	err = json.NewEncoder(w).Encode(respObj)
+	if err == nil && canReplay && len(rec.Body()) > 0 {
+		ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+			ContentType:  "application/json",
+			Body:         rec.Body(),
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		})
+	}
 	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, started, toolCalls)
 	return err
