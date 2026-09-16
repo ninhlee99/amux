@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -67,6 +68,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	_ = OpenBrowser(authURL)
 
 	fmt.Printf("Waiting for browser callback on %s…\n", CodexRedirectURI)
+	fmt.Println("👉 (Remote/Headless/SSH) If browser does not redirect to localhost, paste the authorization code or full redirect URL here:")
 	code, err := listenForCallback(ctx, CodexCallbackPort, CodexCallbackPath, state)
 	if err != nil {
 		return "", fmt.Errorf("waiting for OAuth callback: %w", err)
@@ -164,6 +166,124 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		Plan:         plan,
 		Model:        "gpt-4o",
 		RefreshToken: tokenResp.RefreshToken,
+	})
+	if err != nil {
+		return "", fmt.Errorf("save provider: %w", err)
+	}
+
+	proxy.Sync()
+	return email, nil
+}
+
+// LoginCodexDeviceFlow executes the native device code flow using codex CLI if available,
+// or falls back to web OAuth flow with dual-channel terminal prompt.
+func LoginCodexDeviceFlow(ctx context.Context, customName string) (string, error) {
+	codexPath := findCodexBinary()
+	if codexPath != "" {
+		fmt.Printf("Found Codex CLI at %s\n", codexPath)
+		fmt.Println("Initiating ChatGPT device authorization via Codex CLI…")
+		cmd := exec.CommandContext(ctx, codexPath, "login", "--device-auth")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("codex login --device-auth failed: %w", err)
+		}
+
+		return syncExistingCodexAuth(customName)
+	}
+
+	fmt.Println("Codex CLI binary not found locally. Falling back to standalone OAuth flow…")
+	return LoginCodex(ctx, customName)
+}
+
+func findCodexBinary() string {
+	if p, err := exec.LookPath("codex"); err == nil {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".local", "bin", "codex"),
+		"/usr/local/bin/codex",
+		"/opt/homebrew/bin/codex",
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
+func syncExistingCodexAuth(customName string) (string, error) {
+	home, _ := os.UserHomeDir()
+	authJSONPath := filepath.Join(home, ".codex", "auth.json")
+	data, err := os.ReadFile(authJSONPath)
+	if err != nil {
+		return "", fmt.Errorf("read ~/.codex/auth.json: %w", err)
+	}
+
+	var doc struct {
+		Tokens struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			IDToken      string `json:"id_token"`
+			AccountID    string `json:"account_id"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", fmt.Errorf("parse ~/.codex/auth.json: %w", err)
+	}
+
+	email, _, plan := ParseCodexClaims(doc.Tokens.IDToken)
+	if email == "" {
+		email, _, plan = ParseCodexClaims(doc.Tokens.AccessToken)
+	}
+	if email == "" {
+		email = ParseJWTEmail(doc.Tokens.IDToken)
+	}
+	if email == "" {
+		email = ParseJWTEmail(doc.Tokens.AccessToken)
+	}
+	if email == "" {
+		email = fmt.Sprintf("codex-%d", time.Now().Unix())
+	}
+
+	// Save profile in amux
+	profileName := customName
+	if profileName == "" {
+		if existing := profile.ProfileNameForAccount("codex", email); existing != "" {
+			profileName = existing
+			fmt.Printf("Account %s already exists — updating profile %q…\n", email, profileName)
+		} else {
+			profileName = email
+			fmt.Printf("New account %s detected — creating profile %q…\n", email, profileName)
+		}
+	}
+	profileName = profile.SanitizeName(profileName)
+
+	entries := []types.ProfileEntry{
+		{
+			Artifact: types.Artifact{Kind: "file", Path: authJSONPath, AccountField: "jwt:tokens.id_token:email"},
+			Data:     data,
+		},
+	}
+	_ = profile.SaveDirectProfile("codex", profileName, email, entries)
+
+	// Add or update in amux accounts.json
+	id := customName
+	if id == "" {
+		slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
+		id = slot.ID
+	}
+	err = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+		ID:           id,
+		Type:         "codex_cli",
+		Priority:     5,
+		Account:      email,
+		Plan:         plan,
+		Model:        "gpt-4o",
+		RefreshToken: doc.Tokens.RefreshToken,
 	})
 	if err != nil {
 		return "", fmt.Errorf("save provider: %w", err)

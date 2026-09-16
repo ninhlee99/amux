@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -659,5 +660,67 @@ func TestGoogleOAuthExchange(t *testing.T) {
 		t.Errorf("expected detailed error message from response body, got: %v", err)
 	}
 }
+
+func TestCallbackServer_Stdin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	oldStdin := os.Stdin
+	defer func() { os.Stdin = oldStdin }()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+
+	os.Stdin = r
+
+	port := 59223
+	path := "/test-callback"
+	state := "secret-stdin-state"
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprintf(w, "http://localhost:%d%s?code=stdin-code-999&state=%s\n", port, path, state)
+		w.Close()
+	}()
+
+	code, err := listenForCallback(ctx, port, path, state)
+	if err != nil {
+		t.Fatalf("listenForCallback stdin failed: %v", err)
+	}
+	if code != "stdin-code-999" {
+		t.Errorf("got code %q, want %q", code, "stdin-code-999")
+	}
+}
+
+func TestClaudeManualRedirect(t *testing.T) {
+	origURLs := auth.ClaudeOAuthTokenURLs
+	defer func() { auth.ClaudeOAuthTokenURLs = origURLs }()
+
+	var receivedBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"claude-manual-acc","refresh_token":"claude-manual-ref","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	auth.ClaudeOAuthTokenURLs = []string{server.URL}
+
+	ctx := context.Background()
+	resp, err := exchangeClaudeCodeWithRedirect(ctx, "man_code", "man_verifier", "man_state", ClaudeManualRedirectURI)
+	if err != nil {
+		t.Fatalf("exchangeClaudeCodeWithRedirect failed: %v", err)
+	}
+	if resp.AccessToken != "claude-manual-acc" {
+		t.Errorf("unexpected access token: %s", resp.AccessToken)
+	}
+	if receivedBody["redirect_uri"] != ClaudeManualRedirectURI {
+		t.Errorf("expected redirect_uri %q, got %q", ClaudeManualRedirectURI, receivedBody["redirect_uri"])
+	}
+}
+
 
 

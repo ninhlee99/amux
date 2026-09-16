@@ -1,12 +1,16 @@
 package oauth
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -103,6 +107,58 @@ func listenForCallback(ctx context.Context, port int, path string, expectedState
 	// Transfer listener ownership to srv.Serve (closes listener on shutdown)
 	go func() {
 		_ = srv.Serve(listener)
+	}()
+
+	// Background stdin listener for remote / headless / SSH environments
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text == "" {
+				continue
+			}
+			// Case 1: Full callback URL
+			if strings.Contains(text, "code=") {
+				if u, err := url.Parse(text); err == nil {
+					q := u.Query()
+					if errParam := q.Get("error"); errParam != "" {
+						errDesc := q.Get("error_description")
+						if errDesc != "" {
+							errParam += ": " + errDesc
+						}
+						sendResult(callbackResult{Error: errParam})
+						return
+					}
+					c := q.Get("code")
+					st := q.Get("state")
+					if expectedState != "" && st != "" && st != expectedState {
+						sendResult(callbackResult{Error: "state mismatch"})
+						return
+					}
+					if c != "" {
+						sendResult(callbackResult{Code: c, State: st})
+						return
+					}
+				}
+			}
+			// Case 2: code#state or code:state
+			if strings.Contains(text, "#") {
+				parts := strings.SplitN(text, "#", 2)
+				c := strings.TrimSpace(parts[0])
+				st := strings.TrimSpace(parts[1])
+				if expectedState != "" && st != "" && st != expectedState {
+					sendResult(callbackResult{Error: "state mismatch"})
+					return
+				}
+				if c != "" {
+					sendResult(callbackResult{Code: c, State: st})
+					return
+				}
+			}
+			// Case 3: Raw authorization code pasted directly
+			sendResult(callbackResult{Code: text, State: expectedState})
+			return
+		}
 	}()
 
 	select {

@@ -270,7 +270,7 @@ func Run(rawArgs []string) {
 
 	case "oauth":
 		if len(args) == 0 {
-			fmt.Println("Usage: amux oauth <provider> [custom-name]")
+			fmt.Println("Usage: amux oauth <provider> [custom-name] [--device | --manual]")
 			fmt.Println("\nSupported standalone OAuth providers (no CLI/IDE installation required):")
 			for _, p := range oauth.SupportedOAuthProviders() {
 				fmt.Printf("  • %s\n", p)
@@ -279,10 +279,15 @@ func Run(rawArgs []string) {
 		}
 		target := args[0]
 		customName := ""
-		if len(args) > 1 {
-			customName = args[1]
+		var flags []string
+		for _, a := range args[1:] {
+			if strings.HasPrefix(a, "-") {
+				flags = append(flags, a)
+			} else if customName == "" {
+				customName = a
+			}
 		}
-		if err := oauth.InteractiveOAuth(target, customName); err != nil {
+		if err := oauth.InteractiveOAuth(target, customName, flags...); err != nil {
 			die("oauth error: %v", err)
 		}
 

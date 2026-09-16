@@ -88,6 +88,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	_ = OpenBrowser(authURL)
 
 	fmt.Printf("Waiting for browser callback on %s…\n", AntigravityRedirectURI)
+	fmt.Println("👉 (Remote/Headless/SSH) If browser does not redirect to localhost, paste the authorization code or full redirect URL here:")
 	code, err := listenForCallback(ctx, AntigravityCallbackPort, AntigravityCallbackPath, state)
 	if err != nil {
 		return "", fmt.Errorf("waiting for OAuth callback: %w", err)

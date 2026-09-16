@@ -19,42 +19,67 @@ func SupportedOAuthProviders() []string {
 	}
 }
 
-// RunOAuth starts the standalone OAuth flow for the requested provider without needing
-// local CLI or IDE installations.
+// OAuthOptions configures the OAuth authentication flow.
+type OAuthOptions struct {
+	CustomName string
+	DeviceFlow bool
+	ManualFlow bool
+}
+
+// RunOAuth starts the standalone OAuth flow with default settings.
 func RunOAuth(ctx context.Context, target string, customName string) (accountOrID string, err error) {
+	return RunOAuthWithOptions(ctx, target, OAuthOptions{CustomName: customName})
+}
+
+// RunOAuthWithOptions starts the standalone OAuth flow supporting device and manual modes.
+func RunOAuthWithOptions(ctx context.Context, target string, opts OAuthOptions) (accountOrID string, err error) {
 	t := strings.ToLower(strings.TrimSpace(target))
 
 	switch t {
 	case "claude", "claudecode", "claude-code":
-		_, email, err := LoginClaudeCode(ctx, customName)
+		if opts.DeviceFlow || opts.ManualFlow {
+			_, email, err := LoginClaudeCodeManual(ctx, opts.CustomName)
+			if err != nil {
+				return "", err
+			}
+			return email, nil
+		}
+		_, email, err := LoginClaudeCode(ctx, opts.CustomName)
 		if err != nil {
 			return "", err
 		}
 		return email, nil
 
 	case "codex", "codex-cli", "openai":
-		email, err := LoginCodex(ctx, customName)
+		if opts.DeviceFlow {
+			email, err := LoginCodexDeviceFlow(ctx, opts.CustomName)
+			if err != nil {
+				return "", err
+			}
+			return email, nil
+		}
+		email, err := LoginCodex(ctx, opts.CustomName)
 		if err != nil {
 			return "", err
 		}
 		return email, nil
 
 	case "antigravity", "agy", "google":
-		email, err := LoginAntigravity(ctx, customName)
+		email, err := LoginAntigravity(ctx, opts.CustomName)
 		if err != nil {
 			return "", err
 		}
 		return email, nil
 
 	case "kimi", "moonshot":
-		id, err := LoginKimiDeviceFlow(ctx, customName)
+		id, err := LoginKimiDeviceFlow(ctx, opts.CustomName)
 		if err != nil {
 			return "", err
 		}
 		return id, nil
 
 	case "grok", "xai":
-		id, err := LoginGrokDeviceFlow(ctx, customName)
+		id, err := LoginGrokDeviceFlow(ctx, opts.CustomName)
 		if err != nil {
 			return "", err
 		}
@@ -65,15 +90,34 @@ func RunOAuth(ctx context.Context, target string, customName string) (accountOrI
 	}
 }
 
-// InteractiveOAuth executes an interactive OAuth flow with 5-minute timeout.
-func InteractiveOAuth(target string, customName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+// InteractiveOAuth executes an interactive OAuth flow.
+func InteractiveOAuth(target string, customName string, flags ...string) error {
+	opts := OAuthOptions{CustomName: customName}
+	for _, f := range flags {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f == "--device" || f == "-d" {
+			opts.DeviceFlow = true
+		} else if f == "--manual" || f == "-m" {
+			opts.ManualFlow = true
+		}
+	}
+	return InteractiveOAuthWithOptions(target, opts)
+}
+
+// InteractiveOAuthWithOptions executes an interactive OAuth flow with the specified options.
+func InteractiveOAuthWithOptions(target string, opts OAuthOptions) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	fmt.Printf("== amux Standalone OAuth: %s ==\n", strings.ToUpper(target))
-	fmt.Println("No CLI or IDE installation required. Initiating direct OAuth authorization…")
+	mode := "OAuth"
+	if opts.DeviceFlow {
+		mode = "Device OAuth"
+	} else if opts.ManualFlow {
+		mode = "Manual OAuth"
+	}
+	fmt.Printf("== amux Standalone %s: %s ==\n", mode, strings.ToUpper(target))
 
-	result, err := RunOAuth(ctx, target, customName)
+	result, err := RunOAuthWithOptions(ctx, target, opts)
 	if err != nil {
 		return err
 	}

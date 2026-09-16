@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,12 +20,13 @@ import (
 )
 
 const (
-	ClaudeClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	ClaudeAuthURL      = "https://claude.ai/oauth/authorize"
-	ClaudeCallbackPort = 54545
-	ClaudeCallbackPath = "/callback"
-	ClaudeRedirectURI  = "http://localhost:54545/callback"
-	ClaudeScope        = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins"
+	ClaudeClientID          = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	ClaudeAuthURL           = "https://claude.ai/oauth/authorize"
+	ClaudeCallbackPort      = 54545
+	ClaudeCallbackPath      = "/callback"
+	ClaudeRedirectURI       = "http://localhost:54545/callback"
+	ClaudeManualRedirectURI = "https://platform.claude.com/oauth/code/callback"
+	ClaudeScope             = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins"
 )
 
 type ClaudeUserProfile struct {
@@ -70,17 +72,88 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	_ = OpenBrowser(authURL)
 
 	fmt.Printf("Waiting for browser callback on %s…\n", ClaudeRedirectURI)
+	fmt.Println("👉 (Remote/Headless/SSH) If browser does not redirect to localhost, paste the authorization code or full redirect URL here:")
 	code, err := listenForCallback(ctx, ClaudeCallbackPort, ClaudeCallbackPath, state)
 	if err != nil {
 		return nil, "", fmt.Errorf("waiting for OAuth callback: %w", err)
 	}
 
 	fmt.Println("Authorization code received. Exchanging for tokens…")
-	tokenResp, err := exchangeClaudeCode(ctx, code, verifier, state)
+	tokenResp, err := exchangeClaudeCodeWithRedirect(ctx, code, verifier, state, ClaudeRedirectURI)
 	if err != nil {
 		return nil, "", fmt.Errorf("exchange token: %w", err)
 	}
 
+	return finishClaudeLogin(ctx, tokenResp, customName)
+}
+
+// LoginClaudeCodeManual executes the manual / device code flow for Claude Code CLI
+// without requiring local browser callback listener.
+func LoginClaudeCodeManual(ctx context.Context, customName string) (*types.Token, string, error) {
+	verifier, challenge, err := GeneratePKCE()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate PKCE: %w", err)
+	}
+	state, err := GenerateState()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate state: %w", err)
+	}
+
+	vals := url.Values{}
+	vals.Set("code", "true")
+	vals.Set("client_id", ClaudeClientID)
+	vals.Set("response_type", "code")
+	vals.Set("redirect_uri", ClaudeManualRedirectURI)
+	vals.Set("scope", ClaudeScope)
+	vals.Set("code_challenge", challenge)
+	vals.Set("code_challenge_method", "S256")
+	vals.Set("state", state)
+	vals.Set("prompt", "login")
+	authURL := ClaudeAuthURL + "?" + vals.Encode()
+
+	fmt.Println()
+	fmt.Println("==================================================================")
+	fmt.Println("👉 Claude Code Device / Remote OAuth Login")
+	fmt.Println("1. Open this link in your browser:")
+	fmt.Printf("   %s\n\n", authURL)
+	fmt.Println("2. Sign in with your Claude account and click Authorize.")
+	fmt.Println("3. Copy the authorization code displayed on screen.")
+	fmt.Println("==================================================================")
+	fmt.Println()
+	_ = OpenBrowser(authURL)
+
+	fmt.Print("Paste authorization code here: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	var rawCode string
+	if scanner.Scan() {
+		rawCode = strings.TrimSpace(scanner.Text())
+	}
+	if rawCode == "" {
+		return nil, "", fmt.Errorf("no authorization code entered")
+	}
+
+	code := rawCode
+	if strings.Contains(rawCode, "code=") {
+		if u, err := url.Parse(rawCode); err == nil {
+			if c := u.Query().Get("code"); c != "" {
+				code = c
+			}
+		}
+	} else if strings.Contains(rawCode, "#") {
+		parts := strings.SplitN(rawCode, "#", 2)
+		code = strings.TrimSpace(parts[0])
+	}
+
+	fmt.Println("Authorization code received. Exchanging for tokens…")
+	tokenResp, err := exchangeClaudeCodeWithRedirect(ctx, code, verifier, state, ClaudeManualRedirectURI)
+	if err != nil {
+		return nil, "", fmt.Errorf("exchange token: %w", err)
+	}
+
+	return finishClaudeLogin(ctx, tokenResp, customName)
+}
+
+func finishClaudeLogin(ctx context.Context, tokenResp *auth.OAuthRefreshResponse, customName string) (*types.Token, string, error) {
 	userProf := fetchClaudeUserProfile(ctx, tokenResp.AccessToken)
 	accountEmail := ""
 	if userProf != nil && userProf.Account.Email != "" {
@@ -179,11 +252,15 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 }
 
 func exchangeClaudeCode(ctx context.Context, code, verifier, state string) (*auth.OAuthRefreshResponse, error) {
+	return exchangeClaudeCodeWithRedirect(ctx, code, verifier, state, ClaudeRedirectURI)
+}
+
+func exchangeClaudeCodeWithRedirect(ctx context.Context, code, verifier, state, redirectURI string) (*auth.OAuthRefreshResponse, error) {
 	reqBody, _ := json.Marshal(map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeClientID,
 		"code":          code,
-		"redirect_uri":  ClaudeRedirectURI,
+		"redirect_uri":  redirectURI,
 		"code_verifier": verifier,
 		"state":         state,
 	})
