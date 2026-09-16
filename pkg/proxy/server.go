@@ -19,12 +19,14 @@ import (
 	"time"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
 )
@@ -633,6 +635,47 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				usePool = rot.Token() == "" && !hasAPIKey
 			default:
 				usePool = toolPool.Len() > 0
+			}
+
+			// If session switched account (e.g. rate limit, auto-rotate, failover),
+			// compact the transcript so the new account does not pay massive
+			// uncached / cache_creation token penalties on stale historical context.
+			targetAccount := rot.Active()
+			if usePool {
+				targetAccount = pool.Preferred()
+				if targetAccount == "" {
+					targetAccount = "pool"
+				}
+			}
+			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, nil, targetAccount); switched {
+				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 4 {
+					compacted := ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+					if len(compacted) < len(req.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(req.Messages) {
+						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to save tokens on cold account",
+							prevAcct, targetAccount, len(req.Messages), len(compacted))
+						req.Messages = compacted
+						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+							body = newBody
+							r.Body = io.NopCloser(bytes.NewReader(body))
+							r.ContentLength = int64(len(body))
+							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+						}
+					}
+				}
+			} else {
+				// Regular request within same account: deduplicate repeated historical tool outputs
+				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 2 {
+					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(req.Messages) {
+						req.Messages = deduped
+						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+							body = newBody
+							r.Body = io.NopCloser(bytes.NewReader(body))
+							r.ContentLength = int64(len(body))
+							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+						}
+					}
+				}
 			}
 
 			if usePool {

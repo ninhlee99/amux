@@ -84,6 +84,16 @@ func PinSession(r *http.Request, req *types.ChatRequest, accountID string) {
 	}
 }
 
+// CheckSessionAccountSwitch checks if the session was previously on a different account
+// and binds the session to targetAccount. Returns (isSwitch, prevAccount).
+func CheckSessionAccountSwitch(r *http.Request, req *types.ChatRequest, targetAccount string) (bool, string) {
+	key := ExtractSessionKey(r, req)
+	if key == "" || targetAccount == "" {
+		return false, ""
+	}
+	return globalAffinity.CheckAndPin(key, targetAccount)
+}
+
 // Status returns a serializable snapshot of the anti-ban protection layer status.
 func Status() map[string]any {
 	reports := globalHealth.GetAllReports()

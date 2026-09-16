@@ -48,6 +48,12 @@ func NewSessionAffinity(ttl time.Duration) *SessionAffinity {
 // 3. First system prompt / conversation hash if long-lived
 func ExtractSessionKey(r *http.Request, req *types.ChatRequest) string {
 	if r != nil {
+		if s := strings.TrimSpace(r.Header.Get("X-Claude-Code-Session-Id")); s != "" {
+			return s
+		}
+		if s := strings.TrimSpace(r.Header.Get("x-claude-code-session-id")); s != "" {
+			return s
+		}
 		if s := strings.TrimSpace(r.Header.Get("X-Session-Id")); s != "" {
 			return s
 		}
@@ -123,6 +129,32 @@ func (sa *SessionAffinity) Pin(sessionKey, accountID string) {
 		accountID: accountID,
 		expiresAt: time.Now().Add(sa.ttl),
 	}
+}
+
+// CheckAndPin binds sessionKey to targetAccount and reports whether an account switch occurred.
+// Returns (isSwitch, previousAccount).
+func (sa *SessionAffinity) CheckAndPin(sessionKey, targetAccount string) (bool, string) {
+	if sessionKey == "" || targetAccount == "" {
+		return false, ""
+	}
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+
+	now := time.Now()
+	prevEntry, exists := sa.pinned[sessionKey]
+	isSwitch := false
+	prevAccount := ""
+
+	if exists && now.Before(prevEntry.expiresAt) && prevEntry.accountID != "" && prevEntry.accountID != targetAccount {
+		isSwitch = true
+		prevAccount = prevEntry.accountID
+	}
+
+	sa.pinned[sessionKey] = affinityEntry{
+		accountID: targetAccount,
+		expiresAt: now.Add(sa.ttl),
+	}
+	return isSwitch, prevAccount
 }
 
 // Unpin removes the session binding (e.g. after a rate-limit or failover).

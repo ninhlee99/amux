@@ -129,3 +129,76 @@ func TestFitMessagesToTokenBudget_EmergencyCapSingleGiantMessage(t *testing.T) {
 		t.Fatalf("emergency cap failed: tokens %d > budget %d", finalTokens, budget)
 	}
 }
+
+func TestCompactForAccountSwitch(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "system", Content: "You are Claude Code assistant."},
+		{Role: "user", Content: "Build the whole authentication system."},
+	}
+
+	// Add 20 turns of agent history with tools
+	for i := 1; i <= 20; i++ {
+		msgs = append(msgs, types.ChatMessage{
+			Role:      "assistant",
+			Content:   fmt.Sprintf("Running inspection step %d", i),
+			ToolCalls: []types.ToolCall{{ID: fmt.Sprintf("call_%d", i), Name: "Bash", Arguments: `{"cmd":"ls"}`}},
+		})
+		msgs = append(msgs, types.ChatMessage{
+			Role:       "tool",
+			ToolCallID: fmt.Sprintf("call_%d", i),
+			Content:    fmt.Sprintf("output of step %d: %s", i, strings.Repeat("long log output line;\n", 100)),
+		})
+	}
+	msgs = append(msgs, types.ChatMessage{Role: "user", Content: "Now implement the JWT refresh handler."})
+
+	origTokens := EstimateMessagesTokens(msgs)
+	if origTokens < 10000 {
+		t.Fatalf("expected initial tokens > 10000, got %d", origTokens)
+	}
+
+	// Compact for account switch with 4 tail turns
+	compacted := CompactForAccountSwitch(msgs, 4)
+
+	newTokens := EstimateMessagesTokens(compacted)
+	if newTokens > origTokens/3 {
+		t.Fatalf("expected compacted tokens to be < 1/3 of original, got orig=%d new=%d", origTokens, newTokens)
+	}
+
+	// System prompt must be preserved at index 0
+	if compacted[0].Role != "system" || compacted[0].Content != "You are Claude Code assistant." {
+		t.Fatalf("system prompt corrupted: %+v", compacted[0])
+	}
+
+	// First user task goal must be preserved at index 1
+	if compacted[1].Role != "user" || compacted[1].Content != "Build the whole authentication system." {
+		t.Fatalf("initial user goal lost: %+v", compacted[1])
+	}
+
+	// Handoff note must be present
+	joined := ""
+	for _, m := range compacted {
+		joined += m.Content + " "
+	}
+	if !strings.Contains(joined, "[amux switch handoff]") {
+		t.Fatalf("missing [amux switch handoff] note")
+	}
+
+	// Last user message must be preserved
+	last := compacted[len(compacted)-1]
+	if last.Role != "user" || last.Content != "Now implement the JWT refresh handler." {
+		t.Fatalf("latest user context lost: %+v", last)
+	}
+
+	// Check that no tool message in compacted has an orphan tool_call_id
+	tailToolIDs := make(map[string]bool)
+	for _, m := range compacted {
+		for _, tc := range m.ToolCalls {
+			tailToolIDs[tc.ID] = true
+		}
+	}
+	for _, m := range compacted {
+		if strings.EqualFold(m.Role, "tool") && !tailToolIDs[m.ToolCallID] {
+			t.Fatalf("found orphaned tool message: %+v", m)
+		}
+	}
+}

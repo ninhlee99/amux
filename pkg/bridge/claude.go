@@ -449,6 +449,8 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		"input_tokens":  inputTokens,
 		"output_tokens": outputTokens,
 	}
+	cacheReadTokens := 0
+	cacheCreationTokens := 0
 	if finalUsage != nil {
 		if finalUsage.InputTokens > 0 {
 			usageObj["input_tokens"] = finalUsage.InputTokens
@@ -460,9 +462,11 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		}
 		if finalUsage.CacheReadInputTokens > 0 {
 			usageObj["cache_read_input_tokens"] = finalUsage.CacheReadInputTokens
+			cacheReadTokens = finalUsage.CacheReadInputTokens
 		}
 		if finalUsage.CacheCreationInputTokens > 0 {
 			usageObj["cache_creation_input_tokens"] = finalUsage.CacheCreationInputTokens
+			cacheCreationTokens = finalUsage.CacheCreationInputTokens
 		}
 	}
 
@@ -492,7 +496,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		"usage":         usageObj,
 	}
 	err = json.NewEncoder(w).Encode(respObj)
-	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens)
+	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, started, toolCalls)
 	return err
 }
@@ -828,6 +832,8 @@ loop:
 	usageObj := map[string]int{
 		"output_tokens": outputTokens,
 	}
+	cacheReadTokens := 0
+	cacheCreationTokens := 0
 	if finalUsage != nil {
 		if finalUsage.OutputTokens > 0 {
 			usageObj["output_tokens"] = finalUsage.OutputTokens
@@ -835,9 +841,11 @@ loop:
 		}
 		if finalUsage.CacheReadInputTokens > 0 {
 			usageObj["cache_read_input_tokens"] = finalUsage.CacheReadInputTokens
+			cacheReadTokens = finalUsage.CacheReadInputTokens
 		}
 		if finalUsage.CacheCreationInputTokens > 0 {
 			usageObj["cache_creation_input_tokens"] = finalUsage.CacheCreationInputTokens
+			cacheCreationTokens = finalUsage.CacheCreationInputTokens
 		}
 		if finalUsage.InputTokens > 0 {
 			inputTokens = finalUsage.InputTokens
@@ -856,7 +864,7 @@ loop:
 	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	flusher.Flush()
 
-	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens)
+	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, started, toolCalls)
 	return nil
 }
@@ -872,18 +880,20 @@ func mapFinishReasonAnthropic(fr string) string {
 	}
 }
 
-func recordPoolUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output int) {
-	if input == 0 && output == 0 {
+func recordPoolUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output, cacheRead, cacheCreation int) {
+	if input == 0 && output == 0 && cacheRead == 0 {
 		return
 	}
 	usage.AppendUsageEntry(types.UsageEntry{
-		Time:    time.Now(),
-		Account: poolAccountLabel(pool),
-		Model:   model,
-		Project: usage.ProjectForRemoteAddr(r.RemoteAddr),
-		Session: r.Header.Get("X-Claude-Code-Session-Id"),
-		Input:   input,
-		Output:  output,
+		Time:          time.Now(),
+		Account:       poolAccountLabel(pool),
+		Model:         model,
+		Project:       usage.ProjectForRemoteAddr(r.RemoteAddr),
+		Session:       r.Header.Get("X-Claude-Code-Session-Id"),
+		Input:         input,
+		Output:        output,
+		CacheRead:     cacheRead,
+		CacheCreation: cacheCreation,
 	})
 }
 

@@ -41,8 +41,9 @@ func LoadUsageEntries(from time.Time) []types.UsageEntry {
 }
 
 type usageAgg struct {
-	in, out int
-	reqs    int
+	in, out               int
+	cacheRead, cacheWrite int
+	reqs                  int
 }
 
 // PrintUsageReport parses flags and prints either the daily aggregate table or
@@ -146,13 +147,23 @@ func PrintUsageReport(args []string) {
 	printUsageByDay(filtered)
 }
 
+func formatCacheHit(cacheRead, uncachedIn int) string {
+	total := cacheRead + uncachedIn
+	if total == 0 {
+		return "0%"
+	}
+	pct := (cacheRead * 100) / total
+	return fmt.Sprintf("%d%%", pct)
+}
+
 func printUsageByDay(entries []types.UsageEntry) {
 	byDay := map[string]*usageAgg{}
-	var totalIn, totalOut, totalReqs int
+	var totalIn, totalOut, totalCacheRead, totalReqs int
 	for _, e := range entries {
 		bump(byDay, e.Time.Local().Format("2006-01-02"), e)
 		totalIn += e.Input
 		totalOut += e.Output
+		totalCacheRead += e.CacheRead
 		totalReqs++
 	}
 	days := make([]string, 0, len(byDay))
@@ -161,14 +172,29 @@ func printUsageByDay(entries []types.UsageEntry) {
 	}
 	sort.Strings(days)
 
-	fmt.Printf("%s  %12s  %12s  %8s\n", term.Dim(fmt.Sprintf("%-12s", "date")), term.Dim("in"), term.Dim("out"), term.Dim("req"))
-	fmt.Println(term.Dim(strings.Repeat("─", 48)))
+	fmt.Printf("%s  %12s  %12s  %12s  %8s  %8s\n",
+		term.Dim(fmt.Sprintf("%-12s", "date")),
+		term.Dim("in"),
+		term.Dim("out"),
+		term.Dim("cache_read"),
+		term.Dim("hit%"),
+		term.Dim("req"))
+	fmt.Println(term.Dim(strings.Repeat("─", 72)))
 	for _, d := range days {
 		a := byDay[d]
-		fmt.Printf("%-12s  %12s  %12s  %8d\n", d, FormatTokens(a.in), FormatTokens(a.out), a.reqs)
+		hitStr := formatCacheHit(a.cacheRead, a.in)
+		fmt.Printf("%-12s  %12s  %12s  %12s  %8s  %8d\n",
+			d, FormatTokens(a.in), FormatTokens(a.out), FormatTokens(a.cacheRead), hitStr, a.reqs)
 	}
-	fmt.Println(term.Dim(strings.Repeat("─", 48)))
-	fmt.Printf("%s  %12s  %12s  %8d\n", term.Bold("total"), term.Bold(FormatTokens(totalIn)), term.Bold(FormatTokens(totalOut)), totalReqs)
+	fmt.Println(term.Dim(strings.Repeat("─", 72)))
+	totalHitStr := formatCacheHit(totalCacheRead, totalIn)
+	fmt.Printf("%s  %12s  %12s  %12s  %8s  %8d\n",
+		term.Bold("total"),
+		term.Bold(FormatTokens(totalIn)),
+		term.Bold(FormatTokens(totalOut)),
+		term.Bold(FormatTokens(totalCacheRead)),
+		term.Bold(totalHitStr),
+		totalReqs)
 }
 
 func printUsageDetail(entries []types.UsageEntry) {
@@ -178,7 +204,7 @@ func printUsageDetail(entries []types.UsageEntry) {
 	byProject := map[string]*usageAgg{}
 	bySession := map[string]*usageAgg{}
 	lastSeen := map[string]time.Time{}
-	var totalIn, totalOut, totalReqs int
+	var totalIn, totalOut, totalCacheRead, totalReqs int
 	for _, e := range entries {
 		acct := e.Account
 		if acct == "" {
@@ -199,6 +225,7 @@ func printUsageDetail(entries []types.UsageEntry) {
 		}
 		totalIn += e.Input
 		totalOut += e.Output
+		totalCacheRead += e.CacheRead
 		totalReqs++
 	}
 
@@ -218,8 +245,15 @@ func printUsageDetail(entries []types.UsageEntry) {
 	printUsageTableByTime(bySession, lastSeen)
 
 	fmt.Println()
-	fmt.Println(term.Dim(strings.Repeat("─", 66)))
-	fmt.Printf("%-30s  in %9s   out %9s   %5d req\n", term.Bold("total"), term.Bold(FormatTokens(totalIn)), term.Bold(FormatTokens(totalOut)), totalReqs)
+	fmt.Println(term.Dim(strings.Repeat("─", 80)))
+	totalHit := formatCacheHit(totalCacheRead, totalIn)
+	fmt.Printf("%-26s  in %9s   out %9s   cache %9s (%4s)   %5d req\n",
+		term.Bold("total"),
+		term.Bold(FormatTokens(totalIn)),
+		term.Bold(FormatTokens(totalOut)),
+		term.Bold(FormatTokens(totalCacheRead)),
+		totalHit,
+		totalReqs)
 }
 
 func ProjectLabel(dir string) string {
@@ -261,6 +295,8 @@ func bump(m map[string]*usageAgg, key string, e types.UsageEntry) {
 	}
 	a.in += e.Input
 	a.out += e.Output
+	a.cacheRead += e.CacheRead
+	a.cacheWrite += e.CacheCreation
 	a.reqs++
 }
 
@@ -272,7 +308,9 @@ func printUsageTable(m map[string]*usageAgg) {
 	sort.Strings(names)
 	for _, n := range names {
 		a := m[n]
-		fmt.Printf("  %-28s  in %9s   out %9s   %5d req\n", n, FormatTokens(a.in), FormatTokens(a.out), a.reqs)
+		hitStr := formatCacheHit(a.cacheRead, a.in)
+		fmt.Printf("  %-26s  in %9s   out %9s   cache %9s (%4s)   %5d req\n",
+			n, FormatTokens(a.in), FormatTokens(a.out), FormatTokens(a.cacheRead), hitStr, a.reqs)
 	}
 }
 
@@ -284,8 +322,9 @@ func printUsageTableByTime(m map[string]*usageAgg, lastSeen map[string]time.Time
 	sort.Slice(names, func(i, j int) bool { return lastSeen[names[i]].After(lastSeen[names[j]]) })
 	for _, n := range names {
 		a := m[n]
-		fmt.Printf("  %-28s  in %9s   out %9s   %5d req   last %s\n",
-			n, FormatTokens(a.in), FormatTokens(a.out), a.reqs, lastSeen[n].Local().Format("01-02 15:04"))
+		hitStr := formatCacheHit(a.cacheRead, a.in)
+		fmt.Printf("  %-26s  in %9s   out %9s   cache %9s (%4s)   %5d req   last %s\n",
+			n, FormatTokens(a.in), FormatTokens(a.out), FormatTokens(a.cacheRead), hitStr, a.reqs, lastSeen[n].Local().Format("01-02 15:04"))
 	}
 }
 

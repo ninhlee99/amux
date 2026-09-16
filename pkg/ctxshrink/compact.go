@@ -227,3 +227,86 @@ func truncateRunes(s string, max, head, tail int) string {
 	}
 	return string(r[:head]) + "\n... [truncated] ...\n" + string(r[len(r)-tail:])
 }
+
+// CompactForAccountSwitch compacts a conversation history when switching to a new account,
+// dramatically reducing cold-start tokens (and avoiding paying cache creation on old logs).
+// It preserves:
+// 1. System instructions (so model personas/rules remain 100% intact).
+// 2. The initial user goal/prompt (the root task).
+// 3. Compacts older middle tool results & turns into an explicit handoff note.
+// 4. Preserves the recent tail turns intact (with full context/tool results)
+//    so the model can immediately continue without losing recent state.
+// 5. Safely converts any orphaned tool_results whose tool_use was dropped into
+//    standard user context messages to prevent Anthropic/OpenAI 400 validation errors.
+func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	if tailTurns <= 0 {
+		tailTurns = compactKeepTailTurns
+	}
+	// First run global tool deduplication to eliminate repeated identical tool outputs
+	msgs = GlobalDeduplicator().DeduplicateMessages(msgs, 2)
+
+	// If message count is already small and estimated tokens are under 8000,
+	// just run standard tool compaction without dropping any turns.
+	if len(msgs) <= tailTurns+2 && EstimateMessagesTokens(msgs) < 8000 {
+		return CompactMessages(msgs)
+	}
+
+	var sys []types.ChatMessage
+	var rest []types.ChatMessage
+	for _, m := range msgs {
+		if strings.EqualFold(m.Role, "system") {
+			sys = append(sys, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+
+	if len(rest) <= tailTurns+1 {
+		return CompactMessages(msgs)
+	}
+
+	firstUser := rest[0]
+	tail := rest[len(rest)-tailTurns:]
+	droppedCount := len(rest) - 1 - tailTurns
+
+	// Map all tool call IDs defined inside the tail turns
+	tailToolIDs := make(map[string]bool)
+	for _, m := range tail {
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				tailToolIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Sanitize tail: Any tool_result whose tool_use was dropped in the middle
+	// must be converted into a safe user message containing the tool result text,
+	// so Anthropic/OpenAI APIs will never reject with "orphaned tool_result".
+	sanitizedTail := make([]types.ChatMessage, 0, len(tail))
+	for _, m := range tail {
+		if strings.EqualFold(m.Role, "tool") && !tailToolIDs[m.ToolCallID] {
+			sanitizedTail = append(sanitizedTail, types.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("[Prior Tool Output - %s]:\n%s", m.ToolCallID, m.Content),
+			})
+		} else {
+			sanitizedTail = append(sanitizedTail, m)
+		}
+	}
+
+	handoffNote := types.ChatMessage{
+		Role:    "user",
+		Content: fmt.Sprintf("[amux switch handoff] Session switched account. %d earlier intermediate turns compacted to save tokens. Please continue from the latest context below.", droppedCount),
+	}
+
+	out := make([]types.ChatMessage, 0, len(sys)+3+len(sanitizedTail))
+	out = append(out, sys...)
+	out = append(out, firstUser)
+	out = append(out, handoffNote)
+	out = append(out, sanitizedTail...)
+
+	return CompactMessages(out)
+}
