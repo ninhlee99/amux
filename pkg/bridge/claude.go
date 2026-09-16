@@ -74,22 +74,33 @@ func ToChatRequest(body []byte) (*types.ChatRequest, error) {
 	if len(aReq.System) > 0 {
 		var sysStr string
 		if err := json.Unmarshal(aReq.System, &sysStr); err == nil && sysStr != "" {
-			req.Messages = append(req.Messages, types.ChatMessage{Role: "system", Content: sysStr})
+			req.Messages = append(req.Messages, types.ChatMessage{Role: "system", Content: sysStr, CacheControl: true})
+			req.SystemCacheControl = true
 		} else {
 			var sysBlocks []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type         string          `json:"type"`
+				Text         string          `json:"text"`
+				CacheControl json.RawMessage `json:"cache_control,omitempty"`
 			}
 			if err := json.Unmarshal(aReq.System, &sysBlocks); err == nil {
 				var sb strings.Builder
+				hasCache := false
 				for _, b := range sysBlocks {
 					if b.Text != "" {
 						sb.WriteString(b.Text)
 						sb.WriteString("\n")
 					}
+					if len(b.CacheControl) > 0 && string(b.CacheControl) != "null" {
+						hasCache = true
+					}
 				}
 				if sb.Len() > 0 {
-					req.Messages = append(req.Messages, types.ChatMessage{Role: "system", Content: strings.TrimSpace(sb.String())})
+					req.Messages = append(req.Messages, types.ChatMessage{
+						Role:         "system",
+						Content:      strings.TrimSpace(sb.String()),
+						CacheControl: hasCache,
+					})
+					req.SystemCacheControl = hasCache
 				}
 			}
 		}
@@ -130,14 +141,17 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 	var text strings.Builder
 	var toolCalls []types.ToolCall
 	var out []types.ChatMessage
+	hasCache := false
 
 	flushText := func(asRole string) {
 		t := strings.TrimSpace(text.String())
 		text.Reset()
 		if t == "" && len(toolCalls) == 0 {
+			hasCache = false
 			return
 		}
-		msg := types.ChatMessage{Role: asRole, Content: t}
+		msg := types.ChatMessage{Role: asRole, Content: t, CacheControl: hasCache}
+		hasCache = false
 		if len(toolCalls) > 0 {
 			msg.ToolCalls = toolCalls
 			toolCalls = nil
@@ -157,6 +171,9 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 					text.WriteByte('\n')
 				}
 				text.WriteString(t)
+			}
+			if len(b["cache_control"]) > 0 && string(b["cache_control"]) != "null" {
+				hasCache = true
 			}
 		case "thinking":
 			var th string
@@ -190,17 +207,25 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 			if len(b["input"]) > 0 && string(b["input"]) != "null" {
 				args = string(b["input"])
 			}
-			toolCalls = append(toolCalls, types.ToolCall{ID: id, Name: name, Arguments: args})
+			sig := tools.LookupThoughtSignature(id)
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               id,
+				Name:             name,
+				Arguments:        args,
+				ThoughtSignature: sig,
+			})
 		case "tool_result":
 			if text.Len() > 0 || len(toolCalls) > 0 {
 				flushText(role)
 			}
 			var toolUseID string
 			_ = json.Unmarshal(b["tool_use_id"], &toolUseID)
+			trCache := len(b["cache_control"]) > 0 && string(b["cache_control"]) != "null"
 			out = append(out, types.ChatMessage{
-				Role:       "tool",
-				ToolCallID: toolUseID,
-				Content:    toolResultBody(b["content"]),
+				Role:         "tool",
+				ToolCallID:   toolUseID,
+				Content:      toolResultBody(b["content"]),
+				CacheControl: trCache,
 			})
 		default:
 			var t string
@@ -209,6 +234,9 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 					text.WriteByte('\n')
 				}
 				text.WriteString(t)
+			}
+			if len(b["cache_control"]) > 0 && string(b["cache_control"]) != "null" {
+				hasCache = true
 			}
 		}
 	}
@@ -363,10 +391,14 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	var toolCalls []types.ToolCall
 	var logText string
 	finishReason := "end_turn"
+	var finalUsage *types.UsageStats
 	for chunk := range stream {
 		if chunk.Error != nil {
 			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
 			return chunk.Error
+		}
+		if chunk.Usage != nil {
+			finalUsage = chunk.Usage
 		}
 		if chunk.Thinking != "" {
 			thinkingContent.WriteString(chunk.Thinking)
@@ -413,6 +445,27 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		outputTokens = 1
 	}
 
+	usageObj := map[string]int{
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+	}
+	if finalUsage != nil {
+		if finalUsage.InputTokens > 0 {
+			usageObj["input_tokens"] = finalUsage.InputTokens
+			inputTokens = finalUsage.InputTokens
+		}
+		if finalUsage.OutputTokens > 0 {
+			usageObj["output_tokens"] = finalUsage.OutputTokens
+			outputTokens = finalUsage.OutputTokens
+		}
+		if finalUsage.CacheReadInputTokens > 0 {
+			usageObj["cache_read_input_tokens"] = finalUsage.CacheReadInputTokens
+		}
+		if finalUsage.CacheCreationInputTokens > 0 {
+			usageObj["cache_creation_input_tokens"] = finalUsage.CacheCreationInputTokens
+		}
+	}
+
 	content := []any{}
 	if thinkingContent.Len() > 0 {
 		content = append(content, map[string]string{"type": "thinking", "thinking": thinkingContent.String()})
@@ -436,10 +489,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		"content":       content,
 		"stop_reason":   finishReason,
 		"stop_sequence": nil,
-		"usage": map[string]int{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
+		"usage":         usageObj,
 	}
 	err = json.NewEncoder(w).Encode(respObj)
 	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens)
@@ -592,6 +642,7 @@ func writeAnthropicSSE(w http.ResponseWriter, flusher http.Flusher, r *http.Requ
 	var thinkingContent strings.Builder
 	var toolCalls []types.ToolCall
 	var logText string
+	var finalUsage *types.UsageStats
 	finishReason := "end_turn"
 	textStarted := false
 	thinkingStarted := false
@@ -648,6 +699,9 @@ loop:
 			return chunk.Error
 		}
 
+		if chunk.Usage != nil {
+			finalUsage = chunk.Usage
+		}
 		if chunk.LogText != "" {
 			logText = chunk.LogText
 		}
@@ -747,7 +801,6 @@ loop:
 				},
 			})
 			fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", cbStart)
-
 			deltaJSON, _ := json.Marshal(map[string]any{
 				"type":  "content_block_delta",
 				"index": blockIndex,
@@ -772,15 +825,32 @@ loop:
 		outputTokens = 1
 	}
 
+	usageObj := map[string]int{
+		"output_tokens": outputTokens,
+	}
+	if finalUsage != nil {
+		if finalUsage.OutputTokens > 0 {
+			usageObj["output_tokens"] = finalUsage.OutputTokens
+			outputTokens = finalUsage.OutputTokens
+		}
+		if finalUsage.CacheReadInputTokens > 0 {
+			usageObj["cache_read_input_tokens"] = finalUsage.CacheReadInputTokens
+		}
+		if finalUsage.CacheCreationInputTokens > 0 {
+			usageObj["cache_creation_input_tokens"] = finalUsage.CacheCreationInputTokens
+		}
+		if finalUsage.InputTokens > 0 {
+			inputTokens = finalUsage.InputTokens
+		}
+	}
+
 	mDelta, _ := json.Marshal(map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   finishReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]int{
-			"output_tokens": outputTokens,
-		},
+		"usage": usageObj,
 	})
 	fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", mDelta)
 	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")

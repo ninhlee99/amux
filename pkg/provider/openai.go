@@ -103,7 +103,21 @@ func (a *OpenAICompatibleAdapter) SendMessageStream(ctx context.Context, req *ty
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s: status %d: %s", a.AdapterID, resp.StatusCode, bytes.TrimSpace(b))
+		errText := string(bytes.TrimSpace(b))
+		if resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(errText), "thought_signature") {
+			// Gemini 3.x enforces thought_signature on multi-turn function calling.
+			// When client history lacks it, auto-fallback to Gemini 2.5 / 1.5 which does not enforce it.
+			if !strings.Contains(body.Model, "2.5") && !strings.Contains(body.Model, "1.5") {
+				fallbackModel := "gemini-2.5-flash"
+				log.Printf("%s: Gemini thought_signature missing in client history — auto-falling back from %s to %s", a.AdapterID, body.Model, fallbackModel)
+				fallbackReq := *req
+				fallbackReq.Model = fallbackModel
+				aFallback := *a
+				aFallback.TargetModel = fallbackModel
+				return aFallback.SendMessageStream(ctx, &fallbackReq)
+			}
+		}
+		return nil, fmt.Errorf("%s: status %d: %s", a.AdapterID, resp.StatusCode, errText)
 	}
 
 	out := make(chan types.StreamChunk)
@@ -116,9 +130,14 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 	defer resp.Body.Close()
 
 	type deltaToolCall struct {
-		Index    int    `json:"index"`
-		ID       string `json:"id"`
-		Type     string `json:"type"`
+		Index        int    `json:"index"`
+		ID           string `json:"id"`
+		Type         string `json:"type"`
+		ExtraContent *struct {
+			Google struct {
+				ThoughtSignature string `json:"thought_signature"`
+			} `json:"google"`
+		} `json:"extra_content"`
 		Function struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
@@ -126,9 +145,10 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 	}
 
 	type accCall struct {
-		id, name, args string
+		id, name, args, thoughtSig string
 	}
 	acc := map[int]*accCall{}
+	var finalUsage *types.UsageStats
 
 	flush := func() []types.ToolCall {
 		if len(acc) == 0 {
@@ -150,7 +170,15 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 			if args == "" {
 				args = "{}"
 			}
-			outCalls = append(outCalls, types.ToolCall{ID: a.id, Name: a.name, Arguments: args})
+			if a.thoughtSig != "" && a.id != "" {
+				tools.RecordThoughtSignature(a.id, a.thoughtSig)
+			}
+			outCalls = append(outCalls, types.ToolCall{
+				ID:               a.id,
+				Name:             a.name,
+				Arguments:        args,
+				ThoughtSignature: a.thoughtSig,
+			})
 		}
 		return outCalls
 	}
@@ -173,7 +201,7 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 			if len(calls) > 0 {
 				fr = "tool_calls"
 			}
-			sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Done: true})
+			sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Usage: finalUsage, Done: true})
 			doneSent = true
 			return
 		}
@@ -184,10 +212,22 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 					Content          string          `json:"content"`
 					ReasoningContent string          `json:"reasoning_content"`
 					Reasoning        string          `json:"reasoning"`
-					ToolCalls        []deltaToolCall `json:"tool_calls"`
+					ExtraContent     *struct {
+						Google struct {
+							ThoughtSignature string `json:"thought_signature"`
+						} `json:"google"`
+					} `json:"extra_content"`
+					ToolCalls []deltaToolCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *struct {
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails *struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+			} `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
 				Code    any    `json:"code"`
@@ -195,6 +235,17 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil {
+			cached := 0
+			if chunk.Usage.PromptTokensDetails != nil {
+				cached = chunk.Usage.PromptTokensDetails.CachedTokens
+			}
+			finalUsage = &types.UsageStats{
+				InputTokens:          chunk.Usage.PromptTokens,
+				OutputTokens:         chunk.Usage.CompletionTokens,
+				CacheReadInputTokens: cached,
+			}
 		}
 		if chunk.Error != nil {
 			sendChunk(ctx, out, types.StreamChunk{
@@ -235,6 +286,11 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 			if tc.Function.Name != "" {
 				a.name = tc.Function.Name
 			}
+			if tc.ExtraContent != nil && tc.ExtraContent.Google.ThoughtSignature != "" {
+				a.thoughtSig = tc.ExtraContent.Google.ThoughtSignature
+			} else if choice.Delta.ExtraContent != nil && choice.Delta.ExtraContent.Google.ThoughtSignature != "" {
+				a.thoughtSig = choice.Delta.ExtraContent.Google.ThoughtSignature
+			}
 			a.args += tc.Function.Arguments
 		}
 		if choice.FinishReason != nil && *choice.FinishReason != "" {
@@ -243,7 +299,7 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 			if len(calls) > 0 && fr == "stop" {
 				fr = "tool_calls"
 			}
-			sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Done: true})
+			sendChunk(ctx, out, types.StreamChunk{ID: id, ToolCalls: calls, FinishReason: fr, Usage: finalUsage, Done: true})
 			doneSent = true
 			return
 		}

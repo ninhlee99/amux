@@ -20,16 +20,18 @@ var (
 
 // ToolDef is a provider-agnostic tool/function declaration.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"input_schema,omitempty"` // JSON Schema object
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  json.RawMessage `json:"input_schema,omitempty"` // JSON Schema object
+	CacheControl bool            `json:"cache_control,omitempty"`
 }
 
 // ToolCall is one model-requested tool invocation.
 type ToolCall struct {
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments,omitempty"` // JSON object as string
+	ID               string `json:"id,omitempty"`
+	Name             string `json:"name"`
+	Arguments        string `json:"arguments,omitempty"` // JSON object as string
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // ChatMessage is one turn in a conversation.
@@ -41,11 +43,12 @@ type ToolCall struct {
 // Assistant turns that invoke tools carry ToolCalls; Content may still hold
 // any accompanying text.
 type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
+	Role         string     `json:"role"`
+	Content      string     `json:"content,omitempty"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID   string     `json:"tool_call_id,omitempty"`
+	Name         string     `json:"name,omitempty"`
+	CacheControl bool       `json:"cache_control,omitempty"`
 }
 
 // ChatRequest is provider-agnostic; each adapter translates it into
@@ -82,6 +85,16 @@ type ChatRequest struct {
 	// TaskKind is set by the router (not the client): coding | analysis | review |
 	// compact | quality | fix | general. Soft-prefers account groups; never excludes.
 	TaskKind string `json:"-"`
+	// SystemCacheControl signals whether the system prompt should have an ephemeral cache breakpoint.
+	SystemCacheControl bool `json:"system_cache_control,omitempty"`
+}
+
+// UsageStats holds token usage and prompt caching metrics.
+type UsageStats struct {
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // StreamChunk is one piece of a streamed reply. The producer closes the
@@ -96,6 +109,8 @@ type StreamChunk struct {
 	Error        error
 	// LogText is the raw provider reply for request logging and error diagnosis (not sent to the client).
 	LogText string
+	// Usage carries token counts including cache read/creation stats from the upstream provider.
+	Usage *UsageStats
 }
 
 // ProviderAdapter is implemented by every chat backend the router can

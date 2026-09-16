@@ -216,6 +216,17 @@ func HookUninstall() (int, error) {
 		delete(m, "statusLine")
 		n++
 	}
+	if env, ok := m["env"].(map[string]any); ok {
+		for _, k := range claudeSettingsEnvKeys {
+			if _, exists := env[k]; exists {
+				delete(env, k)
+				n++
+			}
+		}
+		if len(env) == 0 {
+			delete(m, "env")
+		}
+	}
 	return n, SaveClaudeSettings(m)
 }
 
@@ -406,6 +417,50 @@ func SyncClientSettingsEnv(proxyUp bool, proxyBase string) error {
 	}
 	return first
 }
+
+// ClientSettingsPointToProxy reports whether Claude Code or Codex config files
+// currently point at the proxy gateway.
+func ClientSettingsPointToProxy() bool {
+	m := LoadClaudeSettings()
+	if env, ok := m["env"].(map[string]any); ok {
+		if val, ok := env["ANTHROPIC_BASE_URL"].(string); ok && strings.TrimSpace(val) != "" {
+			return true
+		}
+	}
+	path := CodexConfigPath()
+	if b, err := os.ReadFile(path); err == nil {
+		if reCodexOpenAIBase.Match(b) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveAMExecutable() string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".local", "bin", "amux"),
+		filepath.Join(home, ".local", "bin", "am"),
+		"/usr/local/bin/amux",
+		"/usr/local/bin/am",
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	if p, err := exec.LookPath("amux"); err == nil {
+		return p
+	}
+	if p, err := exec.LookPath("am"); err == nil {
+		return p
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return ""
+}
+
 
 // ShellRC returns the user's shell rc file for zsh/bash, or "" if the shell
 // isn't one we know how to wire automatically.
@@ -619,6 +674,7 @@ func CodexHookUninstall() (int, error) {
 		return n, err
 	}
 	_ = uninstallCodexStatusLine()
+	_ = SyncCodexSettingsEnv(false, "")
 	return n, nil
 }
 

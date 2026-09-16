@@ -145,6 +145,28 @@ func TestAccountPoolRouter_WebOnlyToolsUsesWeb(t *testing.T) {
 	}
 }
 
+func TestAccountPoolRouter_NativeToolFailsFallsOverToWeb(t *testing.T) {
+	api := &mockAdapter{id: "gemini:api:01", priority: 1, err: types.ErrRateLimitReached}
+	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 2, content: "web-rescued"}}
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{api, web})
+
+	ch, err := r.Send(context.Background(), &types.ChatRequest{
+		TaskKind: "coding",
+		Messages: []types.ChatMessage{{Role: "user", Content: "fix this bug"}},
+		Tools:    []types.ToolDef{{Name: "Bash"}},
+	})
+	if err != nil {
+		t.Fatalf("native failure must failover to web, got: %v", err)
+	}
+	var text string
+	for chunk := range ch {
+		text += chunk.Content
+	}
+	if text != "web-rescued" {
+		t.Fatalf("want web-rescued, got %q", text)
+	}
+}
+
 func TestAccountPoolRouter_SendNamedAllowsTextOnlyPin(t *testing.T) {
 	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "pinned"}}
 	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web})

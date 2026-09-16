@@ -213,10 +213,36 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 			if tok != "" {
 				r.Header.Set("Authorization", "Bearer "+tok)
 				r.Header.Del("X-Api-Key")
-				if !strings.Contains(r.Header.Get("anthropic-beta"), "oauth") {
-					r.Header.Add("anthropic-beta", "oauth-2025-04-20")
+			}
+			// Maintain anthropic-beta header cleanly: merge without duplicate headers so
+			// prompt caching (prompt-caching-2024-07-31) and oauth are always honored by Anthropic.
+			curBeta := r.Header.Get("anthropic-beta")
+			var betas []string
+			if curBeta != "" {
+				for _, b := range strings.Split(curBeta, ",") {
+					b = strings.TrimSpace(b)
+					if b != "" {
+						betas = append(betas, b)
+					}
 				}
 			}
+			hasOAuth := false
+			hasCache := false
+			for _, b := range betas {
+				if strings.Contains(b, "oauth") {
+					hasOAuth = true
+				}
+				if strings.Contains(b, "prompt-caching") {
+					hasCache = true
+				}
+			}
+			if !hasCache {
+				betas = append(betas, "prompt-caching-2024-07-31")
+			}
+			if tok != "" && !hasOAuth {
+				betas = append(betas, "oauth-2025-04-20")
+			}
+			r.Header.Set("anthropic-beta", strings.Join(betas, ","))
 			// Scrub internal routing and leak headers before outbound dispatch
 			guard.SanitizeOutboundRequest(r)
 			// Redact body before it leaves the machine toward Anthropic/upstream.

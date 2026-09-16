@@ -2,10 +2,11 @@ package proxy
 
 import (
 	"log"
-	"net/http"
 	"os/exec"
 	"strconv"
 	"time"
+
+	"amux-accounts/pkg/hook"
 )
 
 // RunSupervisor is what `am proxy --supervise` runs (spawned by
@@ -13,17 +14,15 @@ import (
 // proxy` server child alive:
 //
 //   - clean exit (code 0), only reachable via /_am/shutdown, i.e. a
-//     deliberate `am proxy down` — the supervisor exits too. This was
-//     requested, not a crash, so nothing is restarted.
-//   - any other exit (crash, signal-killed, OOM) — restarted with capped
-//     backoff. Repeated crashes within a short window are treated as a
-//     crash-loop instead of retried forever.
-//   - crash-loop reached — falls back to binding addr itself with the
-//     minimal Anthropic-direct passthrough handler (see
-//     newPassthroughHandler, degraded=true) so already-running `claude`
-//     processes keep working in degraded form instead of getting
-//     connection-refused. Stays that way until `am proxy up` recovers it
-//     (see proxyStatusMode/CmdProxyUp).
+//     deliberate `am proxy down` — the supervisor exits cleanly.
+//   - when child is killed or exits unexpectedly: immediately triggers a
+//     restart. If the child fails to become healthy within 5 seconds,
+//     supervisor switches client configs (Claude / Codex / launchctl) back
+//     to native subscription mode so the user can continue coding without
+//     interruption.
+//   - as soon as the proxy recovers and becomes healthy again, supervisor
+//     automatically restores client configs to point back to the proxy.
+//   - uses OS process lifecycle (cmd.Wait) — 0% CPU and 0 extra RAM while running.
 func RunSupervisor(addr, upstream string, threshold float64) error {
 	bin, err := resolveAMBin()
 	if err != nil {
@@ -32,8 +31,12 @@ func RunSupervisor(addr, upstream string, threshold float64) error {
 	SetUsedThreshold(threshold)
 	threshArg := strconv.FormatFloat(ParseUsedThreshold(threshold)*100, 'f', -1, 64)
 
-	var crashes []time.Time
+	// Ensure client settings point to proxy initially
+	_ = hook.SyncClientSettingsEnv(true, ProxyBase())
+
 	attempt := 0
+	subModeActive := false
+
 	for {
 		startedAt := time.Now()
 		cmd := exec.Command(bin, "proxy",
@@ -41,60 +44,69 @@ func RunSupervisor(addr, upstream string, threshold float64) error {
 			"--upstream", upstream,
 			"--threshold", threshArg,
 		)
+
 		if err := cmd.Start(); err != nil {
 			log.Printf("amux proxy supervisor: spawn failed: %v", err)
-			crashes = append(crashes, time.Now())
-		} else {
-			waitErr := cmd.Wait()
-			if waitErr == nil && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
-				log.Printf("amux proxy supervisor: server exited cleanly, stopping")
-				return nil
+			if !subModeActive {
+				_ = hook.SyncClientSettingsEnv(false, "")
+				subModeActive = true
+				log.Printf("amux proxy supervisor: proxy failed to start — switched client configs to native subscription")
 			}
-			log.Printf("amux proxy supervisor: server exited unexpectedly: %v", waitErr)
-			now := time.Now()
-			// A child that ran for a while before dying isn't a tight
-			// crash-loop yet — give it a fresh run of backoff attempts
-			// rather than let a long-past flaky crash keep the delay
-			// pinned at supervisorMaxBackoff forever.
-			if now.Sub(startedAt) >= supervisorStableUptime {
-				attempt = 0
-				crashes = nil
-			}
-			crashes = append(crashes, now)
+			time.Sleep(superBackoff(attempt))
+			attempt++
+			continue
 		}
 
-		if crashLooping(crashes, time.Now()) {
-			break
+		// Wait for child to become reachable on addr (up to 5s)
+		deadline := time.Now().Add(5 * time.Second)
+		startedOk := false
+		for time.Now().Before(deadline) {
+			if ProxyUp() {
+				startedOk = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
-		time.Sleep(superBackoff(attempt))
+
+		if startedOk {
+			if subModeActive {
+				_ = hook.SyncClientSettingsEnv(true, ProxyBase())
+				subModeActive = false
+				log.Printf("amux proxy supervisor: proxy successfully restarted — restored client configs to proxy")
+			}
+			attempt = 0
+		} else {
+			// Failed to become reachable within 5s
+			if !subModeActive {
+				_ = hook.SyncClientSettingsEnv(false, "")
+				subModeActive = true
+				log.Printf("amux proxy supervisor: proxy not reachable within 5s — switched client configs to native subscription")
+			}
+		}
+
+		// Block until the child process exits (event-driven via waitpid: 0% CPU, 0 extra RAM)
+		waitErr := cmd.Wait()
+
+		// Clean exit (exit code 0 via /_am/shutdown, i.e. deliberate `am proxy down`)
+		if waitErr == nil && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			log.Printf("amux proxy supervisor: server exited cleanly, stopping")
+			return nil
+		}
+
+		log.Printf("amux proxy supervisor: server exited unexpectedly: %v", waitErr)
+
+		// Child process was KILLED or CRASHED!
+		// If child ran stably for a while before dying, reset attempt counter
+		if time.Since(startedAt) >= supervisorStableUptime {
+			attempt = 0
+		}
+
+		// If this is a repeat crash without stable uptime, back off slightly before respawn
+		if attempt > 0 {
+			time.Sleep(superBackoff(attempt))
+		}
 		attempt++
 	}
-
-	log.Printf("amux proxy supervisor: crash-looping, falling back to degraded Anthropic-direct passthrough on %s", addr)
-	rot := NewRotator("claude")
-	life := NewLifecycle()
-	var srv *http.Server
-	var handler http.Handler
-	handler, err = newPassthroughHandler(rot, life, upstream, true, func() {
-		if srv != nil {
-			_ = srv.Close()
-		}
-	})
-	if err != nil {
-		return err
-	}
-	if IsPublicBind(addr) {
-		token, terr := LoadOrCreateAuthToken()
-		if terr != nil {
-			return terr
-		}
-		handler = requireAuth(token, handler)
-	}
-	srv = &http.Server{Addr: addr, Handler: handler}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
 }
 
 const (

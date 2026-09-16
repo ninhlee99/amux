@@ -17,6 +17,8 @@ import (
 type geminiPart struct {
 	Text             string                    `json:"text,omitempty"`
 	Thought          bool                      `json:"thought,omitempty"`
+	ThoughtSignature string                    `json:"thoughtSignature,omitempty"`
+	ThoughtSigSnake  string                    `json:"thought_signature,omitempty"`
 	FunctionCall     *tools.GeminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFuncResponse       `json:"functionResponse,omitempty"`
 }
@@ -170,10 +172,25 @@ func geminiBodyToChatRequest(model string, stream bool, body []byte) (*types.Cha
 				if len(p.FunctionCall.Args) > 0 && string(p.FunctionCall.Args) != "null" {
 					args = string(p.FunctionCall.Args)
 				}
+				sig := p.ThoughtSignature
+				if sig == "" {
+					sig = p.ThoughtSigSnake
+				}
+				if sig == "" {
+					sig = p.FunctionCall.ThoughtSignature
+				}
+				if sig == "" {
+					sig = p.FunctionCall.ThoughtSigSnake
+				}
+				callID := fmt.Sprintf("call_%s_%d_%d", p.FunctionCall.Name, time.Now().UnixNano(), len(calls)+1)
+				if sig != "" {
+					tools.RecordThoughtSignature(callID, sig)
+				}
 				calls = append(calls, types.ToolCall{
-					ID:        fmt.Sprintf("call_%s_%d_%d", p.FunctionCall.Name, time.Now().UnixNano(), len(calls)+1),
-					Name:      p.FunctionCall.Name,
-					Arguments: args,
+					ID:               callID,
+					Name:             p.FunctionCall.Name,
+					Arguments:        args,
+					ThoughtSignature: sig,
 				})
 			}
 			if p.FunctionResponse != nil {
@@ -340,7 +357,10 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 					parts := make([]geminiPart, 0, len(geminiCalls))
 					for _, gc := range geminiCalls {
 						cCopy := gc
-						parts = append(parts, geminiPart{FunctionCall: &cCopy})
+						parts = append(parts, geminiPart{
+							FunctionCall:     &cCopy,
+							ThoughtSignature: gc.ThoughtSignature,
+						})
 					}
 					chunkResp := geminiGenerateResponse{
 						Candidates: []geminiCandidate{{
@@ -419,11 +439,17 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		if len(rawArgs) == 0 {
 			rawArgs = json.RawMessage(`{}`)
 		}
+		sig := tc.ThoughtSignature
+		if sig == "" && tc.ID != "" {
+			sig = tools.LookupThoughtSignature(tc.ID)
+		}
 		parts = append(parts, geminiPart{
 			FunctionCall: &tools.GeminiFunctionCall{
-				Name: tc.Name,
-				Args: rawArgs,
+				Name:             tc.Name,
+				Args:             rawArgs,
+				ThoughtSignature: sig,
 			},
+			ThoughtSignature: sig,
 		})
 	}
 	if len(parts) == 0 {

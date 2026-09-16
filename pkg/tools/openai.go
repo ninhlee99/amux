@@ -21,18 +21,26 @@ type openAITool struct {
 
 // OpenAIToolCall is the assistant.tool_calls[] wire shape.
 type OpenAIToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"` // "function"
-	Function struct {
+	ID           string              `json:"id"`
+	Type         string              `json:"type"` // "function"
+	ExtraContent *GoogleExtraContent `json:"extra_content,omitempty"`
+	Function     struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+}
+
+type GoogleExtraContent struct {
+	Google struct {
+		ThoughtSignature string `json:"thought_signature,omitempty"`
+	} `json:"google"`
 }
 
 type openAIChatRequest struct {
 	Model           string           `json:"model"`
 	Messages        []map[string]any `json:"messages"`
 	Stream          bool             `json:"stream"`
+	StreamOptions   any              `json:"stream_options,omitempty"`
 	Temperature     float64          `json:"temperature,omitempty"`
 	Tools           []openAITool     `json:"tools,omitempty"`
 	ToolChoice      any              `json:"tool_choice,omitempty"`
@@ -86,6 +94,15 @@ func ToOpenAIToolCalls(calls []types.ToolCall) []OpenAIToolCall {
 		if oc.Function.Arguments == "" {
 			oc.Function.Arguments = "{}"
 		}
+		sig := c.ThoughtSignature
+		if sig == "" && c.ID != "" {
+			sig = LookupThoughtSignature(c.ID)
+		}
+		if sig != "" {
+			var ec GoogleExtraContent
+			ec.Google.ThoughtSignature = sig
+			oc.ExtraContent = &ec
+		}
 		out = append(out, oc)
 	}
 	return out
@@ -95,10 +112,16 @@ func ToOpenAIToolCalls(calls []types.ToolCall) []OpenAIToolCall {
 func FromOpenAIToolCalls(calls []OpenAIToolCall) []types.ToolCall {
 	out := make([]types.ToolCall, 0, len(calls))
 	for _, c := range calls {
+		sig := ""
+		if c.ExtraContent != nil && c.ExtraContent.Google.ThoughtSignature != "" {
+			sig = c.ExtraContent.Google.ThoughtSignature
+			RecordThoughtSignature(c.ID, sig)
+		}
 		out = append(out, types.ToolCall{
-			ID:        c.ID,
-			Name:      c.Function.Name,
-			Arguments: c.Function.Arguments,
+			ID:               c.ID,
+			Name:             c.Function.Name,
+			Arguments:        c.Function.Arguments,
+			ThoughtSignature: sig,
 		})
 	}
 	return out
@@ -144,6 +167,9 @@ func toOpenAIChatRequest(req *types.ChatRequest) *openAIChatRequest {
 		Stream:      req.Stream,
 		Temperature: req.Temperature,
 		ToolChoice:  normalizeOpenAIToolChoice(req.ToolChoice),
+	}
+	if req.Stream {
+		out.StreamOptions = map[string]any{"include_usage": true}
 	}
 	if req.ReasoningEffort != "" {
 		out.ReasoningEffort = req.ReasoningEffort

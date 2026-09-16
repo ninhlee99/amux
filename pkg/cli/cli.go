@@ -243,7 +243,7 @@ func Run(rawArgs []string) {
 	case "status", "st":
 		ui.CmdStatus()
 
-	case "statusline":
+	case "statusline", "statusinline":
 		ui.CmdStatusline()
 
 	case "guard":
@@ -999,19 +999,14 @@ func cmdHookInstall(args []string) {
 		return
 	}
 
-	// GUI-launched clients (Dock icon, IDE integration) never source shell
-	// rc, so they'd miss ANTHROPIC_BASE_URL even with the rc line below —
-	// mirror the same var into the macOS session env as a fallback.
 	proxyUp := proxy.ProxyUp()
-	hook.SyncLaunchctlEnv(proxyUp, proxy.ProxyBase())
+	hook.SyncLaunchctlEnv(false, "")
 	if err := hook.SyncClientSettingsEnv(proxyUp, proxy.ProxyBase()); err != nil {
 		fmt.Printf("warning: sync client settings env: %v\n", err)
 	}
 	if proxyUp {
-		fmt.Println("launchctl: mirrored ANTHROPIC_BASE_URL, OPENAI_BASE_URL & GEMINI_API_BASE into macOS session env (proxy up)")
 		fmt.Println("claude settings.json + codex config.toml: mirrored gateway base URL (proxy up)")
 	} else {
-		fmt.Println("launchctl: cleared gateway vars from macOS session env (proxy not running)")
 		fmt.Println("claude settings.json + codex config.toml: cleared gateway base URL (proxy not running)")
 	}
 
@@ -1077,6 +1072,8 @@ func cmdHookUninstall(args []string) {
 		if err != nil {
 			die("hook uninstall (claude): %v", err)
 		}
+		_ = hook.LaunchctlUnsetenv("ANTHROPIC_BASE_URL")
+		_ = hook.LaunchctlUnsetenv("ANTHROPIC_AUTH_TOKEN")
 		if n > 0 || target != "" {
 			fmt.Printf("removed %d hook entr%s from %s\n", n, plural(n, "y", "ies"), hook.ClaudeSettingsPath())
 		}
@@ -1086,6 +1083,12 @@ func cmdHookUninstall(args []string) {
 		if err != nil {
 			die("hook uninstall (antigravity): %v", err)
 		}
+		_ = hook.LaunchctlUnsetenv("GEMINI_API_BASE")
+		_ = hook.LaunchctlUnsetenv("GOOGLE_GENAI_BASE_URL")
+		_ = hook.LaunchctlUnsetenv("GOOGLE_GEMINI_BASE_URL")
+		_ = hook.LaunchctlUnsetenv("GEMINI_API_KEY")
+		_ = hook.LaunchctlUnsetenv("GOOGLE_GENAI_API_KEY")
+		_ = hook.LaunchctlUnsetenv("GOOGLE_API_KEY")
 		if n > 0 || target != "" {
 			fmt.Printf("removed %d hook entr%s from %s\n", n, plural(n, "y", "ies"), hook.GeminiHooksPath())
 		}
@@ -1095,6 +1098,8 @@ func cmdHookUninstall(args []string) {
 		if err != nil {
 			die("hook uninstall (codex): %v", err)
 		}
+		_ = hook.LaunchctlUnsetenv("OPENAI_BASE_URL")
+		_ = hook.LaunchctlUnsetenv("OPENAI_API_KEY")
 		if n > 0 || target != "" {
 			fmt.Printf("removed %d hook entr%s from %s\n", n, plural(n, "y", "ies"), hook.CodexHooksPath())
 		}
@@ -1107,6 +1112,11 @@ func cmdHookUninstall(args []string) {
 		if n > 0 || target != "" {
 			fmt.Printf("removed %d hook entr%s from %s\n", n, plural(n, "y", "ies"), hook.CursorHooksPath())
 		}
+	}
+
+	if !hook.HookInstalled() && !hook.GeminiHookInstalled() && !hook.CodexHookInstalled() && !hook.CursorHookInstalled() {
+		hook.SyncLaunchctlEnv(false, "")
+		fmt.Println("launchctl: cleared gateway vars from macOS session env")
 	}
 	fmt.Println("also remove the `eval \"$(am env)\"` line from your shell rc if you added it.")
 }
@@ -1222,6 +1232,10 @@ func cmdHookTool(tool string, args []string) {
 
 		if !proxy.ProxyUp() {
 			proxy.CmdProxyUpFlags(proxy.UpFlags{})
+		}
+		if !proxy.ProxyUp() {
+			hook.SyncLaunchctlEnv(false, "")
+			_ = hook.SyncClientSettingsEnv(false, "")
 		}
 		proxy.RegisterSession(os.Getppid(), "start")
 

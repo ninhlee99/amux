@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type proxyStatus struct {
 	Mode     string          `json:"mode"`
 	Accounts []statusAccount `json:"accounts"`
 	Pool     []map[string]any `json:"pool"`
+	ToolPool []map[string]any `json:"tool_pool"`
 	Guard    map[string]any  `json:"guard,omitempty"`
 }
 
@@ -369,8 +371,15 @@ func printGuardDetail(g map[string]any) {
 		term.PanelEnd()
 		return
 	}
-	for id, val := range accts {
-		report, ok := val.(map[string]any)
+
+	ids := make([]string, 0, len(accts))
+	for id := range accts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		report, ok := accts[id].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -384,14 +393,103 @@ func printGuardDetail(g map[string]any) {
 			badge = term.Badge("err", "quarantined")
 		}
 		scoreStr := fmt.Sprintf("%3.0f/100", score)
-		reason, _ := report["quarantineReason"].(string)
+		reason := guardDeductionReason(report)
 		if reason != "" {
-			term.Row(fmt.Sprintf("%-20s  %s  %s  %s", term.Bold(id), badge, term.Yellow(scoreStr), term.Dim(reason)))
+			colorScore := term.Yellow(scoreStr)
+			if score < 60 {
+				colorScore = term.Red(scoreStr)
+			}
+			term.Row(fmt.Sprintf("%-20s  %s  %s  %s", term.Bold(id), badge, colorScore, term.Dim("("+reason+")")))
 		} else {
 			term.Row(fmt.Sprintf("%-20s  %s  %s", term.Bold(id), badge, term.White(scoreStr)))
 		}
 	}
 	term.PanelEnd()
+}
+
+func guardDeductionReason(report map[string]any) string {
+	if qReason, ok := report["quarantineReason"].(string); ok && qReason != "" {
+		return qReason
+	}
+	score, _ := report["score"].(float64)
+	if score >= 100 {
+		return ""
+	}
+	errMsg, _ := report["lastErrorMessage"].(string)
+	errMsg = strings.TrimSpace(errMsg)
+	if errMsg == "" {
+		if authErr, ok := report["consecutiveAuthErr"].(float64); ok && authErr > 0 {
+			return "auth error"
+		}
+		return "transient error"
+	}
+	return cleanGuardErrorMessage(errMsg)
+}
+
+func cleanGuardErrorMessage(msg string) string {
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(low, "tpm") || strings.Contains(low, "tokens per minute"):
+		return "status 413: TPM rate limit exceeded"
+	case strings.Contains(low, "missing a thought_signature") || strings.Contains(low, "thought_signature"):
+		return "status 400: missing thought_signature"
+	case strings.Contains(low, "rate limit") || strings.Contains(low, "429"):
+		return "429 rate limit reached"
+	case strings.Contains(low, "request too large") || strings.Contains(low, "413"):
+		return "status 413: request too large"
+	case strings.Contains(low, "auth") || strings.Contains(low, "401") || strings.Contains(low, "403"):
+		if strings.Contains(low, "401") {
+			return "auth failure (401)"
+		}
+		if strings.Contains(low, "403") {
+			return "auth failure (403 forbidden)"
+		}
+		return "auth failure"
+	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "timeout"):
+		return "request timeout"
+	case strings.Contains(low, "status 500"):
+		return "status 500: internal error"
+	case strings.Contains(low, "status 502"):
+		return "status 502: bad gateway"
+	case strings.Contains(low, "status 503"):
+		return "status 503: service unavailable"
+	case strings.Contains(low, "status 404"):
+		return "status 404: not found"
+	case strings.Contains(low, "status 400"):
+		return "status 400: invalid request"
+	}
+
+	// If it contains JSON with "message": "...", extract it
+	if idx := strings.Index(msg, `"message":`); idx != -1 {
+		rest := msg[idx+len(`"message":`):]
+		rest = strings.TrimSpace(rest)
+		if strings.HasPrefix(rest, `"`) {
+			rest = rest[1:]
+			if end := strings.Index(rest, `"`); end != -1 {
+				inner := rest[:end]
+				return truncateRunes(inner, 45)
+			}
+		}
+	}
+
+	// Normalize single line, strip newlines
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	msg = strings.ReplaceAll(msg, "\r", " ")
+	msg = strings.ReplaceAll(msg, "\t", " ")
+	for strings.Contains(msg, "  ") {
+		msg = strings.ReplaceAll(msg, "  ", " ")
+	}
+	msg = strings.TrimSpace(msg)
+
+	return truncateRunes(msg, 45)
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // CmdGuard displays anti-ban protection status or resets account health states.
@@ -427,8 +525,22 @@ func CmdGuard(args []string) {
 		if len(reports) == 0 {
 			term.Row(term.Dim("No accounts tracked yet (run am proxy up to activate)"))
 		} else {
-			for id, rep := range reports {
-				term.Row(fmt.Sprintf("%-20s  score: %3d/100  status: %s", id, rep.Score, rep.Status))
+			repIDs := make([]string, 0, len(reports))
+			for id := range reports {
+				repIDs = append(repIDs, id)
+			}
+			sort.Strings(repIDs)
+			for _, id := range repIDs {
+				rep := reports[id]
+				reason := rep.QuarantineReason
+				if reason == "" && rep.Score < 100 {
+					reason = cleanGuardErrorMessage(rep.LastErrorMessage)
+				}
+				if reason != "" {
+					term.Row(fmt.Sprintf("%-20s  score: %3d/100  status: %s  %s", id, rep.Score, rep.Status, term.Dim("("+reason+")")))
+				} else {
+					term.Row(fmt.Sprintf("%-20s  score: %3d/100  status: %s", id, rep.Score, rep.Status))
+				}
 			}
 		}
 		term.PanelEnd()

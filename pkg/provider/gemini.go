@@ -101,17 +101,22 @@ func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 		HTTPClient:  a.HTTPClient,
 	}
 	ch, err := adapter.SendMessageStream(ctx, req)
-	if err != nil && (errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "thought_signature")) && selectedModel != a.FlashModel && a.FlashModel != "" {
-		// Pro model quota exceeded, limit 0, or thought_signature required on free tier — retry with Flash model instead of failing the adapter!
-		fallbackAdapter := &OpenAICompatibleAdapter{
-			AdapterID:   a.AdapterID,
-			PriorityLvl: a.PriorityLvl,
-			BaseURL:     googleAIStudioBaseURL,
-			APIKey:      a.APIKey,
-			TargetModel: a.FlashModel,
-			HTTPClient:  a.HTTPClient,
+	if err != nil && (errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "thought_signature")) {
+		fallbackModel := a.FlashModel
+		if strings.Contains(err.Error(), "thought_signature") {
+			fallbackModel = "gemini-2.5-flash"
 		}
-		return fallbackAdapter.SendMessageStream(ctx, req)
+		if fallbackModel != "" && fallbackModel != selectedModel {
+			fallbackAdapter := &OpenAICompatibleAdapter{
+				AdapterID:   a.AdapterID,
+				PriorityLvl: a.PriorityLvl,
+				BaseURL:     googleAIStudioBaseURL,
+				APIKey:      a.APIKey,
+				TargetModel: fallbackModel,
+				HTTPClient:  a.HTTPClient,
+			}
+			return fallbackAdapter.SendMessageStream(ctx, req)
+		}
 	}
 	return ch, err
 }

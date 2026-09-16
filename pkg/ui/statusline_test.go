@@ -130,3 +130,73 @@ func TestReadStatuslineInput_Empty(t *testing.T) {
 		t.Fatalf("empty stdin should be zero value")
 	}
 }
+
+func TestRenderStatusline_AccountAndSessionTokens(t *testing.T) {
+	term.Disable()
+	inTok := 8500
+	outTok := 1200
+	in := StatuslineInput{
+		Account: "ninhle",
+		ContextWindow: &statuslineContext{
+			TotalInputTokens:  &inTok,
+			TotalOutputTokens: &outTok,
+		},
+	}
+	line := RenderStatusline(in, LimitWindows{})
+	if !strings.Contains(line, "claude:ninhle") {
+		t.Fatalf("expected 'claude:ninhle', got %q", line)
+	}
+	if strings.Contains(line, "in ") || strings.Contains(line, "out ") {
+		t.Fatalf("must not contain in/out breakdown, got %q", line)
+	}
+	if !strings.Contains(line, "9.7k tok") {
+		t.Fatalf("expected '9.7k tok', got %q", line)
+	}
+}
+
+func TestRenderStatusline_AccountFromExtra(t *testing.T) {
+	term.Disable()
+	in := StatuslineInput{
+		ContextWindow: &statuslineContext{
+			CurrentUsage: &struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			}{InputTokens: 500, OutputTokens: 100},
+		},
+	}
+	extra := LimitWindows{Account: "openrouter:api:01"}
+	line := RenderStatusline(in, extra)
+	if !strings.Contains(line, "openrouter:api:01") {
+		t.Fatalf("expected 'openrouter:api:01', got %q", line)
+	}
+	if strings.Contains(line, "in ") || strings.Contains(line, "out ") {
+		t.Fatalf("must not contain in/out breakdown, got %q", line)
+	}
+	if !strings.Contains(line, "600 tok") {
+		t.Fatalf("expected '600 tok', got %q", line)
+	}
+}
+
+func TestFormatGroupAccount(t *testing.T) {
+	cases := []struct {
+		acct string
+		tool string
+		want string
+	}{
+		{"ninhle", "claude", "claude:ninhle"},
+		{"claude:<ninhle>", "claude", "claude:ninhle"},
+		{"gemini:api:01", "agy", "gemini:api:01"},
+		{"codex:01", "codex", "codex:01"},
+		{"chatgpt:ninhle21199", "chatgpt", "chatgpt:ninhle21199"},
+		{"claude:code:01", "claude", "claude:code:01"},
+	}
+	for _, c := range cases {
+		got := formatGroupAccount(c.acct, c.tool)
+		if got != c.want {
+			t.Errorf("formatGroupAccount(%q, %q) = %q, want %q", c.acct, c.tool, got, c.want)
+		}
+	}
+}
+
