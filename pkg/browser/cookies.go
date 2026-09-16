@@ -108,8 +108,10 @@ func ParseCookieHeader(raw, cookieName string) string {
 			return strings.TrimPrefix(part, cookieName+"=")
 		}
 	}
-	// bare value paste (no name=)
-	if !strings.Contains(raw, "=") && !strings.Contains(raw, ";") {
+	// Bare value paste (no "name=" prefix). Cookie values are frequently
+	// base64-ish and carry '=' padding, so a bare value cannot be rejected on
+	// the presence of '=' alone — only on it looking like a name=value pair.
+	if !strings.Contains(raw, ";") && !looksLikeNamedCookie(raw) {
 		return raw
 	}
 	return ""
@@ -311,4 +313,25 @@ func FetchChatGPTSessionAccessToken(sessionToken string) (string, error) {
 		return "", err
 	}
 	return s.AccessToken, nil
+}
+
+// looksLikeNamedCookie reports whether raw appears to be a "name=value" pair
+// rather than a bare cookie value. Only a plausible cookie-name before the
+// first '=' counts; trailing base64 padding ("abc==") does not.
+func looksLikeNamedCookie(raw string) bool {
+	i := strings.Index(raw, "=")
+	if i <= 0 {
+		return false
+	}
+	name := raw[:i]
+	for _, r := range name {
+		isAllowed := r == '-' || r == '_' || r == '.' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAllowed {
+			return false
+		}
+	}
+	// A real value must follow the '='. Trailing base64 padding ("abc=",
+	// "abc==") is not a value, so those stay bare pastes.
+	return strings.Trim(strings.TrimSpace(raw[i+1:]), "=") != ""
 }

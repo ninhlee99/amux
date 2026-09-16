@@ -501,7 +501,7 @@ func loginGeminiWeb(f loginFlags) {
 		if f.defBrowser {
 			openForManualPaste(browser.GeminiWebLogin)
 		}
-		cookieHeader = readLinePrompt("Paste gemini.google.com Cookie header (needs __Secure-1PSID): ")
+		cookieHeader = readLinePrompt("Paste the __Secure-1PSID value, or a full Cookie header containing it: ")
 	}
 	if key == "" && cookieHeader != "" {
 		key = browser.ParseCookieHeader(cookieHeader, "__Secure-1PSID")
