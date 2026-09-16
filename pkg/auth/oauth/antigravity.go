@@ -223,7 +223,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	if provID == "" {
 		provID = slot.ID
 	}
-	_ = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+	_ = provider.UpsertPoolProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
 		ID:           provID,
 		Type:         "antigravity",
 		Priority:     5,
@@ -231,7 +231,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 		Plan:         "pro",
 		Model:        "gemini-2.5-pro",
 		RefreshToken: tokenResp.RefreshToken,
-	})
+	}, slot.RenameFrom)
 
 	proxy.Sync()
 	return email, nil
