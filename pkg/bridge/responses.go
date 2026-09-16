@@ -12,6 +12,7 @@ import (
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -41,6 +42,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
 	}
+	EnrichRequestMetadata(r, req)
 
 	// Session switch detection & compact for Responses API clients
 	targetAccount := pool.Preferred()
@@ -55,6 +57,22 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		// Run global deduplication on historical tool results
 		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Project(), req.Messages, 2)
 	}
+
+	// Deterministic Replay Cache for Responses API
+	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
+	if canReplay {
+		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
+			recordChatUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens)
+			logChatRequest(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, time.Now(), nil)
+			term.LogProxy("⚡ Deterministic Replay Cache HIT (Responses) [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
+				replayKey[:8], req.Project(), cached.InputTokens)
+			_ = cached.Serve(w, req.Stream)
+			return
+		}
+	}
+
+	rec := ctxshrink.NewRecordingWriter(w)
+	w = rec
 
 	var initialFlusher http.Flusher
 	if req.Stream {
@@ -289,6 +307,14 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		flusher.Flush()
 
 		completionTokens := estimateStringTokens(fullContent.String())
+		if canReplay && len(rec.Events()) > 0 {
+			ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
+				ContentType:  "text/event-stream",
+				SSEEvents:    rec.Events(),
+				InputTokens:  inputTokens,
+				OutputTokens: completionTokens,
+			})
+		}
 		recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 		return
@@ -373,6 +399,14 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+	if canReplay && len(rec.Body()) > 0 {
+		ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
+			ContentType:  "application/json",
+			Body:         rec.Body(),
+			InputTokens:  inputTokens,
+			OutputTokens: completionTokens,
+		})
+	}
 	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 }

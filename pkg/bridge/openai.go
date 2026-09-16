@@ -61,13 +61,13 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Project(), req.Messages, 2)
 	}
 
-	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHash(req)
+	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {
-		if cached, found := ctxshrink.GlobalReplayCache().Get(replayKey); found {
+		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
 			recordChatUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens)
 			logChatRequest(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, time.Now(), nil)
-			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s] (0 upstream tokens, saved %d tokens, 0$)",
-				replayKey[:8], cached.InputTokens)
+			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
+				replayKey[:8], req.Project(), cached.InputTokens)
 			_ = cached.Serve(w, req.Stream)
 			return
 		}
@@ -264,7 +264,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 		recordChatUsage(r, pool, req.Model, inputTokens, outTok, cachedTokens)
 		if canReplay && len(rec.Events()) > 0 {
-			ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+			ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
 				ContentType:  "text/event-stream",
 				SSEEvents:    rec.Events(),
 				InputTokens:  inputTokens,
@@ -361,7 +361,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 	if canReplay && len(rec.Body()) > 0 {
-		ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+		ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
 			ContentType:  "application/json",
 			Body:         rec.Body(),
 			InputTokens:  inputTokens,

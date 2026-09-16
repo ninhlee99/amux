@@ -6,6 +6,7 @@ import (
 )
 
 func TestProjectConversationManager_Isolation(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
 	mgr := NewProjectConversationManager("test-claude-web", 25, 1*time.Hour)
 
 	projA := "/Users/developer/apps/projectA"
@@ -49,6 +50,7 @@ func TestProjectConversationManager_Isolation(t *testing.T) {
 }
 
 func TestProjectConversationManager_TurnLimitRotation(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
 	maxTurns := 3
 	mgr := NewProjectConversationManager("test-adapter", maxTurns, 1*time.Hour)
 
@@ -85,7 +87,85 @@ func TestProjectConversationManager_TurnLimitRotation(t *testing.T) {
 	}
 }
 
+func TestProjectConversationManager_TokenBudgetRotation(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
+	mgr := NewProjectConversationManager("test-token-budget", 50, 1*time.Hour)
+	mgr.maxTokens = 5000 // Test with small budget
+
+	proj := "/workspace/budget-project"
+	mgr.Register(proj, "s1", "conv-token-1", "p1", nil)
+
+	c, ok := mgr.GetActive(proj)
+	if !ok || c.ID != "conv-token-1" {
+		t.Fatalf("expected active conversation conv-token-1")
+	}
+
+	// Record 3000 tokens (still below 5000)
+	mgr.RecordTokens(proj, 3000)
+	c, ok = mgr.GetActive(proj)
+	if !ok || c.TotalTokens != 3000 {
+		t.Fatalf("expected active conversation with 3000 tokens, got %v", c)
+	}
+
+	// Record another 2500 tokens (total 5500, exceeds 5000 budget)
+	mgr.RecordTokens(proj, 2500)
+
+	// Next GetActive must rotate
+	_, ok = mgr.GetActive(proj)
+	if ok {
+		t.Fatalf("expected conversation to rotate after exceeding token budget")
+	}
+}
+
+func TestProjectConversationManager_SnapshotPersistence(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
+	proj := "/workspace/persistence-project"
+	mgr1 := NewProjectConversationManager("test-persist-adapter", 25, 1*time.Hour)
+	mgr1.Register(proj, "sess-snap", "conv-snap-123", "parent-456", []string{"meta1", "meta2"})
+	mgr1.RecordTokens(proj, 1200)
+
+	// Verify manager 1 has it
+	c1, ok := mgr1.GetActive(proj)
+	if !ok || c1.ID != "conv-snap-123" || c1.TotalTokens != 1200 {
+		t.Fatalf("expected conv-snap-123 with 1200 tokens in mgr1, got %+v", c1)
+	}
+
+	// Create manager 2 from scratch (simulating proxy restart)
+	mgr2 := NewProjectConversationManager("test-persist-adapter", 25, 1*time.Hour)
+	// In-memory map is empty
+	if len(mgr2.convs) != 0 {
+		t.Fatalf("expected mgr2 convs map to be initially empty")
+	}
+
+	// GetActive on mgr2 should load snapshot from disk
+	c2, ok := mgr2.GetActive(proj)
+	if !ok || c2 == nil {
+		t.Fatalf("expected mgr2 to restore active conversation from snapshot")
+	}
+	if c2.ID != "conv-snap-123" {
+		t.Errorf("expected ID conv-snap-123, got %s", c2.ID)
+	}
+	if c2.ParentID != "parent-456" {
+		t.Errorf("expected ParentID parent-456, got %s", c2.ParentID)
+	}
+	if c2.TotalTokens != 1200 {
+		t.Errorf("expected TotalTokens 1200, got %d", c2.TotalTokens)
+	}
+	if len(c2.Metadata) != 2 || c2.Metadata[0] != "meta1" {
+		t.Errorf("expected metadata restored, got %v", c2.Metadata)
+	}
+
+	// Reset should delete snapshot from disk
+	mgr2.ResetProject(proj)
+	snapFile := mgr2.snapshotPath(NormalizeProjectKey(proj))
+	c3, found := mgr2.loadProjectSnapshotLocked(NormalizeProjectKey(proj))
+	if found || c3 != nil {
+		t.Errorf("expected snapshot file %s to be removed after ResetProject", snapFile)
+	}
+}
+
 func TestProjectConversationManager_Reset(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
 	mgr := NewProjectConversationManager("test-adapter", 25, 1*time.Hour)
 
 	proj1 := "/workspace/proj1"

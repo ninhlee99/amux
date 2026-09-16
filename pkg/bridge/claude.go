@@ -364,13 +364,13 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	started := time.Now()
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 
-	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHash(req)
+	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {
-		if cached, found := ctxshrink.GlobalReplayCache().Get(replayKey); found {
+		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
 			recordPoolUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens, 0)
 			logChatRequest(r, pool, req, "[cached replay]", "end_turn", "", 0, cached.OutputTokens, time.Now(), nil)
-			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s] (0 upstream tokens, saved %d tokens, 0$)",
-				replayKey[:8], cached.InputTokens)
+			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
+				replayKey[:8], req.Project(), cached.InputTokens)
 			return cached.Serve(w, req.Stream)
 		}
 	}
@@ -411,7 +411,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	if req.Stream {
 		serr := writeAnthropicSSE(w, flusher, r, pool, req, stream, msgID, started)
 		if serr == nil && canReplay && len(rec.Events()) > 0 {
-			ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+			ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
 				ContentType:  "text/event-stream",
 				SSEEvents:    rec.Events(),
 				InputTokens:  estimateInputTokens(req),
@@ -532,7 +532,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	}
 	err = json.NewEncoder(w).Encode(respObj)
 	if err == nil && canReplay && len(rec.Body()) > 0 {
-		ctxshrink.GlobalReplayCache().Put(replayKey, &ctxshrink.CachedReplay{
+		ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
 			ContentType:  "application/json",
 			Body:         rec.Body(),
 			InputTokens:  inputTokens,

@@ -1,9 +1,13 @@
 package types
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 )
 
 // BaseDir returns the root storage directory (~/.am, or overridden via
@@ -39,9 +43,9 @@ func DefaultToolConfig() ToolConfig {
 	j := func(p string) string { return filepath.Join(home, p) }
 	return ToolConfig{Tools: map[string]ToolSpec{
 		"claude": {Name: "claude", Artifacts: []Artifact{
-			{Kind: "keychain", Service: "Claude Code-credentials", Account: CurrentUser()},
-			{Kind: "file", Path: j(".claude.json"), AccountField: "oauthAccount.emailAddress"},
-			{Kind: "file", Path: j(".claude/.credentials.json"), Optional: true},
+			{Kind: "keychain", Service: "Claude Code-credentials", Account: CurrentUser(), Optional: true},
+			{Kind: "file", Path: j(".claude.json"), Optional: true, AccountField: "oauthAccount.emailAddress"},
+			{Kind: "file", Path: j(".claude/.credentials.json"), Optional: true, AccountField: "email"},
 		}},
 		"codex": {Name: "codex", Artifacts: []Artifact{
 			{Kind: "file", Path: j(".codex/auth.json"), AccountField: "jwt:tokens.id_token:email"},
@@ -58,5 +62,39 @@ func DefaultToolConfig() ToolConfig {
 			{Kind: "file", Path: j(".gemini/installation_id"), Optional: true},
 		}},
 	}}
+}
+
+// ProjectSlug converts a project root path into a safe, filesystem-friendly directory name
+// with a deterministic 8-character hash suffix for uniqueness across paths with the same basename.
+func ProjectSlug(projectRoot string) string {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		return "global"
+	}
+	clean := filepath.Clean(projectRoot)
+	base := filepath.Base(clean)
+	if base == "" || base == "/" || base == "." {
+		base = "root"
+	}
+	// Sanitize base name
+	var b strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	cleanBase := strings.Trim(b.String(), "-")
+	if cleanBase == "" {
+		cleanBase = "project"
+	}
+	h := sha256.Sum256([]byte(clean))
+	return fmt.Sprintf("%s-%s", cleanBase, hex.EncodeToString(h[:4]))
+}
+
+// ProjectCacheDir returns the per-project storage directory (~/.am/projects/<slug>).
+func ProjectCacheDir(projectRoot string) string {
+	return filepath.Join(BaseDir(), "projects", ProjectSlug(projectRoot))
 }
 

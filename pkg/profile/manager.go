@@ -710,6 +710,8 @@ func SyncActiveFromSystem(tool string) {
 		_, _ = CmdSave(tool, name)
 		return
 	}
+	// Re-save existing profile to ensure any token rotation during active session is captured
+	_, _ = CmdSave(tool, name)
 	if ReadActivePointer(tool) != name {
 		WriteActivePointer(tool, name)
 	}
