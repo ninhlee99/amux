@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 var (
@@ -17,6 +18,42 @@ var (
 	// token, or an anti-bot challenge the adapter didn't try to solve).
 	ErrAuthentication = errors.New("authentication failed")
 )
+
+// RateLimitError wraps ErrRateLimitReached with an optional Retry-After hint
+// parsed from the upstream HTTP response. The router uses this to apply
+// an adaptive cooldown duration instead of the fixed default.
+type RateLimitError struct {
+	RetryAfter time.Duration // 0 if not specified by upstream
+	Msg        string
+}
+
+func (e *RateLimitError) Error() string {
+	if e.Msg != "" {
+		return e.Msg
+	}
+	if e.RetryAfter > 0 {
+		return "rate limit reached, retry after " + e.RetryAfter.String()
+	}
+	return ErrRateLimitReached.Error()
+}
+
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimitReached
+}
+
+// NewRateLimitError creates a RateLimitError. retryAfter=0 means no hint.
+func NewRateLimitError(msg string, retryAfter time.Duration) *RateLimitError {
+	return &RateLimitError{RetryAfter: retryAfter, Msg: msg}
+}
+
+// ExtractRetryAfter returns the RetryAfter hint from a RateLimitError, or 0.
+func ExtractRetryAfter(err error) time.Duration {
+	var rle *RateLimitError
+	if errors.As(err, &rle) {
+		return rle.RetryAfter
+	}
+	return 0
+}
 
 // ToolDef is a provider-agnostic tool/function declaration.
 type ToolDef struct {

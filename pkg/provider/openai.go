@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -94,8 +95,9 @@ func (a *OpenAICompatibleAdapter) SendMessageStream(ctx context.Context, req *ty
 
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests:
+		retryAfter := guard.ParseRetryAfter(resp.Header)
 		resp.Body.Close()
-		return nil, types.ErrRateLimitReached
+		return nil, types.NewRateLimitError(a.AdapterID+": rate limit", retryAfter)
 	case http.StatusUnauthorized, http.StatusForbidden:
 		resp.Body.Close()
 		return nil, types.ErrAuthentication

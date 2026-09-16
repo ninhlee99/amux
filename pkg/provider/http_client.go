@@ -27,10 +27,38 @@ var defaultHTTPClient = &http.Client{
 
 func newDefaultTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 100
-	t.MaxIdleConnsPerHost = 10
-	t.IdleConnTimeout = 30 * time.Second
+	t.MaxIdleConns = 150
+	t.MaxIdleConnsPerHost = 25
+	t.IdleConnTimeout = 90 * time.Second
 	t.ResponseHeaderTimeout = 5 * time.Minute
 	t.ExpectContinueTimeout = 1 * time.Second
 	return t
+}
+
+// WarmUpConnections sends lightweight concurrent HEAD/OPTIONS requests to
+// pre-establish TLS sessions and keep-alive sockets in the connection pool.
+// Runs non-blocking in background, zero cost, completely silent on failure.
+func WarmUpConnections(endpoints []string) {
+	if len(endpoints) == 0 {
+		return
+	}
+	go func() {
+		client := &http.Client{
+			Transport: defaultHTTPClient.Transport,
+			Timeout:   2500 * time.Millisecond,
+		}
+		for _, ep := range endpoints {
+			go func(urlStr string) {
+				req, err := http.NewRequest(http.MethodHead, urlStr, nil)
+				if err != nil {
+					return
+				}
+				req.Header.Set("User-Agent", "amux/connection-warmup")
+				resp, err := client.Do(req)
+				if err == nil && resp != nil {
+					_ = resp.Body.Close()
+				}
+			}(ep)
+		}
+	}()
 }

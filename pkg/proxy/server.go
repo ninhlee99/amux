@@ -144,6 +144,29 @@ func RunProxy(addr, upstream string) error {
 	sw.Set(handler)
 	srv = &http.Server{Addr: addr, Handler: sw}
 
+	// Restore caches from disk
+	_ = ctxshrink.GlobalDeduplicator().LoadSnapshot("")
+	_ = GlobalReplayCache().LoadSnapshot("")
+
+	// Periodic cache flusher (every 5 minutes)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			_ = ctxshrink.GlobalDeduplicator().SaveSnapshot("")
+			_ = GlobalReplayCache().SaveSnapshot("")
+		}
+	}()
+
+	// Pre-warm upstream TLS and TCP connections in background so the first prompt
+	// experiences zero DNS and TLS handshake latency.
+	provider.WarmUpConnections([]string{
+		upstream,
+		"https://api.anthropic.com",
+		"https://api.openai.com",
+		"https://generativelanguage.googleapis.com",
+	})
+
 	_ = os.MkdirAll(types.BaseDir(), 0o700)
 	term.LogProxy("up on %s · active %q", addr, rot.Active())
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -478,6 +501,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			} else {
 				time.Sleep(100 * time.Millisecond)
 			}
+			_ = ctxshrink.GlobalDeduplicator().SaveSnapshot("")
+			_ = GlobalReplayCache().SaveSnapshot("")
 			shutdown()
 		}()
 	})
@@ -491,7 +516,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		path := r.URL.Path
 
 		if strings.HasPrefix(path, "/_am/") {
-			mux.ServeHTTP(w, r)
+			withGzip(mux).ServeHTTP(w, r)
 			return
 		}
 

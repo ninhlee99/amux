@@ -35,11 +35,14 @@ func redactBeforeSend(req *types.ChatRequest) {
 	privacy.LogHits(nil, res, dialect)
 }
 
-// rateLimitCooldown is how long an adapter sits out after answering with a
-// rate limit, before Send tries it again. Keep short: Claude/ChatGPT web
-// free tiers often return brief 429s; a 30-minute sit-out made proxy requests
-// unusable after one burst.
-const rateLimitCooldown = 2 * time.Minute
+// rateLimitCooldown is the base cooldown when upstream provides no Retry-After hint.
+// Adaptive: if the upstream response carries a Retry-After header, that value
+// is used directly (clamped to minAdaptiveCooldown..maxAdaptiveCooldown).
+const (
+	rateLimitCooldown    = 2 * time.Minute
+	minAdaptiveCooldown  = 5 * time.Second
+	maxAdaptiveCooldown  = 30 * time.Minute
+)
 
 // AccountPoolRouter dispatches a ChatRequest to the highest-priority
 // adapter that isn't currently cooling down. A preferred adapter from
@@ -662,7 +665,8 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			failedInReq[a.ID()] = true
 			guard.RecordError(a.ID(), err)
 			if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
-				r.setCooldown(a.ID())
+				// Use upstream Retry-After hint when available (RateLimitError carries it).
+				r.setCooldownAdaptive(a.ID(), types.ExtractRetryAfter(err))
 			}
 			term.LogWarn("%s failed (%s), next: %v", a.ID(), GroupDisplayName(grpKey), err)
 			errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
@@ -723,10 +727,34 @@ func (r *AccountPoolRouter) cooling(id string) bool {
 	return time.Now().Before(cd)
 }
 
+// setCooldown places adapter id into cooldown for the default rateLimitCooldown duration.
 func (r *AccountPoolRouter) setCooldown(id string) {
+	r.setCooldownDuration(id, rateLimitCooldown)
+}
+
+// setCooldownAdaptive uses the upstream Retry-After hint when available,
+// falling back to rateLimitCooldown. The duration is clamped to
+// [minAdaptiveCooldown, maxAdaptiveCooldown] so we never thrash on 1-second
+// hints or block for hours on misconfigured responses.
+func (r *AccountPoolRouter) setCooldownAdaptive(id string, retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		r.setCooldownDuration(id, rateLimitCooldown)
+		return
+	}
+	d := retryAfter
+	if d < minAdaptiveCooldown {
+		d = minAdaptiveCooldown
+	}
+	if d > maxAdaptiveCooldown {
+		d = maxAdaptiveCooldown
+	}
+	r.setCooldownDuration(id, d)
+}
+
+func (r *AccountPoolRouter) setCooldownDuration(id string, d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cooldownMap[id] = time.Now().Add(rateLimitCooldown)
+	r.cooldownMap[id] = time.Now().Add(d)
 }
 
 // markUsed records lastUsed; when promote is true also updates preferred

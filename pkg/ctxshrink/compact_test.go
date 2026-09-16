@@ -202,3 +202,50 @@ func TestCompactForAccountSwitch(t *testing.T) {
 		}
 	}
 }
+
+func TestSemanticSummarizerFallback(t *testing.T) {
+	var msgs []types.ChatMessage
+	msgs = append(msgs, types.ChatMessage{Role: "system", Content: "System prompt"})
+	msgs = append(msgs, types.ChatMessage{Role: "user", Content: "Initial goal"})
+	for i := 0; i < 15; i++ {
+		msgs = append(msgs, types.ChatMessage{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Intermediate reasoning step %d with detailed explanation", i),
+		})
+		msgs = append(msgs, types.ChatMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("User feedback on step %d", i),
+		})
+	}
+	msgs = append(msgs, types.ChatMessage{Role: "user", Content: "Final prompt"})
+
+	// 1. Test with custom summarizer
+	SetGlobalSemanticSummarizer(func(middle []types.ChatMessage) (string, error) {
+		return "Consensus: JWT and Scrypt encryption fully finalized.", nil
+	})
+	defer SetGlobalSemanticSummarizer(nil)
+
+	res := CompactForAccountSwitch(msgs, 4)
+	joined := ""
+	for _, m := range res {
+		joined += m.Content + "\n"
+	}
+	if !strings.Contains(joined, "JWT and Scrypt encryption fully finalized") {
+		t.Fatalf("expected semantic summary in compacted transcript, got:\n%s", joined)
+	}
+
+	// 2. Test fallback when summarizer errors
+	SetGlobalSemanticSummarizer(func(middle []types.ChatMessage) (string, error) {
+		return "", fmt.Errorf("timeout or network error")
+	})
+
+	resFallback := CompactForAccountSwitch(msgs, 4)
+	joinedFallback := ""
+	for _, m := range resFallback {
+		joinedFallback += m.Content + "\n"
+	}
+	if !strings.Contains(joinedFallback, "[amux switch handoff]") {
+		t.Fatalf("expected rule-based fallback handoff, got:\n%s", joinedFallback)
+	}
+}
+

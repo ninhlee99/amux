@@ -3,6 +3,7 @@ package ctxshrink
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"amux-accounts/pkg/types"
 )
@@ -228,6 +229,29 @@ func truncateRunes(s string, max, head, tail int) string {
 	return string(r[:head]) + "\n... [truncated] ...\n" + string(r[len(r)-tail:])
 }
 
+// SemanticSummarizerFunc optionally summarizes dropped middle turns into a concise
+// semantic overview. If registered, it is called during account switches; on any failure
+// or timeout, amux falls back immediately to extractFastSemanticHandoff (<0.01ms rule-based).
+type SemanticSummarizerFunc func(middle []types.ChatMessage) (string, error)
+
+var (
+	summarizerMu     sync.RWMutex
+	globalSummarizer SemanticSummarizerFunc
+)
+
+// SetGlobalSemanticSummarizer sets the pluggable summarizer (e.g. backed by a cheap/flash provider).
+func SetGlobalSemanticSummarizer(fn SemanticSummarizerFunc) {
+	summarizerMu.Lock()
+	defer summarizerMu.Unlock()
+	globalSummarizer = fn
+}
+
+func getGlobalSemanticSummarizer() SemanticSummarizerFunc {
+	summarizerMu.RLock()
+	defer summarizerMu.RUnlock()
+	return globalSummarizer
+}
+
 // CompactForAccountSwitch compacts a conversation history when switching to a new account,
 // dramatically reducing cold-start tokens (and avoiding paying cache creation on old logs).
 // It preserves:
@@ -297,9 +321,22 @@ func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.Ch
 		}
 	}
 
+	middleTurns := rest[1 : len(rest)-tailTurns]
+	
+	// Try semantic summarizer if available; fallback instantly to rule-based
+	var summary string
+	if summarizer := getGlobalSemanticSummarizer(); summarizer != nil {
+		if s, err := summarizer(middleTurns); err == nil && strings.TrimSpace(s) != "" {
+			summary = fmt.Sprintf("[amux switch handoff] Session rotated account. %d intermediate turns summarized:\n%s\nPlease continue seamlessly from the latest context below.", droppedCount, strings.TrimSpace(s))
+		}
+	}
+	if summary == "" {
+		summary = extractFastSemanticHandoff(middleTurns, droppedCount)
+	}
+
 	handoffNote := types.ChatMessage{
 		Role:    "user",
-		Content: fmt.Sprintf("[amux switch handoff] Session switched account. %d earlier intermediate turns compacted to save tokens. Please continue from the latest context below.", droppedCount),
+		Content: summary,
 	}
 
 	out := make([]types.ChatMessage, 0, len(sys)+3+len(sanitizedTail))
@@ -309,4 +346,58 @@ func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.Ch
 	out = append(out, sanitizedTail...)
 
 	return CompactMessages(out)
+}
+
+// extractFastSemanticHandoff builds a fast, lightweight summary (<250 tokens) of middle turns
+// without external LLM latency or dependencies. It extracts key files touched, tool actions executed,
+// and user intents so the destination account understands prior progress instantly.
+func extractFastSemanticHandoff(middle []types.ChatMessage, droppedCount int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[amux switch handoff] Session rotated account. %d intermediate turns compacted to minimize token burn.\n", droppedCount))
+
+	// Track unique tools and user intents
+	toolActions := make(map[string]int)
+	var userDirectives []string
+
+	for _, m := range middle {
+		if strings.EqualFold(m.Role, "user") {
+			trimmed := strings.TrimSpace(m.Content)
+			if trimmed != "" && len(userDirectives) < 3 {
+				// Keep first line or up to 100 runes
+				lines := strings.Split(trimmed, "\n")
+				firstLine := strings.TrimSpace(lines[0])
+				if len([]rune(firstLine)) > 80 {
+					firstLine = string([]rune(firstLine)[:80]) + "..."
+				}
+				userDirectives = append(userDirectives, firstLine)
+			}
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.Name != "" {
+				toolActions[tc.Name]++
+			}
+		}
+	}
+
+	if len(userDirectives) > 0 {
+		sb.WriteString("Recent Directives:\n")
+		for _, d := range userDirectives {
+			sb.WriteString("- ")
+			sb.WriteString(d)
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(toolActions) > 0 {
+		sb.WriteString("Prior Actions Executed: ")
+		var acts []string
+		for name, count := range toolActions {
+			acts = append(acts, fmt.Sprintf("%s (%d)", name, count))
+		}
+		sb.WriteString(strings.Join(acts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Please continue seamlessly from the latest context below.")
+	return sb.String()
 }

@@ -3,7 +3,10 @@ package ctxshrink
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +18,9 @@ const (
 	// Default pointer thresholds
 	DefaultDeduplicateMinRunes = 300 // Only deduplicate tool outputs >= 300 runes (~80 tokens)
 	DefaultPointerTTL          = 2 * time.Hour
+	// MaxDedupEntries caps the in-memory store to prevent unbounded growth
+	// on long-running proxy instances. When exceeded, oldest entries are evicted.
+	MaxDedupEntries = 1000
 )
 
 // ContentPointer holds metadata about an offloaded/deduplicated tool result payload.
@@ -31,11 +37,13 @@ type ContentPointer struct {
 // It detects identical outputs (e.g. repeated file reads, bash command outputs, build logs)
 // across multiple turns or across account switches, replacing subsequent occurrences with
 // a compact pointer reference.
+// Bounded by maxEntries: when full, the oldest (by FirstSeenAt) entry is evicted.
 type GlobalToolDeduplicator struct {
-	mu       sync.RWMutex
-	store    map[string]ContentPointer // hash -> pointer
-	minRunes int
-	ttl      time.Duration
+	mu         sync.RWMutex
+	store      map[string]ContentPointer // hash -> pointer
+	minRunes   int
+	ttl        time.Duration
+	maxEntries int
 }
 
 var (
@@ -60,11 +68,39 @@ func NewGlobalToolDeduplicator(minRunes int, ttl time.Duration) *GlobalToolDedup
 		ttl = DefaultPointerTTL
 	}
 	d := &GlobalToolDeduplicator{
-		store:    make(map[string]ContentPointer),
-		minRunes: minRunes,
-		ttl:      ttl,
+		store:      make(map[string]ContentPointer),
+		minRunes:   minRunes,
+		ttl:        ttl,
+		maxEntries: MaxDedupEntries,
 	}
 	return d
+}
+
+// evictOldestLocked removes the single oldest entry from store.
+// Must be called with d.mu held (write lock).
+func (d *GlobalToolDeduplicator) evictOldestLocked() {
+	var oldestHash string
+	var oldestTime time.Time
+	for hash, ptr := range d.store {
+		if oldestHash == "" || ptr.FirstSeenAt.Before(oldestTime) {
+			oldestHash = hash
+			oldestTime = ptr.FirstSeenAt
+		}
+	}
+	if oldestHash != "" {
+		delete(d.store, oldestHash)
+	}
+}
+
+// putPointerLocked stores a ContentPointer, evicting the oldest entry if maxEntries is reached.
+// Must be called with d.mu held (write lock).
+func (d *GlobalToolDeduplicator) putPointerLocked(ptr ContentPointer) {
+	if d.maxEntries > 0 && len(d.store) >= d.maxEntries {
+		if _, exists := d.store[ptr.Hash]; !exists {
+			d.evictOldestLocked()
+		}
+	}
+	d.store[ptr.Hash] = ptr
 }
 
 // HashContent computes SHA256 hex digest of string content.
@@ -135,14 +171,14 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 				if len(r) > 120 {
 					snippet = string(r[:120]) + "..."
 				}
-				d.store[hash] = ContentPointer{
+				d.putPointerLocked(ContentPointer{
 					Hash:        hash,
 					Snippet:     snippet,
 					LineCount:   strings.Count(content, "\n") + 1,
 					ByteLength:  len(content),
 					Original:    content,
 					FirstSeenAt: time.Now(),
-				}
+				})
 			}
 			sessionSeen[hash] = true
 			continue
@@ -177,14 +213,14 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 			if len(r) > 120 {
 				snippet = string(r[:120]) + "..."
 			}
-			d.store[hash] = ContentPointer{
+			d.putPointerLocked(ContentPointer{
 				Hash:        hash,
 				Snippet:     snippet,
 				LineCount:   strings.Count(content, "\n") + 1,
 				ByteLength:  len(content),
 				Original:    content,
 				FirstSeenAt: time.Now(),
-			}
+			})
 			sessionSeen[hash] = true
 		}
 	}
@@ -216,4 +252,72 @@ func (d *GlobalToolDeduplicator) Size() int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return len(d.store)
+}
+
+func defaultDedupCachePath() string {
+	return filepath.Join(types.BaseDir(), "cache", "tool_dedup.json")
+}
+
+// SaveSnapshot saves the deduplicator state atomically to disk.
+func (d *GlobalToolDeduplicator) SaveSnapshot(path string) error {
+	if path == "" {
+		path = defaultDedupCachePath()
+	}
+	d.mu.RLock()
+	now := time.Now()
+	valid := make(map[string]ContentPointer)
+	for k, v := range d.store {
+		if now.Sub(v.FirstSeenAt) <= d.ttl {
+			valid[k] = v
+		}
+	}
+	d.mu.RUnlock()
+
+	if len(valid) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(valid)
+	if err != nil {
+		return err
+	}
+
+	tmpFile := fmt.Sprintf("%s.tmp.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, path)
+}
+
+// LoadSnapshot restores the deduplicator state from disk.
+func (d *GlobalToolDeduplicator) LoadSnapshot(path string) error {
+	if path == "" {
+		path = defaultDedupCachePath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var loaded map[string]ContentPointer
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	for k, v := range loaded {
+		if now.Sub(v.FirstSeenAt) <= d.ttl {
+			d.store[k] = v
+		}
+	}
+	return nil
 }

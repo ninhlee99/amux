@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -204,4 +207,72 @@ func (c *DeterministicReplayCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*CachedReplay)
+}
+
+func defaultReplayCachePath() string {
+	return filepath.Join(types.BaseDir(), "cache", "replay_cache.json")
+}
+
+// SaveSnapshot saves valid replay entries atomically to disk.
+func (c *DeterministicReplayCache) SaveSnapshot(path string) error {
+	if path == "" {
+		path = defaultReplayCachePath()
+	}
+	c.mu.RLock()
+	now := time.Now()
+	valid := make(map[string]*CachedReplay)
+	for k, v := range c.entries {
+		if now.Before(v.ExpiresAt) {
+			valid[k] = v
+		}
+	}
+	c.mu.RUnlock()
+
+	if len(valid) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(valid)
+	if err != nil {
+		return err
+	}
+
+	tmpFile := fmt.Sprintf("%s.tmp.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, path)
+}
+
+// LoadSnapshot loads valid cached replays from disk.
+func (c *DeterministicReplayCache) LoadSnapshot(path string) error {
+	if path == "" {
+		path = defaultReplayCachePath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var loaded map[string]*CachedReplay
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	for k, v := range loaded {
+		if now.Before(v.ExpiresAt) {
+			c.entries[k] = v
+		}
+	}
+	return nil
 }
