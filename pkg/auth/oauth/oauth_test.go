@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"amux-accounts/pkg/auth"
 )
 
 func TestGeneratePKCE(t *testing.T) {
@@ -457,3 +459,205 @@ func TestPollDeviceToken(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeOAuthExchange(t *testing.T) {
+	origURLs := auth.ClaudeOAuthTokenURLs
+	defer func() { auth.ClaudeOAuthTokenURLs = origURLs }()
+
+	var receivedBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+		if receivedBody["state"] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid request format"}}`))
+			return
+		}
+		if receivedBody["code"] == "bad_code" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"invalid_grant","error_description":"Invalid code"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"claude-access-123","refresh_token":"claude-refresh-456","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	auth.ClaudeOAuthTokenURLs = []string{server.URL}
+
+	ctx := context.Background()
+
+	// Test 1: Successful exchange with state
+	resp, err := exchangeClaudeCode(ctx, "valid_code", "verifier_secret", "state_random_123")
+	if err != nil {
+		t.Fatalf("expected success, got err: %v", err)
+	}
+	if resp.AccessToken != "claude-access-123" || resp.RefreshToken != "claude-refresh-456" {
+		t.Errorf("unexpected tokens: %+v", resp)
+	}
+	if receivedBody["state"] != "state_random_123" {
+		t.Errorf("expected state to be sent, got: %q", receivedBody["state"])
+	}
+	if receivedBody["code_verifier"] != "verifier_secret" {
+		t.Errorf("expected code_verifier to be sent, got: %q", receivedBody["code_verifier"])
+	}
+	if receivedBody["grant_type"] != "authorization_code" {
+		t.Errorf("expected grant_type authorization_code, got: %q", receivedBody["grant_type"])
+	}
+
+	// Test 2: Error exchange captures detailed body
+	_, err = exchangeClaudeCode(ctx, "bad_code", "verifier_secret", "state_random_123")
+	if err == nil {
+		t.Fatal("expected error on bad_code, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid_grant") || !strings.Contains(err.Error(), "Invalid code") {
+		t.Errorf("expected detailed error message from response body, got: %v", err)
+	}
+}
+
+func TestClaudeUserProfile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHdr := r.Header.Get("Authorization")
+		if authHdr != "Bearer test-access-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"account": {
+				"uuid": "acc-111-222",
+				"email": "claude.user@example.com"
+			},
+			"organization": {
+				"uuid": "org-333-444",
+				"organization_type": "claude_pro",
+				"rate_limit_tier": "default_claude_ai",
+				"billing_type": "stripe_subscription"
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	req.Header.Set("Authorization", "Bearer test-access-token")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var prof ClaudeUserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&prof); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if prof.Account.Email != "claude.user@example.com" {
+		t.Errorf("expected email claude.user@example.com, got %q", prof.Account.Email)
+	}
+	if prof.Account.UUID != "acc-111-222" {
+		t.Errorf("expected uuid acc-111-222, got %q", prof.Account.UUID)
+	}
+	if prof.Organization.OrganizationType != "claude_pro" {
+		t.Errorf("expected organization_type claude_pro, got %q", prof.Organization.OrganizationType)
+	}
+}
+
+func TestCodexOAuthExchange(t *testing.T) {
+	origURL := CodexTokenURL
+	defer func() { CodexTokenURL = origURL }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("code") == "bad_code" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":{"message":"Could not validate your token. Please try signing in again.","code":"token_expired"}}`))
+			return
+		}
+		if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != CodexClientID {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"codex-acc-123","refresh_token":"codex-ref-456","id_token":"codex-id-789","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	CodexTokenURL = server.URL
+	ctx := context.Background()
+
+	// Test 1: Successful exchange
+	res, err := exchangeCodexCode(ctx, "valid_code", "verifier_secret")
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if res.AccessToken != "codex-acc-123" || res.RefreshToken != "codex-ref-456" || res.IDToken != "codex-id-789" {
+		t.Errorf("unexpected tokens: %+v", res)
+	}
+
+	// Test 2: Error exchange captures detailed body
+	_, err = exchangeCodexCode(ctx, "bad_code", "verifier_secret")
+	if err == nil {
+		t.Fatal("expected error on bad_code, got nil")
+	}
+	if !strings.Contains(err.Error(), "Could not validate your token") || !strings.Contains(err.Error(), "token_expired") {
+		t.Errorf("expected detailed error message from response body, got: %v", err)
+	}
+}
+
+func TestGoogleOAuthExchange(t *testing.T) {
+	origURL := AntigravityTokenURL
+	defer func() { AntigravityTokenURL = origURL }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("code") == "bad_code" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":"invalid_grant","error_description":"Malformed auth code."}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"ya29.test-access","refresh_token":"1//test-refresh","id_token":"jwt-test-id","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer server.Close()
+
+	AntigravityTokenURL = server.URL
+	ctx := context.Background()
+
+	// Test 1: Successful exchange
+	res, err := exchangeGoogleCode(ctx, "valid_code", "verifier_secret")
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if res.AccessToken != "ya29.test-access" || res.RefreshToken != "1//test-refresh" {
+		t.Errorf("unexpected tokens: %+v", res)
+	}
+
+	// Test 2: Error exchange captures detailed body
+	_, err = exchangeGoogleCode(ctx, "bad_code", "verifier_secret")
+	if err == nil {
+		t.Fatal("expected error on bad_code, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid_grant") || !strings.Contains(err.Error(), "Malformed auth code") {
+		t.Errorf("expected detailed error message from response body, got: %v", err)
+	}
+}
+
+

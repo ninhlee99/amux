@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"amux-accounts/pkg/auth"
@@ -15,13 +19,26 @@ import (
 )
 
 const (
-	ClaudeClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	ClaudeAuthURL     = "https://claude.ai/oauth/authorize"
+	ClaudeClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	ClaudeAuthURL      = "https://claude.ai/oauth/authorize"
 	ClaudeCallbackPort = 54545
 	ClaudeCallbackPath = "/callback"
 	ClaudeRedirectURI  = "http://localhost:54545/callback"
-	ClaudeScope        = "user:profile user:inference"
+	ClaudeScope        = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins"
 )
+
+type ClaudeUserProfile struct {
+	Account struct {
+		UUID  string `json:"uuid"`
+		Email string `json:"email"`
+	} `json:"account"`
+	Organization struct {
+		UUID             string `json:"uuid"`
+		OrganizationType string `json:"organization_type"`
+		RateLimitTier    string `json:"rate_limit_tier"`
+		BillingType      string `json:"billing_type"`
+	} `json:"organization"`
+}
 
 // LoginClaudeCode executes the standalone OAuth PKCE flow for Claude Code CLI.
 func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, string, error) {
@@ -35,8 +52,9 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	}
 
 	vals := url.Values{}
-	vals.Set("response_type", "code")
+	vals.Set("code", "true")
 	vals.Set("client_id", ClaudeClientID)
+	vals.Set("response_type", "code")
 	vals.Set("redirect_uri", ClaudeRedirectURI)
 	vals.Set("scope", ClaudeScope)
 	vals.Set("code_challenge", challenge)
@@ -58,12 +76,16 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	}
 
 	fmt.Println("Authorization code received. Exchanging for tokens…")
-	tokenResp, err := exchangeClaudeCode(ctx, code, verifier)
+	tokenResp, err := exchangeClaudeCode(ctx, code, verifier, state)
 	if err != nil {
 		return nil, "", fmt.Errorf("exchange token: %w", err)
 	}
 
-	accountEmail := fetchClaudeUserEmail(ctx, tokenResp.AccessToken)
+	userProf := fetchClaudeUserProfile(ctx, tokenResp.AccessToken)
+	accountEmail := ""
+	if userProf != nil && userProf.Account.Email != "" {
+		accountEmail = userProf.Account.Email
+	}
 	if accountEmail == "" {
 		accountEmail = fmt.Sprintf("claude-%d", time.Now().Unix())
 	}
@@ -74,8 +96,12 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	creds.ClaudeAiOauth.AccessToken = tokenResp.AccessToken
 	creds.ClaudeAiOauth.RefreshToken = tokenResp.RefreshToken
 	creds.ClaudeAiOauth.ExpiresAt = expiresAt
-	creds.ClaudeAiOauth.Scopes = []string{"user:profile", "user:inference"}
-	creds.ClaudeAiOauth.SubscriptionType = "pro"
+	creds.ClaudeAiOauth.Scopes = strings.Split(ClaudeScope, " ")
+	subType := "pro"
+	if userProf != nil && userProf.Organization.OrganizationType != "" {
+		subType = userProf.Organization.OrganizationType
+	}
+	creds.ClaudeAiOauth.SubscriptionType = subType
 
 	credsBytes, _ := json.Marshal(creds)
 
@@ -92,14 +118,49 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	}
 	profileName = profile.SanitizeName(profileName)
 
-	spec, _ := profile.LookupToolSpec("claude")
-	var art types.Artifact
-	if len(spec.Artifacts) > 0 {
-		art = spec.Artifacts[0]
-	} else {
-		art = types.Artifact{Kind: "keychain", Service: auth.ClaudeKeychainService, Account: accountEmail}
+	// Update ~/.claude.json with oauthAccount information
+	home, _ := os.UserHomeDir()
+	claudeJSONPath := filepath.Join(home, ".claude.json")
+	var claudeDoc map[string]any
+	if data, err := os.ReadFile(claudeJSONPath); err == nil {
+		_ = json.Unmarshal(data, &claudeDoc)
 	}
-	entries := []types.ProfileEntry{{Artifact: art, Data: credsBytes}}
+	if claudeDoc == nil {
+		claudeDoc = make(map[string]any)
+	}
+	oauthAcct, _ := claudeDoc["oauthAccount"].(map[string]any)
+	if oauthAcct == nil {
+		oauthAcct = make(map[string]any)
+	}
+	oauthAcct["emailAddress"] = accountEmail
+	if userProf != nil {
+		if userProf.Account.UUID != "" {
+			oauthAcct["accountUuid"] = userProf.Account.UUID
+		}
+		if userProf.Organization.UUID != "" {
+			oauthAcct["organizationUuid"] = userProf.Organization.UUID
+		}
+		if userProf.Organization.BillingType != "" {
+			oauthAcct["billingType"] = userProf.Organization.BillingType
+		}
+		if userProf.Organization.OrganizationType != "" {
+			oauthAcct["organizationType"] = userProf.Organization.OrganizationType
+		}
+	}
+	claudeDoc["oauthAccount"] = oauthAcct
+	updatedJSON, _ := json.MarshalIndent(claudeDoc, "", "  ")
+	_ = os.WriteFile(claudeJSONPath, updatedJSON, 0o600)
+
+	entries := []types.ProfileEntry{
+		{
+			Artifact: types.Artifact{Kind: "keychain", Service: auth.ClaudeKeychainService, Account: accountEmail},
+			Data:     credsBytes,
+		},
+		{
+			Artifact: types.Artifact{Kind: "file", Path: claudeJSONPath, AccountField: "oauthAccount.emailAddress"},
+			Data:     updatedJSON,
+		},
+	}
 	if err := profile.SaveDirectProfile("claude", profileName, accountEmail, entries); err != nil {
 		fmt.Printf("Warning: saving profile bundle: %v\n", err)
 	}
@@ -117,13 +178,14 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 	return tok, accountEmail, nil
 }
 
-func exchangeClaudeCode(ctx context.Context, code, verifier string) (*auth.OAuthRefreshResponse, error) {
+func exchangeClaudeCode(ctx context.Context, code, verifier, state string) (*auth.OAuthRefreshResponse, error) {
 	reqBody, _ := json.Marshal(map[string]string{
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeClientID,
 		"code":          code,
 		"redirect_uri":  ClaudeRedirectURI,
 		"code_verifier": verifier,
+		"state":         state,
 	})
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -139,16 +201,19 @@ func exchangeClaudeCode(ctx context.Context, code, verifier string) (*auth.OAuth
 			lastErr = err
 			continue
 		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("%s read error: %w", endpoint, readErr)
+			continue
+		}
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("%s status %d", endpoint, resp.StatusCode)
+			lastErr = fmt.Errorf("%s status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(respBody)))
 			continue
 		}
 		var out auth.OAuthRefreshResponse
-		err = json.NewDecoder(resp.Body).Decode(&out)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
+		if err := json.Unmarshal(respBody, &out); err != nil {
+			lastErr = fmt.Errorf("%s decode error: %w", endpoint, err)
 			continue
 		}
 		if out.AccessToken == "" {
@@ -160,26 +225,26 @@ func exchangeClaudeCode(ctx context.Context, code, verifier string) (*auth.OAuth
 	return nil, fmt.Errorf("token exchange failed: %w", lastErr)
 }
 
-func fetchClaudeUserEmail(ctx context.Context, accessToken string) string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/v1/users/me", nil)
+func fetchClaudeUserProfile(ctx context.Context, accessToken string) *ClaudeUserProfile {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/api/oauth/profile", nil)
 	if err != nil {
-		return ""
+		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cache-Control", "no-cache")
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return nil
 	}
-	var user struct {
-		Email string `json:"email"`
+	var prof ClaudeUserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&prof); err != nil {
+		return nil
 	}
-	if json.NewDecoder(resp.Body).Decode(&user) == nil && user.Email != "" {
-		return user.Email
-	}
-	return ""
+	return &prof
 }

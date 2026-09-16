@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,18 +15,20 @@ import (
 
 	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/profile"
+	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 )
 
 const (
 	AntigravityAuthURL      = "https://accounts.google.com/o/oauth2/v2/auth"
-	AntigravityTokenURL     = "https://oauth2.googleapis.com/token"
 	AntigravityCallbackPort = 51121
 	AntigravityCallbackPath = "/oauth-callback"
 	AntigravityRedirectURI  = "http://localhost:51121/oauth-callback"
 	AntigravityScope        = "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform"
 )
+
+var AntigravityTokenURL = "https://oauth2.googleapis.com/token"
 
 func getAntigravityClientID() string {
 	if env := os.Getenv("ANTIGRAVITY_CLIENT_ID"); env != "" {
@@ -117,10 +120,49 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	}, "", "  ")
 	_ = os.WriteFile(credsPath, credsPayload, 0600)
 
-	// Also install to Keychain service "antigravity-service" if available
+	// 2. Install to Keychain service "antigravity-service"
 	_ = auth.KCSet("antigravity-service", email, string(credsPayload))
+	_ = auth.KCSet("antigravity-service", "antigravity", string(credsPayload))
 
-	// Save profile in amux
+	// 3. Install to Keychain service "gemini" account "antigravity" (standard Go keyring format used by IDE & CLIs)
+	keyringDoc := map[string]any{
+		"token": map[string]any{
+			"access_token":  tokenResp.AccessToken,
+			"token_type":    "Bearer",
+			"refresh_token": tokenResp.RefreshToken,
+			"expiry":        time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339Nano),
+		},
+		"auth_method": "consumer",
+		"id_token":    tokenResp.IDToken,
+	}
+	keyringBytes, _ := json.Marshal(keyringDoc)
+	keyringVal := "go-keyring-base64:" + base64.StdEncoding.EncodeToString(keyringBytes)
+	_ = auth.KCSet("gemini", "antigravity", keyringVal)
+
+	// 4. Update ~/.gemini/google_accounts.json
+	googleAcctsPath := filepath.Join(home, ".gemini", "google_accounts.json")
+	var gAccts struct {
+		Active string   `json:"active"`
+		Old    []string `json:"old"`
+	}
+	if d, err := os.ReadFile(googleAcctsPath); err == nil {
+		_ = json.Unmarshal(d, &gAccts)
+	}
+	gAccts.Active = email
+	found := false
+	for _, o := range gAccts.Old {
+		if o == email {
+			found = true
+			break
+		}
+	}
+	if !found {
+		gAccts.Old = append(gAccts.Old, email)
+	}
+	gAcctsBytes, _ := json.MarshalIndent(gAccts, "", "  ")
+	_ = os.WriteFile(googleAcctsPath, gAcctsBytes, 0600)
+
+	// 5. Save profile in amux profile manager
 	pName := customName
 	if pName == "" {
 		if existing := profile.ProfileNameForAccount("antigravity", email); existing != "" {
@@ -132,15 +174,41 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 		}
 	}
 	pName = profile.SanitizeName(pName)
-	spec, _ := profile.LookupToolSpec("antigravity")
-	var art types.Artifact
-	if len(spec.Artifacts) > 0 {
-		art = spec.Artifacts[0]
-	} else {
-		art = types.Artifact{Kind: "keychain", Service: "gemini", Account: "antigravity"}
+
+	entries := []types.ProfileEntry{
+		{
+			Artifact: types.Artifact{Kind: "keychain", Service: "gemini", Account: "antigravity", AccountField: "jwt:id_token:email"},
+			Data:     []byte(keyringVal),
+		},
+		{
+			Artifact: types.Artifact{Kind: "file", Path: googleAcctsPath, AccountField: "active"},
+			Data:     gAcctsBytes,
+		},
+		{
+			Artifact: types.Artifact{Kind: "file", Path: credsPath},
+			Data:     credsPayload,
+		},
 	}
-	entries := []types.ProfileEntry{{Artifact: art, Data: credsPayload}}
-	_ = profile.SaveDirectProfile("antigravity", pName, email, entries)
+	if err := profile.SaveDirectProfile("antigravity", pName, email, entries); err != nil {
+		fmt.Printf("Warning: saving antigravity profile bundle: %v\n", err)
+	}
+	_ = profile.SaveDirectProfile("gemini", pName, email, entries)
+
+	// 6. Register/update in amux accounts.json
+	slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "antigravity", email)
+	provID := customName
+	if provID == "" {
+		provID = slot.ID
+	}
+	_ = provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+		ID:           provID,
+		Type:         "antigravity",
+		Priority:     5,
+		Account:      email,
+		Plan:         "pro",
+		Model:        "gemini-2.5-pro",
+		RefreshToken: tokenResp.RefreshToken,
+	})
 
 	proxy.Sync()
 	return email, nil
@@ -168,13 +236,21 @@ func exchangeGoogleCode(ctx context.Context, code, verifier string) (*googleToke
 	}
 	defer resp.Body.Close()
 
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read google token response: %w", readErr)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("google token endpoint returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s status %d: %s", AntigravityTokenURL, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var tr googleTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return nil, fmt.Errorf("decode token response: %w", err)
+	if err := json.Unmarshal(respBody, &tr); err != nil {
+		return nil, fmt.Errorf("decode google token response: %w", err)
+	}
+	if tr.AccessToken == "" {
+		return nil, fmt.Errorf("empty access token received from %s", AntigravityTokenURL)
 	}
 	return &tr, nil
 }

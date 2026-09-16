@@ -22,7 +22,6 @@ const (
 
 var ClaudeOAuthTokenURLs = []string{
 	"https://platform.claude.com/v1/oauth/token",
-	"https://console.anthropic.com/v1/oauth/token",
 }
 
 type ClaudeCreds struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,19 +12,22 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
+	"amux-accounts/pkg/types"
 )
 
 const (
 	CodexClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	CodexAuthURL      = "https://auth.openai.com/oauth/authorize"
-	CodexTokenURL     = "https://auth.openai.com/oauth/token"
 	CodexCallbackPort = 1455
 	CodexCallbackPath = "/auth/callback"
 	CodexRedirectURI  = "http://localhost:1455/auth/callback"
 	CodexScope        = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 )
+
+var CodexTokenURL = "https://auth.openai.com/oauth/token"
 
 type codexTokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -118,7 +122,30 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	authPayload, _ := json.MarshalIndent(doc, "", "  ")
 	_ = os.WriteFile(authJSONPath, authPayload, 0600)
 
-	// 2. Add or update in amux accounts.json
+	// 2. Save profile in amux profile manager
+	profileName := customName
+	if profileName == "" {
+		if existing := profile.ProfileNameForAccount("codex", email); existing != "" {
+			profileName = existing
+			fmt.Printf("Account %s already exists — updating profile %q…\n", email, profileName)
+		} else {
+			profileName = email
+			fmt.Printf("New account %s detected — creating profile %q…\n", email, profileName)
+		}
+	}
+	profileName = profile.SanitizeName(profileName)
+
+	entries := []types.ProfileEntry{
+		{
+			Artifact: types.Artifact{Kind: "file", Path: authJSONPath, AccountField: "jwt:tokens.id_token:email"},
+			Data:     authPayload,
+		},
+	}
+	if err := profile.SaveDirectProfile("codex", profileName, email, entries); err != nil {
+		fmt.Printf("Warning: saving profile bundle: %v\n", err)
+	}
+
+	// 3. Add or update in amux accounts.json
 	id := customName
 	if id == "" {
 		slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "codex_cli", email)
@@ -167,16 +194,21 @@ func exchangeCodexCode(ctx context.Context, code, verifier string) (*codexTokenR
 	}
 	defer resp.Body.Close()
 
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read codex token response: %w", readErr)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token endpoint status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s status %d: %s", CodexTokenURL, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var out codexTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode codex token: %w", err)
 	}
 	if out.AccessToken == "" {
-		return nil, fmt.Errorf("empty access token received")
+		return nil, fmt.Errorf("empty access token received from %s", CodexTokenURL)
 	}
 	return &out, nil
 }
