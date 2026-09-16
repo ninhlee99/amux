@@ -208,7 +208,7 @@ func loginChatGPT(f loginFlags) {
 		tok, err := browser.CaptureCookieViaBrowser(browser.ChatGPTWebLogin, 5*time.Minute)
 		if err != nil {
 			fmt.Printf("Browser capture failed: %v\n", err)
-			if f.noBrowser || f.useBrowser {
+			if f.useBrowser {
 				return
 			}
 			fmt.Println("Falling back to paste…")
