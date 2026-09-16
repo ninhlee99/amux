@@ -149,6 +149,9 @@ func NormalizeAccountsFile(f *AccountsFile) {
 	}
 	for i := range f.Providers {
 		f.Providers[i].Normalize()
+		f.Providers[i].ConversationID = ""
+		f.Providers[i].ParentMessageID = ""
+		f.Providers[i].MetadataJSON = ""
 	}
 }
 
@@ -527,14 +530,12 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 
 	case "chatgpt_web":
 		return &ChatGPTWebAdapter{
-			AdapterID:       p.ID,
-			PriorityLvl:     p.Priority,
-			SessionToken:    ResolveSecret(p.SessionToken),
-			TargetModel:     p.Model,
-			PlanTier:        p.Plan,
-			HTTPClient:      proxyClient,
-			convID:          p.ConversationID,
-			parentMessageID: p.ParentMessageID,
+			AdapterID:    p.ID,
+			PriorityLvl:  p.Priority,
+			SessionToken: ResolveSecret(p.SessionToken),
+			TargetModel:  p.Model,
+			PlanTier:     p.Plan,
+			HTTPClient:   proxyClient,
 		}, nil
 
 	case "claude_web":
@@ -547,7 +548,6 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			PlanTier:    p.Plan,
 			HTTPClient:  proxyClient,
 			orgID:       p.OrgID,
-			convUUID:    p.ConversationID,
 		}, nil
 
 	case "gemini_web":
@@ -557,14 +557,12 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			cookies = "__Secure-1PSID=" + sk
 		}
 		return &GeminiWebAdapter{
-			AdapterID:    p.ID,
-			PriorityLvl:  p.Priority,
-			Cookies:      cookies,
-			TargetModel:  p.Model,
-			PlanTier:     p.Plan,
-			HTTPClient:   proxyClient,
-			cid:          p.ConversationID,
-			metadataJSON: p.MetadataJSON,
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			Cookies:     cookies,
+			TargetModel: p.Model,
+			PlanTier:    p.Plan,
+			HTTPClient:  proxyClient,
 		}, nil
 
 	case "codex_cli":
@@ -1207,7 +1205,8 @@ type ChatState struct {
 	ClearMetadata     bool
 }
 
-// UpdateProviderChatState merges conversation continuity fields for web adapters.
+// UpdateProviderChatState persists account-level properties (like Claude OrgID)
+// while keeping web conversation IDs ephemeral and scoped in memory.
 func UpdateProviderChatState(path, id string, st ChatState) error {
 	f, err := LoadConfigFile(path)
 	if err != nil {
@@ -1220,15 +1219,9 @@ func UpdateProviderChatState(path, id string, st ChatState) error {
 		if st.OrgID != "" {
 			f.Providers[i].OrgID = st.OrgID
 		}
-		if st.ConversationID != "" || st.ClearConversation {
-			f.Providers[i].ConversationID = st.ConversationID
-		}
-		if st.ParentMessageID != "" || st.ClearParent {
-			f.Providers[i].ParentMessageID = st.ParentMessageID
-		}
-		if st.MetadataJSON != "" || st.ClearMetadata {
-			f.Providers[i].MetadataJSON = st.MetadataJSON
-		}
+		f.Providers[i].ConversationID = ""
+		f.Providers[i].ParentMessageID = ""
+		f.Providers[i].MetadataJSON = ""
 		return SaveConfigFile(path, f)
 	}
 	return fmt.Errorf("provider %s not found", id)

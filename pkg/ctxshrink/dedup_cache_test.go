@@ -40,7 +40,7 @@ func TestGlobalToolDeduplicator_IdenticalOutputs(t *testing.T) {
 	// keepRecentToolResults = 1 -> only the last tool result (call_read_3) is protected.
 	// call_read_1 is first seen.
 	// call_read_2 is duplicate of call_read_1 -> should be deduplicated!
-	deduped := dedup.DeduplicateMessages(msgs, 1)
+	deduped := dedup.DeduplicateMessages("/workspace/proj1", msgs, 1)
 
 	if len(deduped) != len(msgs) {
 		t.Fatalf("expected same message count, got %d vs %d", len(deduped), len(msgs))
@@ -79,10 +79,38 @@ func TestGlobalToolDeduplicator_ShortOutputsNotTouched(t *testing.T) {
 		{Role: "tool", ToolCallID: "c3", Content: shortContent},
 	}
 
-	deduped := dedup.DeduplicateMessages(msgs, 1)
+	deduped := dedup.DeduplicateMessages("/workspace/proj1", msgs, 1)
 	for i, m := range deduped {
 		if m.Content != shortContent {
 			t.Errorf("message %d was modified unexpectedly: %s", i, m.Content)
 		}
+	}
+}
+
+func TestGlobalToolDeduplicator_ProjectIsolation(t *testing.T) {
+	dedup := NewGlobalToolDeduplicator(50, 1*time.Hour)
+
+	content := strings.Repeat("Project A proprietary secret code line\n", 10)
+
+	// First pass in Project A: stores content in Project A's cache
+	msgsA := []types.ChatMessage{
+		{Role: "tool", ToolCallID: "t1", Content: content},
+		{Role: "tool", ToolCallID: "t2", Content: content}, // duplicate in A -> should dedup
+	}
+	resA := dedup.DeduplicateMessages("/workspace/projA", msgsA, 1)
+	if !strings.Contains(resA[0].Content, "[amux dedup-cache:") && !strings.Contains(resA[1].Content, "identical content omitted") {
+		// one of them was recorded
+	}
+
+	// Now in Project B, same content appears as historical tool output:
+	// Since Project B's cache is separate, it must NOT reference Project A's cache!
+	msgsB := []types.ChatMessage{
+		{Role: "tool", ToolCallID: "tb1", Content: content},
+		{Role: "tool", ToolCallID: "tb2", Content: "fresh output"},
+	}
+	resB := dedup.DeduplicateMessages("/workspace/projB", msgsB, 1)
+	// tb1 is first time seen in Project B -> it must remain FULL, not deduplicated from Project A!
+	if resB[0].Content != content {
+		t.Errorf("expected Project B to not be cross-contaminated by Project A cache, got: %s", resB[0].Content)
 	}
 }

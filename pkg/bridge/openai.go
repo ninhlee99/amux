@@ -45,6 +45,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		return
 	}
 	req.ClientDialect = openaiClientDialect(r)
+	EnrichRequestMetadata(r, req)
 
 	// Session switch detection & compact for OpenAI clients (Cursor/Codex)
 	targetAccount := pool.Preferred()
@@ -53,11 +54,11 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
 		if len(req.Messages) > 4 {
-			req.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+			req.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 		}
 	} else {
 		// Run global deduplication on historical tool results
-		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Project(), req.Messages, 2)
 	}
 
 	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHash(req)

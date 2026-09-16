@@ -184,23 +184,47 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 		}
 	}
 	injectBtwMessages(req)
-	if req != nil && strings.TrimSpace(req.SessionID) == "" {
-		if sk := guard.ExtractSessionKey(r, req); sk != "" {
-			req.SessionID = sk
-		}
-	}
-	if req != nil {
-		if root := usage.ProjectForRemoteAddr(r.RemoteAddr); root != "" {
-			if req.Metadata == nil {
-				req.Metadata = map[string]any{}
-			}
-			if _, ok := req.Metadata["project"]; !ok {
-				req.Metadata["project"] = root
-			}
-		}
-	}
+	EnrichRequestMetadata(r, req)
 	if id := explicitProviderHeaders(r, req); id != "" {
 		return pool.SendNamed(r.Context(), id, req)
 	}
 	return pool.Send(r.Context(), req)
+}
+
+// EnrichRequestMetadata populates SessionID and project metadata on req from HTTP headers and client connection.
+func EnrichRequestMetadata(r *http.Request, req *types.ChatRequest) {
+	if req == nil {
+		return
+	}
+	var project string
+	if r != nil {
+		for _, h := range []string{
+			"X-Project-Root", "x-project-root",
+			"X-Project-Dir", "x-project-dir",
+			"X-Project", "x-project",
+			"X-Cwd", "x-cwd",
+			"X-Workspace-Folder", "x-workspace-folder",
+		} {
+			if val := strings.TrimSpace(r.Header.Get(h)); val != "" {
+				project = val
+				break
+			}
+		}
+		if project == "" {
+			project = usage.ProjectForRemoteAddr(r.RemoteAddr)
+		}
+	}
+	if project != "" {
+		if req.Metadata == nil {
+			req.Metadata = map[string]any{}
+		}
+		if _, ok := req.Metadata["project"]; !ok {
+			req.Metadata["project"] = project
+		}
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		if sk := guard.ExtractSessionKey(r, req); sk != "" {
+			req.SessionID = sk
+		}
+	}
 }

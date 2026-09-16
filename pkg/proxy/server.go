@@ -709,7 +709,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			}
 			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, nil, targetAccount); switched {
 				if parsedReq != nil && len(parsedReq.Messages) > 4 {
-					compacted := ctxshrink.CompactForAccountSwitch(parsedReq.Messages, 6)
+					compacted := ctxshrink.CompactForAccountSwitchProject(parsedReq.Project(), parsedReq.Messages, 6)
 					if len(compacted) < len(parsedReq.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
 						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to save tokens on cold account",
 							prevAcct, targetAccount, len(parsedReq.Messages), len(compacted))
@@ -725,7 +725,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			} else {
 				// Regular request within same account: deduplicate repeated historical tool outputs
 				if parsedReq != nil && len(parsedReq.Messages) > 2 {
-					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(parsedReq.Messages, 2)
+					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(parsedReq.Project(), parsedReq.Messages, 2)
 					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
 						parsedReq.Messages = deduped
 						if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {

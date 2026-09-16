@@ -262,16 +262,22 @@ func getGlobalSemanticSummarizer() SemanticSummarizerFunc {
 // 4. Preserves the recent tail turns intact (with full context/tool results)
 //    so the model can immediately continue without losing recent state.
 // 5. Safely converts any orphaned tool_results whose tool_use was dropped into
-//    standard user context messages to prevent Anthropic/OpenAI 400 validation errors.
+// CompactForAccountSwitch compacts a conversation history when switching to a new account.
 func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
+	return CompactForAccountSwitchProject("", msgs, tailTurns)
+}
+
+// CompactForAccountSwitchProject compacts a conversation history when switching to a new account,
+// strictly isolated to the specified project.
+func CompactForAccountSwitchProject(project string, msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
 	if len(msgs) == 0 {
 		return msgs
 	}
 	if tailTurns <= 0 {
 		tailTurns = compactKeepTailTurns
 	}
-	// First run global tool deduplication to eliminate repeated identical tool outputs
-	msgs = GlobalDeduplicator().DeduplicateMessages(msgs, 2)
+	// First run project-scoped tool deduplication to eliminate repeated identical tool outputs
+	msgs = GlobalDeduplicator().DeduplicateMessages(project, msgs, 2)
 
 	// If message count is already small and estimated tokens are under 8000,
 	// just run standard tool compaction without dropping any turns.

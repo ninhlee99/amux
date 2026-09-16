@@ -373,4 +373,69 @@ func TestAccountPoolRouter_FailoverCompactsContextForColdAccount(t *testing.T) {
 	}
 }
 
+type mockGroupAdapter struct {
+	mockAdapter
+	grp string
+}
+
+func (m *mockGroupAdapter) Group() string {
+	return m.grp
+}
+
+func TestPickSessionAdapter_CodingStrictPriority(t *testing.T) {
+	aClaude := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-sub-1", priority: 1}, grp: router.GroupClaudeSub}
+	aCodex := &mockGroupAdapter{mockAdapter: mockAdapter{id: "codex-sub-1", priority: 1}, grp: router.GroupCodexSub}
+	aAGY := &mockGroupAdapter{mockAdapter: mockAdapter{id: "agy-sub-1", priority: 1}, grp: router.GroupAGYSub}
+	aAPI := &mockGroupAdapter{mockAdapter: mockAdapter{id: "openrouter-api", priority: 1}, grp: router.GroupAPIOther}
+	aWeb := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-web-1", priority: 1}, grp: router.GroupClaudeWeb}
+
+	adapters := []types.ProviderAdapter{aWeb, aAPI, aAGY, aCodex, aClaude}
+	r := router.NewAccountPoolRouter(adapters)
+
+	codingReq := &types.ChatRequest{TaskKind: router.TaskCoding}
+
+	// 1. All alive: Claude Subscription must be picked first
+	picked := r.PickSessionAdapterForTest(adapters, codingReq, false, false)
+	if picked == nil || picked.ID() != "claude-sub-1" {
+		t.Fatalf("expected claude-sub-1, got %v", picked)
+	}
+
+	// 2. Claude cooled down: Codex Subscription must be picked next
+	r.SetCooldownForTest("claude-sub-1", 10*time.Minute)
+	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
+	if picked == nil || picked.ID() != "codex-sub-1" {
+		t.Fatalf("expected codex-sub-1, got %v", picked)
+	}
+
+	// 3. Codex cooled down: AGY Subscription must be picked next
+	r.SetCooldownForTest("codex-sub-1", 10*time.Minute)
+	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
+	if picked == nil || picked.ID() != "agy-sub-1" {
+		t.Fatalf("expected agy-sub-1, got %v", picked)
+	}
+
+	// 4. AGY cooled down: API must be picked next
+	r.SetCooldownForTest("agy-sub-1", 10*time.Minute)
+	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
+	if picked == nil || picked.ID() != "openrouter-api" {
+		t.Fatalf("expected openrouter-api, got %v", picked)
+	}
+
+	// 5. API cooled down: Web proxy adapter must be fallback
+	r.SetCooldownForTest("openrouter-api", 10*time.Minute)
+	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
+	if picked == nil || picked.ID() != "claude-web-1" {
+		t.Fatalf("expected claude-web-1 fallback, got %v", picked)
+	}
+
+	// 6. Web task (e.g. Planning) must prioritize web proxy adapter directly
+	planReq := &types.ChatRequest{TaskKind: router.TaskPlan}
+	// Reset cooldowns
+	r.ClearCooldownsForTest()
+	picked = r.PickSessionAdapterForTest(adapters, planReq, false, false)
+	if picked == nil || picked.ID() != "claude-web-1" {
+		t.Fatalf("expected claude-web-1 for planning task, got %v", picked)
+	}
+}
+
 

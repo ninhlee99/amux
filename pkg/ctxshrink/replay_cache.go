@@ -177,6 +177,12 @@ func (c *DeterministicReplayCache) ComputeHash(req *types.ChatRequest) (string, 
 	h := sha256.New()
 	h.Write([]byte(fmt.Sprintf("model:%s\n", strings.TrimSpace(strings.ToLower(req.Model)))))
 	h.Write([]byte(fmt.Sprintf("stream:%v\n", req.Stream)))
+	if proj := req.Project(); proj != "" {
+		h.Write([]byte("project:" + proj + "\n"))
+	}
+	if req.SessionID != "" {
+		h.Write([]byte("session:" + req.SessionID + "\n"))
+	}
 
 	for _, m := range req.Messages {
 		h.Write([]byte("role:"))

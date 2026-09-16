@@ -359,6 +359,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return err
 	}
+	EnrichRequestMetadata(r, req)
 
 	started := time.Now()
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())

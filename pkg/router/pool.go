@@ -265,6 +265,11 @@ type ConversationResetter interface {
 	ResetConversation()
 }
 
+// ScopeConversationResetter is implemented by adapters that support scoped thread resets.
+type ScopeConversationResetter interface {
+	ResetConversationForScope(scopeKey string)
+}
+
 // ResetConversations clears server-side web threads on every adapter that
 // supports it (Claude/ChatGPT/Gemini web). Safe to call when switching
 // providers so Claude Code history is not mixed with an old UI chat.
@@ -274,6 +279,20 @@ func (r *AccountPoolRouter) ResetConversations() {
 	r.mu.RUnlock()
 	for _, a := range adapters {
 		if rr, ok := a.(ConversationResetter); ok {
+			rr.ResetConversation()
+		}
+	}
+}
+
+// ResetConversationForScope clears server-side web threads for a specific project/session scope.
+func (r *AccountPoolRouter) ResetConversationForScope(scopeKey string) {
+	r.mu.RLock()
+	adapters := append([]types.ProviderAdapter(nil), r.adapters...)
+	r.mu.RUnlock()
+	for _, a := range adapters {
+		if rr, ok := a.(ScopeConversationResetter); ok {
+			rr.ResetConversationForScope(scopeKey)
+		} else if rr, ok := a.(ConversationResetter); ok {
 			rr.ResetConversation()
 		}
 	}
@@ -690,7 +709,7 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				// Secondary / fallback adapter is a cold account: compact messages so it does not
 				// pay massive uncached token creation fees and burn its 5h/7d rate limit.
 				cloned := *req
-				cloned.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+				cloned.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 				callReq = &cloned
 			}
 			ch, err := a.SendMessageStream(ctx, callReq)
@@ -775,18 +794,22 @@ func (r *AccountPoolRouter) pickSessionAdapter(adapters []types.ProviderAdapter,
 			return webLiving[idx]
 		}
 	} else if req != nil && (req.TaskKind == TaskCoding || req.TaskKind == TaskFix) {
-		var codeLiving []types.ProviderAdapter
-		for _, a := range living {
-			if !IsWebGroup(DetermineAdapterGroup(a)) {
-				codeLiving = append(codeLiving, a)
+		// For coding / fix tasks: strictly prioritize by tier according to GroupPriority:
+		// Claude Sub -> Codex Sub -> AGY Sub -> Claude Free -> Codex Free -> AGY Free -> API -> Web
+		for _, grp := range GroupPriority {
+			var tierLiving []types.ProviderAdapter
+			for _, a := range living {
+				if DetermineAdapterGroup(a) == grp {
+					tierLiving = append(tierLiving, a)
+				}
 			}
-		}
-		if len(codeLiving) > 0 {
-			r.mu.Lock()
-			idx := r.sessionRR % len(codeLiving)
-			r.sessionRR++
-			r.mu.Unlock()
-			return codeLiving[idx]
+			if len(tierLiving) > 0 {
+				r.mu.Lock()
+				idx := r.sessionRR % len(tierLiving)
+				r.sessionRR++
+				r.mu.Unlock()
+				return tierLiving[idx]
+			}
 		}
 	}
 	r.mu.Lock()
