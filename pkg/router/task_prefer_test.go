@@ -28,10 +28,25 @@ func TestSoftPreferGroupsNeverDrops(t *testing.T) {
 	}
 }
 
-func TestPreferredGroupsForTaskCodingPrefersAPI(t *testing.T) {
+func TestPreferredGroupsForTaskCodingHierarchy(t *testing.T) {
 	pref := PreferredGroupsForTask(TaskCoding)
-	if pref[0] != GroupAPIOther {
-		t.Fatalf("coding prefer api first, got %v", pref)
+	if pref[0] != GroupClaudeSub {
+		t.Fatalf("coding prefer claude sub first, got %v", pref)
+	}
+	if pref[1] != GroupCodexSub {
+		t.Fatalf("coding prefer codex sub second, got %v", pref)
+	}
+}
+
+func TestPreferredGroupsForWebTasks(t *testing.T) {
+	for _, kind := range []string{TaskPlan, TaskClarify, TaskAnalysis, TaskReview, TaskCompact, TaskQuality} {
+		if !IsWebTask(kind) {
+			t.Errorf("expected IsWebTask(%q) to be true", kind)
+		}
+		pref := PreferredGroupsForTask(kind)
+		if len(pref) < 3 || pref[0] != GroupClaudeWeb {
+			t.Errorf("task %q should prefer claude web first, got %v", kind, pref)
+		}
 	}
 }
 
@@ -56,11 +71,46 @@ func TestClassifyTaskKind(t *testing.T) {
 		kind string
 	}{
 		{
+			name: "plan vietnamese",
+			req: &types.ChatRequest{Messages: []types.ChatMessage{
+				{Role: "user", Content: "Hãy lên kế hoạch refactor hệ thống sang microservices"},
+			}},
+			kind: TaskPlan,
+		},
+		{
+			name: "clarify vietnamese",
+			req: &types.ChatRequest{Messages: []types.ChatMessage{
+				{Role: "user", Content: "Làm rõ yêu cầu về tính năng thanh toán giúp tôi"},
+			}},
+			kind: TaskClarify,
+		},
+		{
+			name: "plan english",
+			req: &types.ChatRequest{Messages: []types.ChatMessage{
+				{Role: "user", Content: "Please outline an implementation plan for OAuth migration"},
+			}},
+			kind: TaskPlan,
+		},
+		{
+			name: "clarify english",
+			req: &types.ChatRequest{Messages: []types.ChatMessage{
+				{Role: "user", Content: "Can you clarify requirements for the search filter?"},
+			}},
+			kind: TaskClarify,
+		},
+		{
 			name: "analysis vietnamese",
 			req: &types.ChatRequest{Messages: []types.ChatMessage{
 				{Role: "user", Content: "Hãy phân tích kiến trúc module router giúp tôi"},
 			}},
 			kind: TaskAnalysis,
+		},
+		{
+			name: "review vietnamese",
+			req: &types.ChatRequest{Messages: []types.ChatMessage{
+				{Role: "user", Content: "Hãy review code và đánh giá pull request này"},
+			}},
+			kind: TaskReview,
 		},
 		{
 			name: "coding with mutating tool",

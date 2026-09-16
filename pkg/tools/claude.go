@@ -232,7 +232,7 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 
 	if len(systemInstructions) > 0 {
 		sysText := strings.Join(systemInstructions, "\n\n")
-		if req.SystemCacheControl {
+		if req.SystemCacheControl || len(sysText) >= 2048 {
 			payload["system"] = []anthropicBlock{
 				{
 					"type":          "text",

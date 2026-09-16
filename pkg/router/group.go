@@ -209,3 +209,14 @@ func DetermineAdapterGroup(a types.ProviderAdapter) string {
 	}
 	return ResolveAccountGroup(a.ID(), "", "", "")
 }
+
+// IsWebGroup reports whether a group belongs to web proxy backends.
+func IsWebGroup(group string) bool {
+	switch group {
+	case GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb:
+		return true
+	default:
+		return false
+	}
+}
+

@@ -234,6 +234,30 @@ func (r *AccountPoolRouter) ManualPin() bool {
 	return r.manualPin
 }
 
+// HasLivingGroup reports whether at least one adapter belonging to any of the specified groups
+// is configured in the pool and not currently cooling down or quarantined.
+func (r *AccountPoolRouter) HasLivingGroup(groups ...string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	targetGroups := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		targetGroups[g] = true
+	}
+	for _, a := range r.adapters {
+		grp := DetermineAdapterGroup(a)
+		if targetGroups[grp] {
+			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
+				continue
+			}
+			if cd, exists := r.cooldownMap[a.ID()]; exists && time.Now().Before(cd) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // ConversationResetter is implemented by web adapters that keep a
 // server-side chat thread. Called on `am sw` so the next turn does not
 // continue an unrelated conversation.
@@ -505,12 +529,27 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	nativeAvailable := r.usableToolBackendExcluding(adapters, req, nil)
 	strongerThanFree := r.hasStrongerThanFreeWebExcluding(adapters, req, nil)
 
-	// 1. Affinity wins for an in-flight session (unless account is dead).
+	// 1. Affinity wins for an in-flight session (unless account is dead or task transitions between web and coding).
 	if sessionKey != "" {
 		if pinned, ok := guard.GlobalAffinity().GetPinned(sessionKey); ok {
 			if alive := r.adapterAlive(adapters, pinned, req, nativeAvailable, strongerThanFree); alive != nil {
-				preferredID = pinned
-				manual = true // treat affinity as sticky for this request
+				grp := DetermineAdapterGroup(alive)
+				isWeb := IsWebGroup(grp)
+				taskIsWeb := req != nil && IsWebTask(req.TaskKind)
+				taskIsCoding := req != nil && (req.TaskKind == TaskCoding || req.TaskKind == TaskFix)
+
+				if !r.manualPin && taskIsWeb && !isWeb && r.HasLivingGroup(GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb) {
+					// Task switched to planning/clarify/review/analysis: route to web proxy to save coding limits
+					preferredID = ""
+					manual = false
+				} else if !r.manualPin && taskIsCoding && isWeb && r.HasLivingGroup(GroupClaudeSub, GroupCodexSub, GroupCodexFree, GroupAGYSub, GroupAPIOther) {
+					// Task switched to coding/fix: route to coding accounts
+					preferredID = ""
+					manual = false
+				} else {
+					preferredID = pinned
+					manual = true // treat affinity as sticky for this request
+				}
 			} else {
 				guard.GlobalAffinity().Unpin(sessionKey)
 			}
@@ -706,6 +745,36 @@ func (r *AccountPoolRouter) pickSessionAdapter(adapters []types.ProviderAdapter,
 	living := r.livingForSessionBalance(adapters, req, nativeAvailable, strongerThanFree)
 	if len(living) == 0 {
 		return nil
+	}
+	// If task is a web task, prioritize round-robin among living web proxy adapters
+	if req != nil && IsWebTask(req.TaskKind) {
+		var webLiving []types.ProviderAdapter
+		for _, a := range living {
+			if IsWebGroup(DetermineAdapterGroup(a)) {
+				webLiving = append(webLiving, a)
+			}
+		}
+		if len(webLiving) > 0 {
+			r.mu.Lock()
+			idx := r.sessionRR % len(webLiving)
+			r.sessionRR++
+			r.mu.Unlock()
+			return webLiving[idx]
+		}
+	} else if req != nil && (req.TaskKind == TaskCoding || req.TaskKind == TaskFix) {
+		var codeLiving []types.ProviderAdapter
+		for _, a := range living {
+			if !IsWebGroup(DetermineAdapterGroup(a)) {
+				codeLiving = append(codeLiving, a)
+			}
+		}
+		if len(codeLiving) > 0 {
+			r.mu.Lock()
+			idx := r.sessionRR % len(codeLiving)
+			r.sessionRR++
+			r.mu.Unlock()
+			return codeLiving[idx]
+		}
 	}
 	r.mu.Lock()
 	idx := r.sessionRR % len(living)
