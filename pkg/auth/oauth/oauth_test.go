@@ -620,6 +620,10 @@ func TestGoogleOAuthExchange(t *testing.T) {
 	origURL := AntigravityTokenURL
 	defer func() { AntigravityTokenURL = origURL }()
 
+	// The exchange requires a configured client secret; this test covers the
+	// transport, so supply a dummy real-shaped secret.
+	t.Setenv("ANTIGRAVITY_CLIENT_SECRET", "GOCSPX-test-secret-value")
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -724,3 +728,41 @@ func TestClaudeManualRedirect(t *testing.T) {
 
 
 
+
+func TestAntigravityClientSecretGuard(t *testing.T) {
+	t.Run("missing secret is rejected", func(t *testing.T) {
+		t.Setenv("ANTIGRAVITY_CLIENT_SECRET", "")
+		if _, err := getAntigravityClientSecret(); err == nil {
+			t.Fatal("expected error when ANTIGRAVITY_CLIENT_SECRET is unset")
+		}
+	})
+
+	t.Run("placeholder secret is rejected", func(t *testing.T) {
+		t.Setenv("ANTIGRAVITY_CLIENT_SECRET", placeholderAntigravityClientSecret)
+		_, err := getAntigravityClientSecret()
+		if err == nil {
+			t.Fatal("expected error for placeholder secret")
+		}
+		if !strings.Contains(err.Error(), "invalid_client") {
+			t.Errorf("error should explain the Google failure, got: %v", err)
+		}
+	})
+
+	t.Run("real secret is accepted", func(t *testing.T) {
+		t.Setenv("ANTIGRAVITY_CLIENT_SECRET", "GOCSPX-real-looking-secret")
+		got, err := getAntigravityClientSecret()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "GOCSPX-real-looking-secret" {
+			t.Errorf("unexpected secret: %q", got)
+		}
+	})
+
+	t.Run("exchange fails fast without a secret", func(t *testing.T) {
+		t.Setenv("ANTIGRAVITY_CLIENT_SECRET", "")
+		if _, err := exchangeGoogleCode(context.Background(), "code", "verifier"); err == nil {
+			t.Fatal("expected exchange to fail without a client secret")
+		}
+	})
+}

@@ -38,12 +38,29 @@ func getAntigravityClientID() string {
 	return string(dec)
 }
 
-func getAntigravityClientSecret() string {
-	if env := os.Getenv("ANTIGRAVITY_CLIENT_SECRET"); env != "" {
-		return env
+// placeholderAntigravityClientSecret is the non-functional sample value that was
+// committed in place of a real Google OAuth client secret. Google rejects it with
+// HTTP 401 "invalid_client", so we detect it and fail with an actionable message
+// instead of forwarding it to the token endpoint.
+const placeholderAntigravityClientSecret = "GOCSPX-sample-oauth-client-secret"
+
+// ErrAntigravityClientSecretMissing is returned when no usable Google OAuth client
+// secret is configured for the Antigravity / AGY flow.
+var ErrAntigravityClientSecretMissing = fmt.Errorf(
+	"no Google OAuth client secret configured for Antigravity.\n"+
+		"This build ships a placeholder value, which Google rejects with "+
+		"401 invalid_client.\n"+
+		"Set a real secret from your Google Cloud OAuth client before logging in:\n"+
+		"  export ANTIGRAVITY_CLIENT_SECRET='GOCSPX-...'\n"+
+		"Optionally override the client ID too:\n"+
+		"  export ANTIGRAVITY_CLIENT_ID='....apps.googleusercontent.com'")
+
+func getAntigravityClientSecret() (string, error) {
+	env := strings.TrimSpace(os.Getenv("ANTIGRAVITY_CLIENT_SECRET"))
+	if env == "" || env == placeholderAntigravityClientSecret {
+		return "", ErrAntigravityClientSecretMissing
 	}
-	dec, _ := base64.StdEncoding.DecodeString("R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6cURBZg==")
-	return string(dec)
+	return env, nil
 }
 
 type googleTokenResponse struct {
@@ -67,7 +84,12 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 	}
 
 	clientID := getAntigravityClientID()
-	clientSecret := getAntigravityClientSecret()
+	// Validate the client secret before opening a browser, so a misconfigured
+	// build fails immediately instead of after the user completes consent.
+	clientSecret, err := getAntigravityClientSecret()
+	if err != nil {
+		return "", err
+	}
 
 	vals := url.Values{}
 	vals.Set("response_type", "code")
@@ -219,7 +241,11 @@ func exchangeGoogleCode(ctx context.Context, code, verifier string) (*googleToke
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("client_id", getAntigravityClientID())
-	data.Set("client_secret", getAntigravityClientSecret())
+	clientSecret, err := getAntigravityClientSecret()
+	if err != nil {
+		return nil, err
+	}
+	data.Set("client_secret", clientSecret)
 	data.Set("code", code)
 	data.Set("redirect_uri", AntigravityRedirectURI)
 	data.Set("code_verifier", verifier)
