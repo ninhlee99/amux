@@ -84,16 +84,18 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 	return providerName, f, rest
 }
 
-// CmdLogin handles login. Default for chatgpt/claude: open a dedicated browser
-// window, you sign in on the website, we capture the session cookie via CDP
-// (no Keychain). Pass --token/--cookie to skip the browser, or --no-browser
-// to paste manually. Pass --oauth or login codex/antigravity for standalone OAuth.
+// CmdLogin handles login. Default for chatgpt/claude/gemini-web: open the login
+// page in the user's own default browser (where they are usually already signed
+// in) and take the cookie as a paste. Pass --browser for a dedicated window with
+// automatic CDP capture, --token/--cookie to skip the browser entirely, or
+// --no-browser to paste without opening anything. Pass --oauth or login
+// codex/antigravity for standalone OAuth.
 func CmdLogin(args []string) {
 	if len(args) == 0 {
 		fmt.Println("Usage: amux login <provider> [--browser] [--token T] [--cookie C] [--refresh R] [--model M] [--oauth] [--device]")
 		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok, codex, antigravity")
 		fmt.Println()
-		fmt.Println("  chatgpt / claude / gemini-web  default = open browser, CDP cookie capture")
+		fmt.Println("  chatgpt / claude / gemini-web  default = open your browser, paste the cookie")
 		fmt.Println("  gemini (API)                   AI Studio API key")
 		fmt.Println("  kimi                           Moonshot Kimi API key (or pass --oauth/--device for device flow)")
 		fmt.Println("  grok                           xAI Grok API key (or pass --oauth/--device for device flow)")
@@ -103,8 +105,9 @@ func CmdLogin(args []string) {
 		fmt.Println("  --device, -d                   trigger device code authentication flow")
 		fmt.Println("  --manual, -m                   trigger manual code pasting flow")
 		fmt.Println("  --token/--cookie               skip browser, use pasted credentials")
-		fmt.Println("  --no-browser                   paste interactively instead of opening a window")
-		fmt.Println("  --default-browser, --open      open your normal browser (like OAuth), then paste the cookie")
+		fmt.Println("  --no-browser                   paste only, do not open any browser")
+		fmt.Println("  --browser                      dedicated window + automatic CDP cookie capture")
+		fmt.Println("  --default-browser, --open      explicit form of the default behaviour")
 		return
 	}
 
@@ -219,7 +222,10 @@ func loginChatGPT(f loginFlags) {
 		}
 	}
 
-	wantBrowser := (f.useBrowser || (access == "" && sessionCookie == "" && !f.noBrowser && !f.defBrowser))
+	// CDP capture is opt-in via --browser. By default we open the user's own
+	// browser, where they are usually already signed in, and take a paste.
+	wantBrowser := f.useBrowser && access == "" && sessionCookie == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && access == "" && sessionCookie == ""
 	if wantBrowser {
 		fmt.Println("Opening dedicated browser (CDP capture, no Keychain)…")
 		tok, err := browser.CaptureCookieViaBrowser(browser.ChatGPTWebLogin, 5*time.Minute)
@@ -237,7 +243,7 @@ func loginChatGPT(f loginFlags) {
 	}
 
 	if sessionCookie == "" && access == "" {
-		if f.defBrowser {
+		if useDefaultBrowser || f.defBrowser {
 			openForManualPaste(browser.ChatGPTWebLogin)
 		}
 		fmt.Println("Paste from chatgpt.com DevTools, or leave blank to cancel:")
@@ -312,7 +318,8 @@ func loginClaude(f loginFlags) {
 		}
 	}
 
-	wantBrowser := f.useBrowser || (key == "" && !f.noBrowser && !f.defBrowser)
+	wantBrowser := f.useBrowser && key == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && key == ""
 	cookieHeader := ""
 	if wantBrowser && key == "" {
 		fmt.Println("Opening dedicated browser (CDP capture, no Keychain)…")
@@ -338,7 +345,7 @@ func loginClaude(f loginFlags) {
 	}
 
 	if key == "" {
-		if f.defBrowser {
+		if useDefaultBrowser || f.defBrowser {
 			openForManualPaste(browser.ClaudeWebLogin)
 		}
 		key = readLinePrompt("Paste claude.ai sessionKey cookie (DevTools → Cookies): ")
@@ -477,7 +484,8 @@ func loginGeminiWeb(f loginFlags) {
 
 	cookieHeader := strings.TrimSpace(f.cookie)
 	key := strings.TrimSpace(f.token)
-	wantBrowser := f.useBrowser || (cookieHeader == "" && key == "" && !f.noBrowser && !f.defBrowser)
+	wantBrowser := f.useBrowser && cookieHeader == "" && key == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && cookieHeader == "" && key == ""
 	if wantBrowser {
 		fmt.Println("Opening dedicated browser (CDP capture) — sign in to gemini.google.com…")
 		auth, err := browser.CaptureWebAuthViaBrowser(browser.GeminiWebLogin, 5*time.Minute)
@@ -498,7 +506,7 @@ func loginGeminiWeb(f loginFlags) {
 		}
 	}
 	if cookieHeader == "" && key == "" {
-		if f.defBrowser {
+		if useDefaultBrowser || f.defBrowser {
 			openForManualPaste(browser.GeminiWebLogin)
 		}
 		cookieHeader = readLinePrompt("Paste the __Secure-1PSID value, or a full Cookie header containing it: ")
