@@ -86,6 +86,9 @@ flowchart TB
 | Thêm/sửa provider trong pool | `provider/config.go`, `accounts.example.json` | `ProviderConfig`, `BuildAdapters` | `config_test.go` |
 | `am env` / hook / launchctl | `env/env.go`, `hook/hook.go`, `launchctl.go` | `PrintEnvExports`, `SyncLaunchctlEnv` | `env_test.go`, `settings_env_test.go` |
 | Guard / quarantine / 429 | `guard/*.go` | `Pace`, `IsQuarantined`, `RecordError` | `guard_test.go` |
+| Nén token context (20k budget / 85k runes) | `pkg/ctxshrink/shrink.go`, `bridge/responses.go` | `ShrinkConversation`, `MaxWebRunesLimit` | `pkg/ctxshrink/shrink_test.go` |
+| Ma trận tool chéo (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP) | `bridge/cross_tool_matrix_test.go`, `tools/dialect.go` | `TranslateToolCall`, `CanonicalTool` | `cross_tool_matrix_test.go` |
+| Public proxy down (`am proxy down --public`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `CmdProxyDownPublic`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
 | Endpoint `/_am/status` | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus` | `server_test.go` |
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
 
@@ -131,6 +134,7 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 | `pkg/router` | Ai được gọi tiếp theo, cooldown, session, task |
 | `pkg/provider` | Gọi upstream cụ thể (API key, web cookie, codex token) |
 | `pkg/tools` | Tên/schema tool giữa dialect |
+| `pkg/ctxshrink` | Giới hạn token context (20k budget), cắt tỉa tool results, nén body hội thoại |
 | `pkg/guard` | Rate limit, affinity, header sanitizer |
 | `pkg/profile` | Profile Claude/Codex file trên disk |
 | `pkg/types` | Struct dùng chung — **không** import pkg khác |

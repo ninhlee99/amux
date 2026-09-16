@@ -96,11 +96,17 @@ amux/
     │
     ├── bridge/                     # [BRIDGE] Cầu nối giao thức & Chuyển đổi định dạng
     │   ├── openai.go               # Xử lý /v1/chat/completions và /v1/models theo chuẩn OpenAI
+    │   ├── responses.go            # Xử lý /v1/responses cho Codex CLI (OpenAI Responses wire)
     │   ├── claude.go               # Xử lý /v1/messages cho Claude Code (Anthropic ↔ Canonical)
     │   ├── gemini.go               # Xử lý /v1beta/models/... cho Antigravity (Google GenAI ↔ Canonical)
     │   ├── headers.go              # Xử lý routing headers (X-Provider, X-Model) và xác thực
     │   ├── requestlog.go           # Ghi log I/O chi tiết của request/response phục vụ quan sát
+    │   ├── cross_tool_matrix_test.go # Ma trận kiểm thử tương thích chéo 14/14 test cases tool proxying
     │   └── *_test.go               # Tests bridge OpenAI, Claude, Gemini, Thinking, Tool execution
+    │
+    ├── ctxshrink/                  # [CONTEXT OPTIMIZATION] Tối ưu hóa & nén token context window
+    │   ├── shrink.go               # Dynamic token budget (20k / 85k runes), head/tail pruning, tool deduplication
+    │   └── shrink_test.go          # Tests nén token, cắt tỉa kết quả tool và bảo toàn turn hội thoại gần nhất
     │
     ├── privacy/                    # [PRIVACY] Kiểm duyệt và ẩn danh dữ liệu
     │   ├── redact.go               # Che email, API key, webhook, token, credit card trên payload outbound
@@ -115,7 +121,7 @@ amux/
     │   ├── proxy_egress.go         # Quản lý proxy riêng biệt (HTTP, SOCKS5) cho từng tài khoản/profile
     │   └── guard_test.go           # Unit tests toàn diện cho bộ guard
     │
-    ├── tools/                      # [TOOL MID-LAYER] Chuẩn hóa Tool Calling đa nền tảng
+    ├── tools/                      # [TOOL MID-LAYER] Chuẩn hóa Tool Calling đa nền tảng (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP)
     │   ├── dialect.go              # Canonical Tool types (ToolDef, ToolCall, ToolResult)
     │   ├── claude.go               # Chuyển đổi tool schema và tool_use / tool_result của Anthropic
     │   ├── openai.go               # Chuyển đổi tools.function và tool_calls của OpenAI
@@ -144,7 +150,7 @@ amux/
     │   ├── authtoken.go            # Cấp phát API key tạm thời amux-<hex>, xác thực khi bind public, rate limit
     │   ├── tunnel.go               # Xử lý HTTP CONNECT tunneling cho HTTP_PROXY / HTTPS_PROXY
     │   ├── bind.go                 # Cấu hình socket network listener
-    │   ├── client.go               # Giao tiếp client với proxy daemon (ProxyUp, ProxyBase, Sync)
+    │   ├── client.go               # Giao tiếp client với proxy daemon (ProxyUp, ProxyBase, CmdProxyDownPublic, Sync)
     │   ├── lifecycle.go            # Theo dõi vòng đời phiên làm việc (PID của Claude Code/AGY tabs)
     │   ├── supervisor.go           # Watchdog giám sát và xử lý phục hồi khi dịch vụ suy giảm
     │   ├── passthrough.go          # Handler reverse-proxy trực tiếp tới Anthropic khi graceful shutdown
@@ -201,7 +207,8 @@ amux/
 | `pkg/bridge` | **Protocol Bridge** | Cầu nối đa giao thức: OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), Google Gemini (`/v1beta/models/...`); điều hướng bằng `X-Provider`/`X-Model`; ghi log I/O bảo mật. |
 | `pkg/privacy` | **Data Protection** | Quét và làm mờ (redact) các dữ liệu nhạy cảm (email, API key, webhook, token, thẻ ngân hàng) trước khi gửi ra upstream. |
 | `pkg/guard` | **Anti-Ban Engine** | Lớp phòng thủ 5 tầng chống bị phát hiện/gắn cờ tài khoản: Header Sanitizer, Traffic Pacing/Jitter, Health Score & Circuit Breaker, Session Affinity, Egress Proxy riêng biệt. |
-| `pkg/tools` | **Tool Mid-Layer** | Chuẩn hóa schema công cụ giữa Claude Code, Cursor, Codex, Gemini (Antigravity); giả lập vòng lặp gọi tool (`webloop.go`) cho các web session. |
+| `pkg/tools` | **Tool Mid-Layer** | Chuẩn hóa schema công cụ hai chiều (Bi-directional) giữa Claude Code, Codex CLI, Cursor, Antigravity (AGY), Subagents, và MCP tools; giả lập vòng lặp gọi tool (`webloop.go`) cho web sessions. |
+| `pkg/ctxshrink` | **Context Optimization** | Tối ưu hóa & nén ngữ cảnh (dynamic token budget 20k, cắt tỉa kết quả tool cũ, deduplication, bảo toàn turn mới nhất) ngăn tràn context Web sessions (ChatGPT/Claude/Gemini Web). |
 | `pkg/utils` | **Shared Utilities** | Tiện ích chuyển đổi và chuẩn hóa JSON Schema dùng chung giữa các adapter. |
 | `pkg/proxy` | **Gateway Daemon** | `:8787`, Rotator Claude, API key tạm thời (`authtoken.go`), CONNECT tunnel, admin `/_am/*` gồm **`GET /_am/map`**. |
 | `pkg/monitor` | **Observability** | Ghi nhật ký sự kiện (`events.log`), lưu vết I/O (`requests.log`), chẩn đoán lỗi turn (`errors.log`) và tự động dọn dẹp sau 7 ngày (`error_diag.go`). |

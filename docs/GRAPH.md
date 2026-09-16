@@ -1,6 +1,6 @@
 # GRAPH — amux
 
-> Neural map · 21 modules · 98 files · 1141 funcs · 0 LLM tokens  
+> Neural map · 22 modules · 101 files · 1223 funcs · 0 LLM tokens  
 > docs/GRAPH.md (portable · root=.)  
 > AI: đọc **mesh + hubs + 1 subnet** — cấm dump toàn bộ. Chi tiết 1 func: `am map get`.
 
@@ -46,6 +46,8 @@ flowchart LR
   ui["ui"]
   cli --> ui
   cli --> usage
+  ctxshrink["ctxshrink"]
+  ctxshrink --> types
   env --> types
   guard --> types
   hook --> types
@@ -59,6 +61,7 @@ flowchart LR
   provider --> auth
   browser["browser"]
   provider --> browser
+  provider --> ctxshrink
   provider --> guard
   provider --> profile
   provider --> tools
@@ -76,7 +79,9 @@ flowchart LR
   proxy --> term
   proxy --> types
   proxy --> usage
+  router --> ctxshrink
   router --> guard
+  router --> nav
   router --> privacy
   router --> term
   router --> types
@@ -92,9 +97,11 @@ flowchart LR
   ui --> proxy
   ui --> router
   ui --> term
+  ui --> tools
   ui --> types
   ui --> usage
   usage --> nav
+  usage --> term
   usage --> types
 ```
 
@@ -112,18 +119,19 @@ am map viz --module nav
 auth → types
 bridge → guard monitor privacy router tools types usage
 cli → env hook monitor nav privacy profile provider proxy types ui usage
+ctxshrink → types
 env → types
 guard → types
 hook → types
 monitor → term types
 privacy → monitor types
 profile → auth types
-provider → auth browser guard profile tools types
+provider → auth browser ctxshrink guard profile tools types
 proxy → auth bridge guard hook monitor nav privacy profile provider router term types usage
-router → guard privacy term types
+router → ctxshrink guard nav privacy term types
 tools → monitor types utils
-ui → browser guard hook profile provider proxy router term types usage
-usage → nav types
+ui → browser guard hook profile provider proxy router term tools types usage
+usage → nav term types
 ```
 
 ## Neurons (hubs)
@@ -134,23 +142,24 @@ usage → nav types
 | `bridge` | 6 | 62 | EstimateBytesTokens, EstimateInputTokens, EstimateStringTokens, HandleClaudeCountTokens, HandleClaudeMessages, ToChatRequest |
 | `browser` | 3 | 32 | CaptureCookieViaBrowser, CaptureWebAuthViaBrowser, RefreshWebAuthFromProfile, BrowserInfo, CapturedWebAuth, ChatGPTSession |
 | `cli` | 3 | 54 | Run, accountRef, accountToggleHint, applyAccountEnabled, bytesTrim, cmdAdd |
+| `ctxshrink` | 1 | 9 | CompactMessages, CompactTranscript, CompactTranscriptWithTail, EstimateMessagesTokens, EstimateTokens, FitMessagesToTokenBudget |
 | `env` | 1 | 5 | EnvPath, LoadEnvVars, PrintEnvExports, SaveEnvVars, ShellQuote |
 | `guard` | 6 | 54 | Unpin, ActivePinsCount, ExtractSessionKey, GetPinned, NewSessionAffinity, Pin |
-| `hook` | 5 | 62 | AutoUpdateConfigFile, IsAutoUpdateEnabled, LaunchAgentPath, SetupAutoUpdate, AddHook, AppendLine |
+| `hook` | 5 | 66 | AutoUpdateConfigFile, IsAutoUpdateEnabled, LaunchAgentPath, SetupAutoUpdate, AddHook, ClaudeAvailable |
 | `live` | 0 | 0 |  |
 | `monitor` | 3 | 35 | GetLogStats, GetRequestMetrics, ResetRequestMetrics, ResetStats, SetDiagnosticAllBodies, SetLogAllBodies |
-| `nav` | 9 | 110 | GitRoot, LearnFuncs, Resolve, WorkspaceDir, ApplyAnnotations, GenerateMap |
+| `nav` | 9 | 112 | GitRoot, LearnFuncs, Resolve, WorkspaceDir, ApplyAnnotations, GenerateMap |
 | `privacy` | 1 | 20 | RedactString, Kinds, LogHits, MergeResults, RedactBytes, RedactChatRequest |
 | `profile` | 2 | 62 | ActivePath, ApplyEntry, AutoBackup, BundlePath, CmdSave, CmdUse |
-| `provider` | 15 | 187 | AGYAuthAvailable, AGYCredentialsPath, Group, Priority, SendMessageStream, SupportsTools |
-| `proxy` | 11 | 124 | ComposeListenAddr, DialAddr, IsPublicListen, ListenAddr, ListenAddrPath, LoadListenAddr |
-| `router` | 5 | 53 | GroupIndex, DetermineAdapterGroup, GroupDisplayName, GroupPriorityForIDE, IDEFromClientDialect, NativeGroups |
-| `term` | 2 | 64 | CyanErr, DimErr, GreenErr, Log, LogAuth, LogDegraded |
-| `tools` | 7 | 62 | FromClaudeToolUseBlocks, ParseClaudeTools, ToClaudeToolUseBlocks, ToClaudeTools, ParseCodexResponsesTools, ToCodexResponsesTools |
+| `provider` | 16 | 212 | AGYAuthAvailable, AGYCredentialsPath, Group, Priority, SendMessageStream, SupportsTools |
+| `proxy` | 11 | 125 | ComposeListenAddr, DialAddr, IsPublicListen, ListenAddr, ListenAddrPath, LoadListenAddr |
+| `router` | 6 | 68 | GroupIndex, DetermineAdapterGroup, GroupDisplayName, GroupPriorityForIDE, IDEFromClientDialect, NativeGroups |
+| `term` | 2 | 67 | CyanErr, DimErr, GreenErr, Log, LogAuth, LogDegraded |
+| `tools` | 7 | 74 | ParseClaudeTools, FromClaudeToolUseBlocks, MarshalClaudeMessagesRequest, ToClaudeToolUseBlocks, ToClaudeTools, ClaudeTool |
 | `types` | 6 | 35 | AccountBrandID, AccountBrandIDWithDomain, AccountNamedID, AccountNamedIDWithDomain, EmailDomainPart, EmailLocalPart |
-| `ui` | 5 | 74 | CmdDoctorProviders, CmdAPI, CmdAccounts, CmdAccountsCmd, CmdAccountsFilter, CmdLogin |
-| `usage` | 4 | 29 | ProjectForRemoteAddr, AppendUsageEntry, ProjectLabel, UsageLogPath, WrapUsageCapture, Close |
-| `utils` | 1 | 1 | NormalizeJSONSchema |
+| `ui` | 5 | 83 | CmdDoctorProviders, CmdAPI, CmdAccounts, CmdAccountsCmd, CmdAccountsFilter, CmdLogin |
+| `usage` | 4 | 30 | ProjectForRemoteAddr, AppendUsageEntry, ProjectLabel, UsageLogPath, WrapUsageCapture, ChannelLabel |
+| `utils` | 1 | 2 | NormalizeJSONSchema, normalizeSchemaNode |
 
 
 ## Subnets

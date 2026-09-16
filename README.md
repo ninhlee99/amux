@@ -32,13 +32,14 @@
   - **OpenAI:** `/v1/chat/completions`, `/v1/models` (cho Cursor, Continue, Cline, LangChain, SDK)
   - **Anthropic:** `/v1/messages` (cho Claude Code)
   - **Google Gemini:** `/v1beta/models/...`, `:generateContent`, `:streamGenerateContent`, `:countTokens` (cho Antigravity / AGY CLI & IDE)
-- 🧰 **Tool Mid-Layer (`pkg/tools`):** Chuyển đổi tool schema và tool call giữa Claude Code (`tool_use`), Cursor / OpenAI (`tool_calls`), Codex và Antigravity (`functionDeclarations`).
-- 🤖 **WebLoop Tool Emulation (`webloop.go`):** Giả lập giao thức gọi công cụ `<tool_call>` cho các Web Session (ChatGPT Web, Claude Web, Gemini Web), cho phép backend trình duyệt vẫn tham gia vào vòng lặp agent loop đầy đủ.
+- 🧰 **Bi-Directional Tool Mid-Layer (`pkg/tools`, `pkg/bridge`):** Chuyển đổi công cụ hai chiều 3 phía giữa Claude Code (`tool_use`), Codex CLI (`function_call`), và Antigravity / Gemini (`functionCall`). Tự động remap các công cụ hệ thống (Bash, Read, Write, Edit, Grep, Find), Subagents (`Agent` ↔ `invoke_subagent`), và MCP Tools (`mcp__*` ↔ `call_mcp_tool`) kèm cơ chế tự ép kiểu an toàn (auto type-coercion).
+- 🗜️ **20k Token Budget & Context Shrink (`pkg/ctxshrink`):** Engine nén ngữ cảnh tiến trình 3 cấp độ với trần an toàn `20.000 tokens` và chặn cứng `85.000 runes`. Giữ nguyên User Goal và các lượt hội thoại gần nhất (tail turns), bảo vệ tuyệt đối không bao giờ bị lỗi `413 Payload Too Large` trên ChatGPT Web, Claude Web và Gemini Web.
+- 🤖 **WebLoop Tool Emulation (`webloop.go`):** Giả lập giao thức gọi công cụ `<tool_call>` cho các Web Session (ChatGPT Web, Claude Web, Gemini Web), cho phép backend trình duyệt tham gia vào vòng lặp agent loop và gọi công cụ mượt mà.
 - 🧠 **Task Classifier & Smart Escalation (`classifier.go`):** Tự động phân loại ngữ cảnh tác vụ (kiến trúc hệ thống, đánh giá an ninh bảo mật, phân tích crash dump, tối ưu hiệu năng) để tự động kích hoạt chế độ suy luận chuyên sâu (*extended thinking*) hoặc điều hướng lên các model Pro (như `gemini-3.1-pro`, `o3-mini`).
 - 🛡️ **Multi-Provider Failover:** Chuyển mạch thông minh khi gặp 429 hoặc lỗi xác thực giữa GitHub Models, Google Gemini API, Groq, OpenRouter, Codex CLI và Web Sessions (ChatGPT / Claude / Gemini) với thời gian chờ (cooldown) 30 phút.
 - 🔀 **Quản lý Pool linh hoạt + `X-Provider`:** `am off` / `am pool remove` đưa tài khoản ra khỏi vòng xoay; `am on` / `am pool add` đưa trở lại. Gọi trực tiếp bằng header `X-Provider: <id>` (+ optional `X-Model`).
 - 🧠 **Context & Session Retention:** Duy trì lịch sử hội thoại xuyên suốt khi chuyển đổi giữa các tài khoản hoặc khi failover sang provider khác.
-- 📊 **Token Usage Analytics:** Thống kê token trực quan theo ngày / tuần / tháng / all, phân tích chi tiết theo từng project, model và session.
+- 📊 **Codex-Style Statusline & Token Analytics:** Footer trực quan hiển thị số token context của session (`tok`), thanh phần trăm hạn ngạch `5h` và `7d` (Claude), thanh quota đa tầng (AGY/Codex); thống kê toàn diện qua `am usage`.
 - 🪵 **Error Diagnostics & 7-Day Log Retention (`am logs`):** Lưu trữ chẩn đoán chi tiết lỗi turn (`errors.log`), tự động dọn dẹp nhật ký sau 7 ngày; hỗ trợ tạo issue báo lỗi an toàn với `am feedback`.
 - 🧼 **Privacy Redact (`pkg/privacy`):** Tự động che mờ email, API key, webhook, token, thẻ tín dụng trên payload outbound trước khi gửi lên upstream.
 - 🛡️ **Anti-Ban Guard & Account Health (`pkg/guard`):** 5 lớp bảo vệ tài khoản: Header Sanitizer chống rò rỉ proxy; Traffic Pacing & Micro-Jitter phá vỡ pattern bot; Health Score (0-100) kèm Auto-Quarantine cách ly an toàn khi gặp lỗi xác thực/429 liên tiếp; Session Affinity ghim thread cố định; Egress Proxy (HTTP/SOCKS5) riêng biệt cho từng tài khoản.
@@ -72,73 +73,51 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 
 > 💡 **Mẹo:** Bạn có thể dùng `amux` hoặc `am` thay thế cho nhau (ví dụ: `amux sw` hoàn toàn tương đương với `am sw`).
 
-### Quản Lý Tài Khoản
+### 1. Thao Tác Hàng Ngày (Daily Workflow)
 | Lệnh | Mô Tả |
 | :--- | :--- |
-| `am accounts` | Hiển thị **tất cả** tài khoản: Claude Code + Web Sessions + API (`POOL=IN/OUT`) |
-| `am off <id>` / `am on <id>` | Đưa tài khoản ra ngoài / trở lại vòng xoay (vẫn lưu trong danh sách `accounts`) |
-| `am add [tool] [tên]` | Lưu thông tin đăng nhập CLI hiện tại (`claude` / `codex` / `gemini` / `antigravity`) |
-| `am rm <id\|name>` / `am accounts rm <id>` | Xoá tài khoản (profile CLI chuyển vào thùng rác, provider bị gỡ bỏ) |
-| `am restore <id>` | Khôi phục tài khoản từ thùng rác (`am restore --backup` khôi phục bản sao lưu gần nhất) |
-| `am rename <cũ> <mới>` | Đổi tên profile Claude |
-| `am sw` / `am sw <id>` | Mở picker chọn nhanh hoặc ghim cố định một profile Claude / Provider |
-| `am ls [tool]` | Liệt kê danh sách tài khoản (alias của `am accounts`) |
-| `am current [tool]` | Kiểm tra tài khoản đang đăng nhập trên máy (`claude` / `codex` / `antigravity`) |
+| `am status` (hoặc `am st`) | Kiểm tra trạng thái cổng gateway, provider đang active, quota & số phiên kết nối |
+| `am ls [filter]` / `am accounts` | Liệt kê tất cả tài khoản, độ ưu tiên priority và trạng thái tham gia vòng xoay (`POOL=IN/OUT`) |
+| `am sw [id]` / `am switch` | Mở picker tương tác chọn nhanh hoặc ghim cố định một profile Claude / Provider |
+| `am on <id>` / `am off <id>` | Bật / tắt nhanh một tài khoản tham gia vào rotation pool |
+| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `codex`, `agy`) kèm tự động nạp môi trường proxy |
 
-### Quản Lý Rotation Pool & Failover
+### 2. Quản Lý Tài Khoản & Providers
+| Lệnh | Mô Tả |
+| :--- | :--- |
+| `am add [tool] [tên]` | Lưu thông tin đăng nhập CLI hiện tại trên máy (`claude`, `codex`, `gemini`) |
+| `am login <provider>` | Đăng nhập session web tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `grok`... |
+| `am oauth <provider> [tên]` | **Standalone OAuth:** Đăng nhập trực tiếp qua OAuth (`claude`, `codex`, `antigravity`, `kimi`...) |
+| `am api add <tên> [flags]` | Thêm OpenAI-compatible endpoint (`--endpoint <url> --api-key <key> [--model M] [--priority N]`) |
+| `am rm <id\|name>` | Xoá tài khoản hoặc provider (hỗ trợ `am restore <id>` để phục hồi từ thùng rác) |
+| `am rename <cũ> <mới>` | Đổi tên hồ sơ tài khoản |
+
+### 3. Cổng AI Gateway & Proxy Control
+| Lệnh | Mô Tả |
+| :--- | :--- |
+| `am proxy up [flags]` | Khởi động proxy daemon nền (`127.0.0.1:8787`). Thêm `--public` để bind `0.0.0.0` chia sẻ LAN |
+| `am proxy down [flags]` | Tắt proxy daemon. Thêm `--public` để tắt chế độ chia sẻ LAN, thu hồi token và revert về `127.0.0.1` |
+| `am proxy token` | Xem hoặc sinh mã khóa bảo vệ (`admin auth token`) khi chạy proxy public |
+| `am env [--public]` | Xuất lệnh cấu hình môi trường `eval "$(am env)"` (`--public` dùng địa chỉ IP LAN) |
+| `am guard [reset]` | Giám sát điểm sức khỏe (0-100), cách ly (Quarantine), reset cooldown anti-ban |
+
+### 4. Điều Tuyến Nâng Cao & Routing Pool
 | Lệnh | Mô Tả |
 | :--- | :--- |
 | `am pool` | Xem danh sách các provider đang tham gia vòng xoay (**IN**) |
-| `am pool add <id>` | Kích hoạt provider tham gia vòng xoay (tương đương `am on <id>`) |
-| `am pool remove <id>` | Tạm dừng provider khỏi vòng xoay mà không xoá cấu hình (tương đương `am off <id>`) |
-| `am pool priority <id> <N>` | Đặt độ ưu tiên (số nhỏ ưu tiên gọi trước, tự động nạp lại không cần restart) |
-| `am pool model <id> <model>` | Thay đổi model mặc định của provider (hot-reload thời gian thực) |
-| `am pool set <id> [flags]` | Cấu hình nhanh provider: `--priority N`, `--model M`, `--on`, `--off` |
-| `am oauth <provider> [tên]` | **Standalone OAuth:** Đăng nhập trực tiếp OAuth (`claude`, `codex`, `antigravity`, `kimi`, `grok`) không cần cài đặt CLI gốc |
-| `am login <provider>` | Đăng nhập tương tác: `chatgpt`, `claude`, `gemini`, `gemini-web`, `github`, `groq`, `kimi`, `grok`, `codex`, `antigravity` |
-| `am api add <tên> [flags]` | Thêm OpenAI-compatible endpoint (`--endpoint <url> --api-key <key> [--model M] [--priority N]`) |
+| `am pool set <id> [flags]` | Cấu hình tham số provider: `--priority N`, `--model M`, `--on`, `--off` |
 | `am doctor providers` | Gửi truy vấn thử nghiệm (1-turn probe) kiểm tra tình trạng kết nối từng adapter |
-| `am guard` / `am guard reset` | Giám sát điểm sức khỏe tài khoản (Health Score 0-100), trạng thái cách ly (Quarantine) và reset timer |
 
-> **Codex CLI:** Sau khi chạy `am add codex`, token đăng ký của ChatGPT sẽ tự động được chuyển thành adapter `codex:NN` (`type: codex_cli`) — không cần thực hiện `am login` riêng biệt.
->
-> 💡 **Mẹo cấu hình API Key:** Bạn có thể export sẵn biến môi trường trước khi chạy `am login`:
-> - **Google AI Studio:** `export GOOGLE_AI_STUDIO_KEY="AIzaSy..."` → `am login gemini`
-> - **GitHub Models:** `export GITHUB_TOKEN="ghp_..."` → `am login github`
-> - **Groq:** `export GROQ_API_KEY="gsk_..."` → `am login groq`
-> - **Kimi (Moonshot AI):** `export KIMI_API_KEY="sk-..."` → `am login kimi`
-> - **Grok (xAI):** `export XAI_API_KEY="xai-..."` → `am login grok`
-
-### Giám Sát, Proxy & Tiện Ích Hệ Thống
+### 5. Thống Kê & Tiện Ích Mở Rộng
 | Lệnh | Mô Tả |
 | :--- | :--- |
-| `am setup [--auto-update]` | Cài đặt hooks, lệnh `/am:feedback`, cấu hình auto-update |
-| `am update [--force] [--quiet]` | Nâng cấp amux lên phiên bản mới nhất từ GitHub (giữ nguyên `~/.am/`) |
-| `am status` (hoặc `am st`) | Kiểm tra trạng thái proxy daemon, hạn mức 5h/7d, số phiên hoạt động |
-| `am guard` [reset] | Giám sát điểm sức khỏe tài khoản (Health Score 0-100), cách ly (Quarantine) & session affinity |
-| `am usage [day\|week\|month\|all]` | Thống kê token (`-D` chi tiết, `-d YYYY-MM-DD`, `-p PROJECT`) |
-| `am logs [flags]` | Quản lý nhật ký hoạt động: `--count` (thống kê), `--errors` (xem lỗi), `--clean` (dọn dẹp > 7 ngày) |
-| `am proxy [up\|down\|token]` | Điều khiển daemon `:8787`. Hỗ trợ: `--public`, `-b/--addr`, `-p/--port`, `--threshold N` |
-| `am run <tool> [args...]` | Khởi chạy công cụ (`claude`, `codex`) kèm tự động nạp môi trường proxy |
-| `am env [--public]` | Xuất biến môi trường cho lệnh `eval "$(am env)"` (`--public` sử dụng IP mạng LAN) |
-| `am env [set\|get\|rm\|list]` | Quản lý và lưu trữ cố định các biến môi trường tùy chỉnh cho proxy/công cụ |
-| `am hook [claude\|agy\|codex\|cursor]` | Điều khiển hook vòng đời cho từng công cụ (`start` / `stop`) |
-| `am hook [install\|uninstall\|status]` | Cài đặt, gỡ bỏ hoặc kiểm tra trạng thái hooks tự động trên toàn hệ thống |
+| `am usage [day\|week\|all]` | Báo cáo chi tiết lượng token đã tiêu thụ và hạn mức theo từng model/project |
+| `am logs [--errors] [--clean]` | Quản lý nhật ký hoạt động: `--errors` (xem lỗi), `--clean` (dọn dẹp log > 7 ngày) |
+| `am map [init\|recent\|viz]` | Hệ thống bản đồ codebase thông minh cho AI agent (gõ `am map --help` để xem chi tiết) |
+| `am setup [--auto-update]` | Cài đặt hooks, lệnh `/am:feedback`, kích hoạt tự động cập nhật |
+| `am update [--force]` | Nâng cấp amux lên bản mới nhất từ GitHub (giữ nguyên toàn bộ dữ liệu tài khoản) |
 | `am export` / `am import` | Đóng gói xuất / nhập bộ hồ sơ tài khoản mã hóa (`.amexp`) qua máy khác |
 | `am feedback [--error]` | Mở issue báo lỗi GitHub, tự động thu thập thông tin chẩn đoán đã khử dữ liệu nhạy cảm |
-
-### Workspace Map (bản đồ codebase cho AI)
-| Lệnh | Mô Tả |
-| :--- | :--- |
-| `am map init [dir]` | **FULL** scan tree → sinh map vào `~/.am/workspaces/<name>/` (0 token API; lần đầu) |
-| `am map update [dir]` | **FULL** regenerate cấu trúc (giữ `annotations.json`) |
-| `am map recent [--needs-learn]` | **HẸP** — chỉ func git-changed ∪ session touched |
-| `am map touch --file F [--func N]` | Ghi focus session (`focus.json`) |
-| `am map viz [--module M]` | Mở `GRAPH.html` — lực nơ-ron, mũi tên liên kết, click module → subnet func |
-| `am map graph <module>` | **1 subnet** func→func (text); `--list` = danh sách module |
-| `am map get --file F --func N` | 1 dòng summary — không đọc full inventory |
-| `am map learn --file F --func N --summary S` | Enrich mô tả function sau khi AI đọc sâu |
-| `am map show [dir]` | Đường dẫn workspace + file map |
 
 > Agent: `am map recent` → đọc **GRAPH** (mesh + 1 subnet) → `am map get`/`learn`. Cấm dump bảng func dài. Repo amux: [`docs/AI_CODEBASE_MAP.md`](docs/AI_CODEBASE_MAP.md).
 

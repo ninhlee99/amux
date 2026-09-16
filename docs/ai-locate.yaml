@@ -48,6 +48,9 @@ layers:
   - id: tools
     path: pkg/tools/
     role: "Tool dialect + webloop text emulation"
+  - id: ctxshrink
+    path: pkg/ctxshrink/
+    role: "Tối ưu hóa token budget 20k, cắt tỉa kết quả tool"
   - id: guard
     path: pkg/guard/
     role: "Anti-ban, affinity, pacer, health, quarantine"
@@ -204,6 +207,33 @@ tasks:
       - pkg/router/pool.go
     symbols: [redactBeforeSend]
     tests: [pkg/privacy/redact_test.go]
+
+  - id: ctxshrink-token-budget
+    keywords: [ctxshrink, token budget, 20k, 25k, 85k runes, context length, shrink, trim tool]
+    read_first:
+      - pkg/ctxshrink/shrink.go
+      - pkg/bridge/responses.go
+      - pkg/tools/webloop.go
+    symbols: [ShrinkConversation, TrimLargeToolResults, DeduplicateToolCalls]
+    tests: [pkg/ctxshrink/shrink_test.go]
+
+  - id: cross-tool-matrix
+    keywords: [cross tool matrix, bi-directional, mcp, subagent, claude codex agy]
+    read_first:
+      - pkg/bridge/cross_tool_matrix_test.go
+      - pkg/tools/dialect.go
+      - pkg/tools/claude.go
+      - pkg/tools/codex.go
+    symbols: [TranslateToolCall, CanonicalTool]
+    tests: [pkg/bridge/cross_tool_matrix_test.go]
+
+  - id: proxy-down-public
+    keywords: [proxy down, public, revoke token, revert bind, 127.0.0.1]
+    read_first:
+      - pkg/proxy/client.go
+      - pkg/cli/cli.go
+    symbols: [CmdProxyDownPublic, SaveBindPublic, ClearAuthToken]
+    tests: [pkg/proxy/client_test.go, pkg/cli/cli_test.go]
 
 invariants:
   - "Tools thực thi trên client CLI — proxy không exec shell/file"
