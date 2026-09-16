@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/auth"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
@@ -172,8 +173,9 @@ func (a *ClaudeAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 
 	switch resp.StatusCode {
 	case http.StatusTooManyRequests:
+		retryAfter := guard.ParseRetryAfter(resp.Header)
 		resp.Body.Close()
-		return nil, types.ErrRateLimitReached
+		return nil, types.NewRateLimitError(a.AdapterID+": rate limit", retryAfter)
 	case http.StatusUnauthorized, http.StatusForbidden:
 		resp.Body.Close()
 		return nil, types.ErrAuthentication

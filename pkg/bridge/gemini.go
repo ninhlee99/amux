@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/ctxshrink"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/tools"
@@ -258,6 +260,20 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		return
 	}
 
+	// Session switch detection & compact for Gemini / Antigravity clients
+	targetAccount := pool.Preferred()
+	if targetAccount == "" {
+		targetAccount = "pool"
+	}
+	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
+		if len(req.Messages) > 4 {
+			req.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+		}
+	} else {
+		// Run global deduplication on historical tool results
+		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+	}
+
 	var initialFlusher http.Flusher
 	if req.Stream {
 		var ok bool
@@ -382,7 +398,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 		inTokens := estimateInputTokens(req)
 		outTokens := estimateStringTokens(fullContent.String())
-		recordChatUsage(r, pool, req.Model, inTokens, outTokens)
+		recordChatUsage(r, pool, req.Model, inTokens, outTokens, 0)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inTokens, outTokens, started, toolCalls)
 		return
 	}
@@ -482,7 +498,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(respObj)
-	recordChatUsage(r, pool, req.Model, inTokens, outTokens)
+	recordChatUsage(r, pool, req.Model, inTokens, outTokens, 0)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inTokens, outTokens, started, toolCalls)
 }
 

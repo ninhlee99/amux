@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/ctxshrink"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/tools"
@@ -38,6 +40,20 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
+	}
+
+	// Session switch detection & compact for Responses API clients
+	targetAccount := pool.Preferred()
+	if targetAccount == "" {
+		targetAccount = "pool"
+	}
+	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
+		if len(req.Messages) > 4 {
+			req.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+		}
+	} else {
+		// Run global deduplication on historical tool results
+		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
 	}
 
 	var initialFlusher http.Flusher
@@ -273,7 +289,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		flusher.Flush()
 
 		completionTokens := estimateStringTokens(fullContent.String())
-		recordChatUsage(r, pool, req.Model, inputTokens, completionTokens)
+		recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 		return
 	}
@@ -357,7 +373,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
-	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens)
+	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 }
 

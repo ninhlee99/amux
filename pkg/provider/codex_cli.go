@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -304,8 +305,9 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := guard.ParseRetryAfter(resp.Header)
 		resp.Body.Close()
-		return nil, types.ErrRateLimitReached
+		return nil, types.NewRateLimitError(a.AdapterID+": rate limit", retryAfter)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		resp.Body.Close()

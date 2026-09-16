@@ -19,12 +19,14 @@ import (
 	"time"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
 )
@@ -141,6 +143,29 @@ func RunProxy(addr, upstream string) error {
 
 	sw.Set(handler)
 	srv = &http.Server{Addr: addr, Handler: sw}
+
+	// Restore caches from disk
+	_ = ctxshrink.GlobalDeduplicator().LoadSnapshot("")
+	_ = GlobalReplayCache().LoadSnapshot("")
+
+	// Periodic cache flusher (every 5 minutes)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			_ = ctxshrink.GlobalDeduplicator().SaveSnapshot("")
+			_ = GlobalReplayCache().SaveSnapshot("")
+		}
+	}()
+
+	// Pre-warm upstream TLS and TCP connections in background so the first prompt
+	// experiences zero DNS and TLS handshake latency.
+	provider.WarmUpConnections([]string{
+		upstream,
+		"https://api.anthropic.com",
+		"https://api.openai.com",
+		"https://generativelanguage.googleapis.com",
+	})
 
 	_ = os.MkdirAll(types.BaseDir(), 0o700)
 	term.LogProxy("up on %s · active %q", addr, rot.Active())
@@ -476,6 +501,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			} else {
 				time.Sleep(100 * time.Millisecond)
 			}
+			_ = ctxshrink.GlobalDeduplicator().SaveSnapshot("")
+			_ = GlobalReplayCache().SaveSnapshot("")
 			shutdown()
 		}()
 	})
@@ -489,7 +516,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		path := r.URL.Path
 
 		if strings.HasPrefix(path, "/_am/") {
-			mux.ServeHTTP(w, r)
+			withGzip(mux).ServeHTTP(w, r)
 			return
 		}
 
@@ -633,6 +660,47 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				usePool = rot.Token() == "" && !hasAPIKey
 			default:
 				usePool = toolPool.Len() > 0
+			}
+
+			// If session switched account (e.g. rate limit, auto-rotate, failover),
+			// compact the transcript so the new account does not pay massive
+			// uncached / cache_creation token penalties on stale historical context.
+			targetAccount := rot.Active()
+			if usePool {
+				targetAccount = pool.Preferred()
+				if targetAccount == "" {
+					targetAccount = "pool"
+				}
+			}
+			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, nil, targetAccount); switched {
+				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 4 {
+					compacted := ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+					if len(compacted) < len(req.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(req.Messages) {
+						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to save tokens on cold account",
+							prevAcct, targetAccount, len(req.Messages), len(compacted))
+						req.Messages = compacted
+						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+							body = newBody
+							r.Body = io.NopCloser(bytes.NewReader(body))
+							r.ContentLength = int64(len(body))
+							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+						}
+					}
+				}
+			} else {
+				// Regular request within same account: deduplicate repeated historical tool outputs
+				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 2 {
+					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(req.Messages) {
+						req.Messages = deduped
+						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+							body = newBody
+							r.Body = io.NopCloser(bytes.NewReader(body))
+							r.ContentLength = int64(len(body))
+							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+						}
+					}
+				}
 			}
 
 			if usePool {

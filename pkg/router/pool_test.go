@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
@@ -231,3 +232,50 @@ func TestAccountPoolRouter_ConcurrentRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestAccountPoolRouter_AdaptiveCooldownRetryAfter(t *testing.T) {
+	// a1 returns RateLimitError with a 10-second RetryAfter hint
+	hintDuration := 10 * time.Second
+	a1 := &mockAdapter{
+		id:       "adapter-retry-after",
+		priority: 1,
+		err:      types.NewRateLimitError("too many requests", hintDuration),
+	}
+	a2 := &mockAdapter{
+		id:       "adapter-backup",
+		priority: 2,
+		content:  "backup content",
+	}
+
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{a1, a2})
+
+	ch, err := r.Send(context.Background(), &types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("expected successful failover to backup, got %v", err)
+	}
+	for range ch {
+	}
+
+	// Verify a1 status reports cooling
+	status := r.Status()
+	var a1Status map[string]any
+	for _, s := range status {
+		if s["id"] == "adapter-retry-after" {
+			a1Status = s
+			break
+		}
+	}
+	if a1Status == nil {
+		t.Fatalf("adapter-retry-after not found in status")
+	}
+	if a1Status["cooling"] != true {
+		t.Fatalf("expected adapter-retry-after to be in cooldown")
+	}
+	cdStr, ok := a1Status["cooldown_until"].(string)
+	if !ok || cdStr == "" {
+		t.Fatalf("expected valid cooldown_until string, got %v", a1Status["cooldown_until"])
+	}
+}
+

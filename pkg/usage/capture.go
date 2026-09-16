@@ -147,19 +147,27 @@ func applyUsageJSON(b []byte, e *types.UsageEntry) {
 		Message struct {
 			Model string `json:"model"`
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 		} `json:"message"`
 		Usage struct {
-			InputTokens      int `json:"input_tokens"`
-			OutputTokens     int `json:"output_tokens"`
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			PromptTokens             int `json:"prompt_tokens"`
+			CompletionTokens         int `json:"completion_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			PromptTokensDetails      *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 		UsageMetadata struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
 		} `json:"usageMetadata"`
 	}
 	if json.Unmarshal(b, &v) != nil {
@@ -180,6 +188,13 @@ func applyUsageJSON(b []byte, e *types.UsageEntry) {
 		// fire more than once per response — overwrite, don't accumulate.
 		e.Output = v.Message.Usage.OutputTokens
 	}
+	if v.Message.Usage.CacheReadInputTokens > 0 {
+		e.CacheRead = v.Message.Usage.CacheReadInputTokens
+	}
+	if v.Message.Usage.CacheCreationInputTokens > 0 {
+		e.CacheCreation = v.Message.Usage.CacheCreationInputTokens
+	}
+
 	if v.Usage.InputTokens > 0 {
 		e.Input = v.Usage.InputTokens
 	}
@@ -192,10 +207,23 @@ func applyUsageJSON(b []byte, e *types.UsageEntry) {
 	if v.Usage.CompletionTokens > 0 {
 		e.Output = v.Usage.CompletionTokens
 	}
+	if v.Usage.CacheReadInputTokens > 0 {
+		e.CacheRead = v.Usage.CacheReadInputTokens
+	}
+	if v.Usage.CacheCreationInputTokens > 0 {
+		e.CacheCreation = v.Usage.CacheCreationInputTokens
+	}
+	if v.Usage.PromptTokensDetails != nil && v.Usage.PromptTokensDetails.CachedTokens > 0 {
+		e.CacheRead = v.Usage.PromptTokensDetails.CachedTokens
+	}
+
 	if v.UsageMetadata.PromptTokenCount > 0 {
 		e.Input = v.UsageMetadata.PromptTokenCount
 	}
 	if v.UsageMetadata.CandidatesTokenCount > 0 {
 		e.Output = v.UsageMetadata.CandidatesTokenCount
+	}
+	if v.UsageMetadata.CachedContentTokenCount > 0 {
+		e.CacheRead = v.UsageMetadata.CachedContentTokenCount
 	}
 }

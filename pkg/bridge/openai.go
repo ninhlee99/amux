@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/ctxshrink"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/tools"
@@ -42,6 +44,20 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		return
 	}
 	req.ClientDialect = openaiClientDialect(r)
+
+	// Session switch detection & compact for OpenAI clients (Cursor/Codex)
+	targetAccount := pool.Preferred()
+	if targetAccount == "" {
+		targetAccount = "pool"
+	}
+	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
+		if len(req.Messages) > 4 {
+			req.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+		}
+	} else {
+		// Run global deduplication on historical tool results
+		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+	}
 
 	var initialFlusher http.Flusher
 	if req.Stream {
@@ -81,6 +97,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		var fullContent strings.Builder
 		var toolCalls []types.ToolCall
 		var logText string
+		var finalUsage *types.UsageStats
 		finishReason := "stop"
 		stopSent := false
 		ping := time.NewTicker(streamKeepaliveInterval)
@@ -98,6 +115,9 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 				return
 			}
 
+			if chunk.Usage != nil {
+				finalUsage = chunk.Usage
+			}
 			if chunk.LogText != "" {
 				logText = chunk.LogText
 			}
@@ -215,7 +235,17 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		outTok := estimateStringTokens(fullContent.String())
-		recordChatUsage(r, pool, req.Model, inputTokens, outTok)
+		cachedTokens := 0
+		if finalUsage != nil {
+			if finalUsage.InputTokens > 0 {
+				inputTokens = finalUsage.InputTokens
+			}
+			if finalUsage.OutputTokens > 0 {
+				outTok = finalUsage.OutputTokens
+			}
+			cachedTokens = finalUsage.CacheReadInputTokens
+		}
+		recordChatUsage(r, pool, req.Model, inputTokens, outTok, cachedTokens)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outTok, started, toolCalls)
 		return
 	}
@@ -225,11 +255,15 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	var thinking strings.Builder
 	var toolCalls []types.ToolCall
 	var logText string
+	var finalUsage *types.UsageStats
 	finishReason := "stop"
 	for chunk := range stream {
 		if chunk.Error != nil {
 			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
 			return
+		}
+		if chunk.Usage != nil {
+			finalUsage = chunk.Usage
 		}
 		if chunk.Thinking != "" {
 			thinking.WriteString(chunk.Thinking)
@@ -259,6 +293,16 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 
 	completionTokens := estimateStringTokens(full.String()) + estimateStringTokens(thinking.String())
+	cachedTokens := 0
+	if finalUsage != nil {
+		if finalUsage.InputTokens > 0 {
+			inputTokens = finalUsage.InputTokens
+		}
+		if finalUsage.OutputTokens > 0 {
+			completionTokens = finalUsage.OutputTokens
+		}
+		cachedTokens = finalUsage.CacheReadInputTokens
+	}
 	msg := map[string]any{
 		"role":    "assistant",
 		"content": full.String(),
@@ -291,7 +335,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
-	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens)
+	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, cachedTokens)
 	logChatRequest(r, pool, req, pickLogOutput(full.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 }
 
@@ -387,18 +431,19 @@ func openAIContentString(raw json.RawMessage) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func recordChatUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output int) {
-	if input == 0 && output == 0 {
+func recordChatUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output, cacheRead int) {
+	if input == 0 && output == 0 && cacheRead == 0 {
 		return
 	}
 	usage.AppendUsageEntry(types.UsageEntry{
-		Time:    time.Now(),
-		Account: poolAccountLabel(pool),
-		Model:   model,
-		Project: usage.ProjectForRemoteAddr(r.RemoteAddr),
-		Session: r.Header.Get("X-Claude-Code-Session-Id"),
-		Input:   input,
-		Output:  output,
+		Time:      time.Now(),
+		Account:   poolAccountLabel(pool),
+		Model:     model,
+		Project:   usage.ProjectForRemoteAddr(r.RemoteAddr),
+		Session:   r.Header.Get("X-Claude-Code-Session-Id"),
+		Input:     input,
+		Output:    output,
+		CacheRead: cacheRead,
 	})
 }
 

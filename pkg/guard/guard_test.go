@@ -147,6 +147,39 @@ func TestSessionAffinity(t *testing.T) {
 	if ok {
 		t.Errorf("expected affinity expired, but got %q", acc)
 	}
+
+	// Test Claude Code session headers
+	httpReq, _ := http.NewRequest("POST", "/v1/messages", nil)
+	httpReq.Header.Set("X-Claude-Code-Session-Id", "claude-sess-999")
+	keyFromHeader := ExtractSessionKey(httpReq, nil)
+	if keyFromHeader != "claude-sess-999" {
+		t.Fatalf("expected X-Claude-Code-Session-Id 'claude-sess-999', got %q", keyFromHeader)
+	}
+
+	// Test CheckAndPin account switch detection
+	sa2 := NewSessionAffinity(time.Hour)
+	switched, prev := sa2.CheckAndPin("sess-1", "acct-alpha")
+	if switched || prev != "" {
+		t.Fatalf("initial pin should not be a switch, got switched=%v prev=%q", switched, prev)
+	}
+
+	// Same account should not be a switch
+	switched, prev = sa2.CheckAndPin("sess-1", "acct-alpha")
+	if switched {
+		t.Fatalf("same account should not be a switch")
+	}
+
+	// Different account MUST trigger a switch
+	switched, prev = sa2.CheckAndPin("sess-1", "acct-beta")
+	if !switched || prev != "acct-alpha" {
+		t.Fatalf("expected switch from acct-alpha, got switched=%v prev=%q", switched, prev)
+	}
+
+	// Subsequent turn on acct-beta should not trigger a switch
+	switched, prev = sa2.CheckAndPin("sess-1", "acct-beta")
+	if switched {
+		t.Fatalf("subsequent turn on acct-beta should not trigger switch")
+	}
 }
 
 func TestProxyEgress(t *testing.T) {

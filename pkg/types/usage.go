@@ -4,13 +4,15 @@ import "time"
 
 // UsageEntry records token usage for a request/response turn through the proxy.
 type UsageEntry struct {
-	Time    time.Time `json:"t"`
-	Account string    `json:"account"`
-	Model   string    `json:"model,omitempty"`
-	Project string    `json:"project,omitempty"`
-	Session string    `json:"session,omitempty"`
-	Input   int       `json:"in"`
-	Output  int       `json:"out"`
+	Time          time.Time `json:"t"`
+	Account       string    `json:"account"`
+	Model         string    `json:"model,omitempty"`
+	Project       string    `json:"project,omitempty"`
+	Session       string    `json:"session,omitempty"`
+	Input         int       `json:"in"`
+	Output        int       `json:"out"`
+	CacheRead     int       `json:"cache_read,omitempty"`
+	CacheCreation int       `json:"cache_write,omitempty"`
 }
 
 // EventEntry is a tagged realtime log line (rotate, failover, proxy, …).

@@ -3,6 +3,7 @@ package ctxshrink
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"amux-accounts/pkg/types"
 )
@@ -226,4 +227,177 @@ func truncateRunes(s string, max, head, tail int) string {
 		return s
 	}
 	return string(r[:head]) + "\n... [truncated] ...\n" + string(r[len(r)-tail:])
+}
+
+// SemanticSummarizerFunc optionally summarizes dropped middle turns into a concise
+// semantic overview. If registered, it is called during account switches; on any failure
+// or timeout, amux falls back immediately to extractFastSemanticHandoff (<0.01ms rule-based).
+type SemanticSummarizerFunc func(middle []types.ChatMessage) (string, error)
+
+var (
+	summarizerMu     sync.RWMutex
+	globalSummarizer SemanticSummarizerFunc
+)
+
+// SetGlobalSemanticSummarizer sets the pluggable summarizer (e.g. backed by a cheap/flash provider).
+func SetGlobalSemanticSummarizer(fn SemanticSummarizerFunc) {
+	summarizerMu.Lock()
+	defer summarizerMu.Unlock()
+	globalSummarizer = fn
+}
+
+func getGlobalSemanticSummarizer() SemanticSummarizerFunc {
+	summarizerMu.RLock()
+	defer summarizerMu.RUnlock()
+	return globalSummarizer
+}
+
+// CompactForAccountSwitch compacts a conversation history when switching to a new account,
+// dramatically reducing cold-start tokens (and avoiding paying cache creation on old logs).
+// It preserves:
+// 1. System instructions (so model personas/rules remain 100% intact).
+// 2. The initial user goal/prompt (the root task).
+// 3. Compacts older middle tool results & turns into an explicit handoff note.
+// 4. Preserves the recent tail turns intact (with full context/tool results)
+//    so the model can immediately continue without losing recent state.
+// 5. Safely converts any orphaned tool_results whose tool_use was dropped into
+//    standard user context messages to prevent Anthropic/OpenAI 400 validation errors.
+func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	if tailTurns <= 0 {
+		tailTurns = compactKeepTailTurns
+	}
+	// First run global tool deduplication to eliminate repeated identical tool outputs
+	msgs = GlobalDeduplicator().DeduplicateMessages(msgs, 2)
+
+	// If message count is already small and estimated tokens are under 8000,
+	// just run standard tool compaction without dropping any turns.
+	if len(msgs) <= tailTurns+2 && EstimateMessagesTokens(msgs) < 8000 {
+		return CompactMessages(msgs)
+	}
+
+	var sys []types.ChatMessage
+	var rest []types.ChatMessage
+	for _, m := range msgs {
+		if strings.EqualFold(m.Role, "system") {
+			sys = append(sys, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+
+	if len(rest) <= tailTurns+1 {
+		return CompactMessages(msgs)
+	}
+
+	firstUser := rest[0]
+	tail := rest[len(rest)-tailTurns:]
+	droppedCount := len(rest) - 1 - tailTurns
+
+	// Map all tool call IDs defined inside the tail turns
+	tailToolIDs := make(map[string]bool)
+	for _, m := range tail {
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				tailToolIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Sanitize tail: Any tool_result whose tool_use was dropped in the middle
+	// must be converted into a safe user message containing the tool result text,
+	// so Anthropic/OpenAI APIs will never reject with "orphaned tool_result".
+	sanitizedTail := make([]types.ChatMessage, 0, len(tail))
+	for _, m := range tail {
+		if strings.EqualFold(m.Role, "tool") && !tailToolIDs[m.ToolCallID] {
+			sanitizedTail = append(sanitizedTail, types.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("[Prior Tool Output - %s]:\n%s", m.ToolCallID, m.Content),
+			})
+		} else {
+			sanitizedTail = append(sanitizedTail, m)
+		}
+	}
+
+	middleTurns := rest[1 : len(rest)-tailTurns]
+	
+	// Try semantic summarizer if available; fallback instantly to rule-based
+	var summary string
+	if summarizer := getGlobalSemanticSummarizer(); summarizer != nil {
+		if s, err := summarizer(middleTurns); err == nil && strings.TrimSpace(s) != "" {
+			summary = fmt.Sprintf("[amux switch handoff] Session rotated account. %d intermediate turns summarized:\n%s\nPlease continue seamlessly from the latest context below.", droppedCount, strings.TrimSpace(s))
+		}
+	}
+	if summary == "" {
+		summary = extractFastSemanticHandoff(middleTurns, droppedCount)
+	}
+
+	handoffNote := types.ChatMessage{
+		Role:    "user",
+		Content: summary,
+	}
+
+	out := make([]types.ChatMessage, 0, len(sys)+3+len(sanitizedTail))
+	out = append(out, sys...)
+	out = append(out, firstUser)
+	out = append(out, handoffNote)
+	out = append(out, sanitizedTail...)
+
+	return CompactMessages(out)
+}
+
+// extractFastSemanticHandoff builds a fast, lightweight summary (<250 tokens) of middle turns
+// without external LLM latency or dependencies. It extracts key files touched, tool actions executed,
+// and user intents so the destination account understands prior progress instantly.
+func extractFastSemanticHandoff(middle []types.ChatMessage, droppedCount int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[amux switch handoff] Session rotated account. %d intermediate turns compacted to minimize token burn.\n", droppedCount))
+
+	// Track unique tools and user intents
+	toolActions := make(map[string]int)
+	var userDirectives []string
+
+	for _, m := range middle {
+		if strings.EqualFold(m.Role, "user") {
+			trimmed := strings.TrimSpace(m.Content)
+			if trimmed != "" && len(userDirectives) < 3 {
+				// Keep first line or up to 100 runes
+				lines := strings.Split(trimmed, "\n")
+				firstLine := strings.TrimSpace(lines[0])
+				if len([]rune(firstLine)) > 80 {
+					firstLine = string([]rune(firstLine)[:80]) + "..."
+				}
+				userDirectives = append(userDirectives, firstLine)
+			}
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.Name != "" {
+				toolActions[tc.Name]++
+			}
+		}
+	}
+
+	if len(userDirectives) > 0 {
+		sb.WriteString("Recent Directives:\n")
+		for _, d := range userDirectives {
+			sb.WriteString("- ")
+			sb.WriteString(d)
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(toolActions) > 0 {
+		sb.WriteString("Prior Actions Executed: ")
+		var acts []string
+		for name, count := range toolActions {
+			acts = append(acts, fmt.Sprintf("%s (%d)", name, count))
+		}
+		sb.WriteString(strings.Join(acts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("Please continue seamlessly from the latest context below.")
+	return sb.String()
 }
