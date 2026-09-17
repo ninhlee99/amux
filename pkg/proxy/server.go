@@ -677,7 +677,12 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			switch {
 			case usePool:
 				// already decided via X-Provider
-			case isWebTask && toolPool != nil && !toolPool.ManualPin() && toolPool.HasLivingGroup(router.GroupClaudeWeb, router.GroupChatGPTWeb, router.GroupGeminiWeb):
+			case isWebTask && toolPool != nil && !toolPool.ManualPin() && toolPool.HasLivingGroup(
+				router.GroupClaudeWeb, router.GroupChatGPTWeb, router.GroupGeminiWeb,
+				router.GroupAGYSub, router.GroupAGYFree,
+				router.GroupAPIOther,
+				router.GroupCodexSub, router.GroupCodexFree,
+			):
 				usePool = true
 			case hasTools && claudeUsable:
 				if rot.ProfileCount() > 0 {
