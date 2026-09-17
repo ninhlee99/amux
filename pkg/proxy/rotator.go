@@ -79,6 +79,20 @@ type Rotator struct {
 	// that stopped being usable at that moment).
 	autoSwitches   map[string]int // Rotate(): 429 or near-limit
 	manualSwitches map[string]int // ForceSwitch(): `am switch` / hook-driven
+
+	poolSize int // number of active pool providers available
+}
+
+func (r *Rotator) SetPoolSize(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.poolSize = n
+}
+
+func (r *Rotator) PoolSize() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.poolSize
 }
 
 func NewRotator(tool string) *Rotator {
@@ -380,12 +394,19 @@ func (r *Rotator) Observe(resp *http.Response) {
 	if thresh <= 0 {
 		thresh = DefaultUsedThreshold
 	}
+	pSize := r.poolSize
 	r.mu.Unlock()
 
+	hasOtherClaude := r.ProfileCount() > 1
+	hasAlternatives := hasOtherClaude || pSize > 0
+
 	hardLimited := resp.StatusCode == http.StatusTooManyRequests
-	nearLimit := (fiveH.Known && fiveH.Used >= thresh) ||
-		(!fiveH.Known && remOK && !limOK && rem <= 2) ||
-		(!fiveH.Known && frac >= thresh)
+	nearLimit := false
+	if hasAlternatives {
+		nearLimit = (fiveH.Known && fiveH.Used >= thresh) ||
+			(!fiveH.Known && remOK && !limOK && rem <= 2) ||
+			(!fiveH.Known && frac >= thresh)
+	}
 
 	if hardLimited || nearLimit {
 		reason := "near limit"

@@ -13,7 +13,6 @@ import (
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/proxy"
-	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 )
@@ -130,33 +129,11 @@ func printClaudeAccountsDetail(s *proxyStatus) {
 	if len(s.Accounts) == 0 {
 		return
 	}
-	var rows []accountRow
-	prints := map[string][]func(){}
+	term.Section("accounts")
 	for i := range s.Accounts {
-		a := s.Accounts[i]
-		grp := router.ResolveProfileGroup("claude", claudeAccountPlan(a.Profile, a.Account))
-		rows = append(rows, accountRow{Group: grp, ID: a.Profile})
-		prints[grp] = append(prints[grp], func() {
-			printOneClaudeAccount(s, a)
-		})
+		printOneClaudeAccount(s, s.Accounts[i])
 	}
-	forEachAccountGroup(rows, func(title, group string, _ []accountRow) {
-		printDisplaySection(title)
-		for _, fn := range prints[group] {
-			fn()
-		}
-		term.PanelEnd()
-	})
-}
-
-func claudeAccountPlan(profileName, account string) string {
-	for _, p := range profile.ListProfiles("claude") {
-		if (profileName != "" && (p.Name == profileName || p.ID == profileName)) ||
-			(account != "" && p.Account == account) {
-			return p.Plan
-		}
-	}
-	return ""
+	term.PanelEnd()
 }
 
 func printOneClaudeAccount(s *proxyStatus, a statusAccount) {
@@ -238,26 +215,11 @@ func printPoolDetail(s *proxyStatus) {
 		return
 	}
 
-	var rows []accountRow
-	byID := make(map[string]map[string]any, len(s.Pool))
+	term.Section("pool")
 	for _, p := range s.Pool {
-		id, _ := p["id"].(string)
-		grp, _ := p["group"].(string)
-		if grp == "" {
-			grp = router.ResolveAccountGroup(id, "", "", "")
-		}
-		prio, _ := p["priority"].(float64)
-		rows = append(rows, withAPIProvider(accountRow{Group: grp, ID: id, Priority: int(prio)}))
-		byID[id] = p
+		printOnePoolAccount(s, p)
 	}
-
-	forEachAccountGroup(rows, func(title, _ string, members []accountRow) {
-		printDisplaySection(title)
-		for _, r := range members {
-			printOnePoolAccount(s, byID[r.ID])
-		}
-		term.PanelEnd()
-	})
+	term.PanelEnd()
 }
 
 func printOnePoolAccount(s *proxyStatus, p map[string]any) {

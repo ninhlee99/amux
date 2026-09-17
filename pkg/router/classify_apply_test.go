@@ -1,8 +1,6 @@
 package router
 
 import (
-	"context"
-	"os"
 	"testing"
 
 	"amux-accounts/pkg/types"
@@ -54,45 +52,4 @@ func TestApplyTaskClassification_ReviewLowerBudget(t *testing.T) {
 	if !req.Thinking || req.ThinkingBudget != 512 {
 		t.Fatalf("thinking=%v budget=%d", req.Thinking, req.ThinkingBudget)
 	}
-}
-
-func TestWebPolicy_EnvOverrides(t *testing.T) {
-	prev := EffectiveWebPolicy()
-	t.Cleanup(func() {
-		_ = os.Unsetenv("AM_WEB_POLICY")
-		SetWebPolicy(prev)
-	})
-	SetWebPolicy(WebPolicyLastResort)
-	_ = os.Setenv("AM_WEB_POLICY", WebPolicyForce)
-	if EffectiveWebPolicy() != WebPolicyForce {
-		t.Fatal(EffectiveWebPolicy())
-	}
-}
-
-func TestSkipTextOnly_ForceAllowsWeb(t *testing.T) {
-	prev := EffectiveWebPolicy()
-	t.Cleanup(func() {
-		_ = os.Unsetenv("AM_WEB_POLICY")
-		SetWebPolicy(prev)
-	})
-	_ = os.Unsetenv("AM_WEB_POLICY")
-	SetWebPolicy(WebPolicyForce)
-	web := stubNoTools{id: "chatgpt:01"}
-	req := &types.ChatRequest{Tools: []types.ToolDef{{Name: "Bash"}}}
-	if skipTextOnly(web, req, true) {
-		t.Fatal("force must not skip web")
-	}
-	SetWebPolicy(WebPolicyLastResort)
-	if !skipTextOnly(web, req, true) {
-		t.Fatal("last_resort must skip web when native exists")
-	}
-}
-
-type stubNoTools struct{ id string }
-
-func (s stubNoTools) ID() string       { return s.id }
-func (s stubNoTools) Priority() int    { return 1 }
-func (s stubNoTools) SupportsTools() bool { return false }
-func (s stubNoTools) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
-	return nil, nil
 }

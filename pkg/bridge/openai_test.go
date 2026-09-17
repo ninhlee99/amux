@@ -114,49 +114,56 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	}
 }
 
-func TestHandleChatCompletions_CodexUAPrefersCodexSub(t *testing.T) {
-	claude := &mockStreamAdapter{
-		id:     "claude:ua:01",
-		group:  "claude_sub",
-		chunks: []types.StreamChunk{{ID: "claude:ua:01", Content: "response from claude:ua:01", Done: true}},
+// TestHandleChatCompletions_UAIgnoredForRouting locks in the account-equality
+// rule: which IDE/client is asking (via User-Agent) must never bias account
+// selection — only tier (subscription > web > api_key) and availability do.
+// Both adapters here are the same tier, so the caller's User-Agent must not
+// change which one answers first.
+func TestHandleChatCompletions_UAIgnoredForRouting(t *testing.T) {
+	newPool := func() *router.AccountPoolRouter {
+		return router.NewAccountPoolRouter([]types.ProviderAdapter{
+			&mockStreamAdapter{
+				id:     "claude:ua:01",
+				group:  "claude_sub",
+				chunks: []types.StreamChunk{{ID: "claude:ua:01", Content: "response from claude:ua:01", Done: true}},
+			},
+			&mockStreamAdapter{
+				id:     "codex:ua:01",
+				group:  "codex_sub",
+				chunks: []types.StreamChunk{{ID: "codex:ua:01", Content: "response from codex:ua:01", Done: true}},
+			},
+		})
 	}
-	codex := &mockStreamAdapter{
-		id:     "codex:ua:01",
-		group:  "codex_sub",
-		chunks: []types.StreamChunk{{ID: "codex:ua:01", Content: "response from codex:ua:01", Done: true}},
-	}
-	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{claude, codex})
 
 	reqBody := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
 	req.Header.Set("User-Agent", "codex_cli_rs/0.42.0")
 	rec := httptest.NewRecorder()
-	bridge.HandleChatCompletions(rec, req, pool)
+	bridge.HandleChatCompletions(rec, req, newPool())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "response from codex:ua:01") {
-		t.Fatalf("Codex UA should pick codex_sub first, got %s", rec.Body.String())
-	}
+	firstPick := rec.Body.String()
 
-	cursorPool := router.NewAccountPoolRouter([]types.ProviderAdapter{
-		&mockStreamAdapter{
-			id:     "claude:ua:02",
-			group:  "claude_sub",
-			chunks: []types.StreamChunk{{ID: "claude:ua:02", Content: "response from claude:ua:02", Done: true}},
-		},
-		&mockStreamAdapter{
-			id:     "codex:ua:02",
-			group:  "codex_sub",
-			chunks: []types.StreamChunk{{ID: "codex:ua:02", Content: "response from codex:ua:02", Done: true}},
-		},
-	})
 	cursor := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
 	cursor.Header.Set("User-Agent", "Cursor/1.0")
 	rec2 := httptest.NewRecorder()
-	bridge.HandleChatCompletions(rec2, cursor, cursorPool)
-	if !strings.Contains(rec2.Body.String(), "response from claude:ua:02") {
-		t.Fatalf("Cursor UA should keep global Claude-first order, got %s", rec2.Body.String())
+	bridge.HandleChatCompletions(rec2, cursor, newPool())
+	secondPick := rec2.Body.String()
+
+	pick := func(body string) string {
+		switch {
+		case strings.Contains(body, "claude:ua:01"):
+			return "claude:ua:01"
+		case strings.Contains(body, "codex:ua:01"):
+			return "codex:ua:01"
+		default:
+			return ""
+		}
+	}
+	if pick(firstPick) != pick(secondPick) {
+		t.Fatalf("User-Agent must not change tier-equal selection: codex-UA picked %q, cursor-UA picked %q", pick(firstPick), pick(secondPick))
 	}
 }
 

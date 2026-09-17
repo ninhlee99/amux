@@ -17,7 +17,6 @@ import (
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
-	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
@@ -90,27 +89,31 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 // --no-browser to paste without opening anything. Pass --oauth or login
 // codex/antigravity for standalone OAuth.
 func CmdLogin(args []string) {
+	var target string
+	var flags loginFlags
 	if len(args) == 0 {
-		fmt.Println("Usage: amux login <provider> [--browser] [--token T] [--cookie C] [--refresh R] [--model M] [--oauth] [--device]")
-		fmt.Println("Providers: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok, codex, antigravity")
-		fmt.Println()
-		fmt.Println("  chatgpt / claude / gemini-web  default = open your browser, paste the cookie")
-		fmt.Println("  gemini (API)                   AI Studio API key")
-		fmt.Println("  kimi                           Moonshot Kimi API key (or pass --oauth/--device for device flow)")
-		fmt.Println("  grok                           xAI Grok API key (or pass --oauth/--device for device flow)")
-		fmt.Println("  codex                          OpenAI Codex standalone OAuth (or pass --device)")
-		fmt.Println("  antigravity / agy              Google Antigravity standalone OAuth (no CLI required)")
-		fmt.Println("  --oauth                        trigger standalone OAuth flow directly")
-		fmt.Println("  --device, -d                   trigger device code authentication flow")
-		fmt.Println("  --manual, -m                   trigger manual code pasting flow")
-		fmt.Println("  --token/--cookie               skip browser, use pasted credentials")
-		fmt.Println("  --no-browser                   paste only, do not open any browser")
-		fmt.Println("  --browser                      dedicated window + automatic CDP cookie capture")
-		fmt.Println("  --default-browser, --open      explicit form of the default behaviour")
-		return
+		fmt.Println("Select provider to login:")
+		fmt.Println("  [1] claude (Claude Code OAuth / Web)")
+		fmt.Println("  [2] codex  (OpenAI Codex OAuth)")
+		fmt.Println("  [3] gemini (Google AI Studio / Antigravity OAuth)")
+		fmt.Println("  [4] cursor (Cursor API Key / Token)")
+		ans := strings.TrimSpace(term.ReadLine("Select [1-4] (claude/codex/gemini/cursor): "))
+		switch strings.ToLower(ans) {
+		case "1", "claude":
+			target = "claude"
+		case "2", "codex":
+			target = "codex"
+		case "3", "gemini":
+			target = "gemini"
+		case "4", "cursor":
+			target = "cursor"
+		default:
+			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor")
+			return
+		}
+	} else {
+		target, flags, _ = parseLoginFlags(args)
 	}
-
-	target, flags, _ := parseLoginFlags(args)
 	switch target {
 	case "codex", "codex-cli":
 		opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
@@ -183,9 +186,50 @@ func CmdLogin(args []string) {
 		} else {
 			loginGrok(flags)
 		}
+	case "cursor":
+		loginCursor(flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: chatgpt, claude, gemini, gemini-web, github, groq, kimi, grok, codex, antigravity (or run: am oauth <provider>)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, cursor (or run: am login)\n", target)
 	}
+}
+
+func loginCursor(f loginFlags) {
+	fmt.Println("== Login: Cursor ==")
+	key := strings.TrimSpace(f.token)
+	if key == "" {
+		key = strings.TrimSpace(term.ReadLine("Enter OpenAI API Key / Token for Cursor: "))
+	}
+	if key == "" {
+		fmt.Println("API key required.")
+		return
+	}
+	model := f.model
+	if model == "" {
+		model = "gpt-4o"
+	}
+	path := provider.DefaultAccountsPath()
+	id, priorityFloor, multi := nextPoolID("cursor:api")
+	priority := 1
+	if multi {
+		priority = priorityFloor
+	}
+	cfg := provider.ProviderConfig{
+		ID:       id,
+		Type:     "openai_compatible",
+		IDE:      "cursor",
+		Priority: priority,
+		BaseURL:  "https://api.openai.com/v1",
+		APIKey:   key,
+		Model:    model,
+		Plan:     "pro",
+	}
+	if err := provider.AddOrUpdateProvider(path, cfg); err != nil {
+		fmt.Printf("Error saving: %v\n", err)
+		return
+	}
+	proxy.Sync()
+	fmt.Printf("Saved Cursor account as %s.\n", id)
+	CmdAccounts()
 }
 
 
@@ -868,135 +912,90 @@ func CmdAccounts() {
 	CmdAccountsFilter("")
 }
 
-// CmdAccountsFilter lists accounts grouped by rotate priority.
-// filter may be a tool/group hint (claude, codex, agy, api, web) or empty = all.
+// CollectFlatAccounts compiles all accounts into a flat list structure without nested groups.
+func CollectFlatAccounts(filter string) []types.Account {
+	var accounts []types.Account
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
+		if tool == "codex" {
+			continue
+		}
+		for _, p := range profile.ListProfiles(tool) {
+			acct := p.ToAccount()
+			if filter != "" && !strings.EqualFold(acct.Provider, filter) && !strings.Contains(strings.ToLower(acct.ID), filter) {
+				continue
+			}
+			accounts = append(accounts, acct)
+		}
+	}
+	for _, p := range loadProviderRows() {
+		acct := p.ToAccount()
+		if filter != "" && !strings.EqualFold(acct.Provider, filter) && !strings.Contains(strings.ToLower(acct.ID), filter) {
+			continue
+		}
+		accounts = append(accounts, acct)
+	}
+	return accounts
+}
+
+// CmdAccountsFilter lists accounts in a clean flat table.
+// filter may be a tool/provider hint (claude, codex, gemini, cursor) or empty = all.
 func CmdAccountsFilter(filter string) {
-	subtitle := "grouped by rotate priority · POOL=IN means rotate"
+	subtitle := "flat accounts list · ACTIVE=Yes means in rotate"
 	if filter != "" {
 		subtitle = "filter " + filter + " · " + subtitle
 	}
 	term.Header("amux accounts", subtitle)
 
-	rows := collectAccountRows(filter)
-	if len(rows) == 0 {
-		term.Warn("No accounts. am add / am login / am api add")
+	accounts := CollectFlatAccounts(filter)
+	if len(accounts) == 0 {
+		term.Warn("No accounts. am login [claude|codex|gemini|cursor]")
 		return
 	}
 
-	forEachAccountGroup(rows, func(title, _ string, members []accountRow) {
-		printDisplaySection(title)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, term.Dim("ID\tKIND\tACCOUNT\tPLAN\tPOOL\tMODEL"))
-		for _, r := range members {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Account, r.Plan, r.Pool, r.Model)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, term.Dim("ID\tPROVIDER\tTYPE\tAUTH_TYPE\tUSAGE %\tACTIVE"))
+	for _, a := range accounts {
+		activeStr := "No"
+		if a.Active {
+			activeStr = "Yes"
 		}
-		w.Flush()
-		term.PanelEnd()
-	})
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%.1f%%\t%s\n", a.ID, a.Provider, a.Type, a.AuthType, a.UsagePercent, activeStr)
+	}
+	w.Flush()
+	term.PanelEnd()
 }
 
-func collectAccountRows(filter string) []accountRow {
-	var rows []accountRow
-	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
-		if tool == "codex" {
-			continue // Codex is represented below in loadProviderRows()
-		}
-		for _, p := range profile.ListProfiles(tool) {
-			grp := router.ResolveProfileGroup(tool, p.Plan)
-			acct := p.Account
-			if acct == "" {
-				acct = p.Name
-			}
-			pName := p.Name
-			if pName == "" {
-				pName = p.ID
-			}
-			plan := strings.ToUpper(p.Plan)
-			if plan == "" {
-				if tool == "claude" || tool == "antigravity" {
-					plan = "PRO"
-				} else {
-					plan = "FREE"
-				}
-			}
-			row := accountRow{
-				Group:   grp,
-				ID:      pName,
-				Kind:    tool,
-				Account: acct,
-				Plan:    plan,
-				Pool:    poolMark(!p.Disabled),
-				Model:   "-",
-			}
-			if !matchesAccountRowFilter(filter, row) {
-				continue
-			}
-			rows = append(rows, row)
-		}
-	}
-	for _, p := range loadProviderRows() {
-		grp := router.ResolveAccountGroup(p.ID, p.Type, p.Plan, p.Group)
-		kind := providerKindLabel(p.Type)
-		acct := p.Account
-		if acct == "" {
-			acct = "-"
-		}
-		model := p.Model
-		if model == "" {
-			model = "-"
-		}
-		plan := strings.ToUpper(p.Plan)
-		if plan == "" {
-			if p.Type == "chatgpt_web" || p.Type == "claude_web" || p.Type == "gemini_web" || p.Type == "gemini" || p.Type == "openai_compatible" {
-				plan = "FREE"
-			} else {
-				plan = "-"
-			}
-		}
-		row := withAPIProvider(accountRow{
-			Group:    grp,
-			ID:       p.ID,
-			Kind:     kind,
-			Account:  acct,
-			Plan:     plan,
-			Pool:     poolMark(p.InRotatePool()),
-			Model:    model,
-			Priority: p.Priority,
-		})
-		if !matchesAccountRowFilter(filter, row) {
-			continue
-		}
-		rows = append(rows, row)
-	}
-	return rows
-}
-
-// CmdPool lists accounts currently in the rotate pool (POOL=IN).
+// CmdPool lists accounts currently in the rotate pool (POOL=IN), flat — no group sections.
 func CmdPool() {
-	term.Header("amux pool", "rotate set · grouped by priority · am pool add|remove <id>")
+	term.Header("amux pool", "rotate set · am pool add|remove <id>")
 	rows := collectPoolRows()
 	if len(rows) == 0 {
 		term.Warn("Rotate pool empty. am pool add <id>  (see: am accounts)")
 		return
 	}
-	forEachAccountGroup(rows, func(title, _ string, members []accountRow) {
-		printDisplaySection(title)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
-		for _, r := range members {
-			prio := "-"
-			if r.Kind != "claude" && r.Kind != "antigravity" {
-				prio = fmt.Sprintf("%d", r.Priority)
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.ID, r.Kind, prio, r.Model)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
+	for _, r := range rows {
+		prio := "-"
+		if r.Kind != "claude" && r.Kind != "antigravity" {
+			prio = fmt.Sprintf("%d", r.Priority)
 		}
-		w.Flush()
-		term.PanelEnd()
-	})
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.ID, r.Kind, prio, r.Model)
+	}
+	w.Flush()
+	term.PanelEnd()
 }
 
-func collectPoolRows() []accountRow {
-	var rows []accountRow
+type poolRow struct {
+	ID       string
+	Kind     string
+	Model    string
+	Priority int
+}
+
+func collectPoolRows() []poolRow {
+	var rows []poolRow
 	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
 		if tool == "codex" {
 			continue
@@ -1009,12 +1008,10 @@ func collectPoolRows() []accountRow {
 			if pName == "" {
 				pName = p.ID
 			}
-			rows = append(rows, accountRow{
-				Group: router.ResolveProfileGroup(tool, p.Plan),
+			rows = append(rows, poolRow{
 				ID:    pName,
 				Kind:  tool,
 				Model: "-",
-				Pool:  "IN",
 			})
 		}
 	}
@@ -1026,14 +1023,12 @@ func collectPoolRows() []accountRow {
 		if model == "" {
 			model = "-"
 		}
-		rows = append(rows, withAPIProvider(accountRow{
-			Group:    router.ResolveAccountGroup(p.ID, p.Type, p.Plan, p.Group),
+		rows = append(rows, poolRow{
 			ID:       p.ID,
 			Kind:     providerKindLabel(p.Type),
 			Model:    model,
 			Priority: p.Priority,
-			Pool:     "IN",
-		}))
+		})
 	}
 	return rows
 }

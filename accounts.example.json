@@ -1,6 +1,40 @@
 {
   "version": 2,
   "webPolicy": "last_resort",
+  "accounts": [
+    {
+      "id": "claude:01",
+      "provider": "claude",
+      "auth_type": "oauth",
+      "is_subscription": true,
+      "usage_percent": 12.5,
+      "active": true
+    },
+    {
+      "id": "codex:01",
+      "provider": "codex",
+      "auth_type": "oauth",
+      "is_subscription": true,
+      "usage_percent": 45.0,
+      "active": true
+    },
+    {
+      "id": "gemini:api:01",
+      "provider": "gemini",
+      "auth_type": "api_key",
+      "is_subscription": false,
+      "usage_percent": 0.0,
+      "active": true
+    },
+    {
+      "id": "cursor:01",
+      "provider": "cursor",
+      "auth_type": "api_key",
+      "is_subscription": true,
+      "usage_percent": 20.0,
+      "active": true
+    }
+  ],
   "providers": [
     {
       "id": "github:api:01",

@@ -46,7 +46,7 @@ func tagPaint(tag string) string {
 }
 
 func stamp() string {
-	s := time.Now().Format("15:04:05")
+	s := time.Now().Format("15:04:05.000")
 	if errOK() {
 		return DimErr(s)
 	}

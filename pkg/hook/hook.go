@@ -408,7 +408,7 @@ func syncCodexBaseURL(content string, proxyUp bool, proxyBase string) (string, b
 	return content, changed
 }
 
-// SyncClientSettingsEnv mirrors proxy reachability into Claude + Codex client configs.
+// SyncClientSettingsEnv mirrors proxy reachability into Claude + Codex + Cursor client configs.
 func SyncClientSettingsEnv(proxyUp bool, proxyBase string) error {
 	var first error
 	if err := SyncClaudeSettingsEnv(proxyUp, proxyBase); err != nil && first == nil {
@@ -417,10 +417,13 @@ func SyncClientSettingsEnv(proxyUp bool, proxyBase string) error {
 	if err := SyncCodexSettingsEnv(proxyUp, proxyBase); err != nil && first == nil {
 		first = err
 	}
+	if err := SyncCursorSettingsEnv(proxyUp, proxyBase); err != nil && first == nil {
+		first = err
+	}
 	return first
 }
 
-// ClientSettingsPointToProxy reports whether Claude Code or Codex config files
+// ClientSettingsPointToProxy reports whether Claude Code, Codex, or Cursor config files
 // currently point at the proxy gateway.
 func ClientSettingsPointToProxy() bool {
 	m := LoadClaudeSettings()
@@ -434,6 +437,13 @@ func ClientSettingsPointToProxy() bool {
 		if reCodexOpenAIBase.Match(b) {
 			return true
 		}
+	}
+	cm := LoadCursorSettings()
+	if base, ok := cm["cursor.general.openaiBaseUrl"].(string); ok && strings.TrimSpace(base) != "" {
+		return true
+	}
+	if base, ok := cm["openai.baseUrl"].(string); ok && strings.TrimSpace(base) != "" {
+		return true
 	}
 	return false
 }
@@ -798,5 +808,61 @@ func CursorHookInstalled() bool {
 		}
 	}
 	return false
+}
+
+func CursorSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	macPath := filepath.Join(home, "Library", "Application Support", "Cursor", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(macPath)); err == nil {
+		return macPath
+	}
+	linuxPath := filepath.Join(home, ".config", "Cursor", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(linuxPath)); err == nil {
+		return linuxPath
+	}
+	return filepath.Join(home, ".cursor", "settings.json")
+}
+
+func LoadCursorSettings() map[string]any {
+	p := CursorSettingsPath()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func SaveCursorSettings(m map[string]any) error {
+	p := CursorSettingsPath()
+	if len(m) == 0 {
+		_ = os.Remove(p)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return fmt.Errorf("mkdir cursor settings: %w", err)
+	}
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return os.WriteFile(p, append(b, '\n'), 0o600)
+}
+
+func SyncCursorSettingsEnv(proxyUp bool, proxyBase string) error {
+	m := LoadCursorSettings()
+	if proxyUp {
+		base := strings.TrimRight(proxyBase, "/") + "/v1"
+		m["cursor.general.openaiBaseUrl"] = base
+		m["openai.baseUrl"] = base
+		m["openai.apiKey"] = "am-proxy"
+	} else {
+		delete(m, "cursor.general.openaiBaseUrl")
+		delete(m, "openai.baseUrl")
+		if k, ok := m["openai.apiKey"].(string); ok && k == "am-proxy" {
+			delete(m, "openai.apiKey")
+		}
+	}
+	return SaveCursorSettings(m)
 }
 

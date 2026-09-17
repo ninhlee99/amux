@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/tools"
@@ -1533,6 +1534,206 @@ func TestCrossMatrix_TypeCoercion_StringNumbersAndBooleans(t *testing.T) {
 	}
 	if !foundTool {
 		t.Fatalf("replace_file_content functionCall not found: %+v", resp.Candidates[0].Content.Parts)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Universal Data Format: arbitrary/dynamic custom tool schema (never
+// hardcoded anywhere in the engine) plus merchant/domain context embedded as
+// XML tags and Shopify GID strings inside the prompt, round-tripped through
+// Claude client -> canonical ChatRequest -> Codex backend -> Codex Responses
+// wire format. Every nested schema field, and the raw XML/GID text, must
+// survive byte-for-byte with zero silent redaction or restructuring.
+// ----------------------------------------------------------------------------
+func TestCrossMatrix_DynamicSchemaAndMerchantContext_ClaudeClient_CodexBackend(t *testing.T) {
+	// A tool schema invented purely for this test: nested object property,
+	// an array of enum-constrained items, and additionalProperties:false —
+	// none of this shape exists anywhere in the engine's Go structs.
+	dynamicSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"merchant": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"store_gid":  map[string]any{"type": "string"},
+					"variant_gid": map[string]any{"type": "string"},
+				},
+				"required": []any{"store_gid"},
+			},
+			"fulfillment_channels": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string", "enum": []any{"pickup", "ship", "digital"}},
+			},
+		},
+		"required":             []any{"merchant"},
+		"additionalProperties": false,
+	}
+
+	backend := &mockCrossBackend{
+		id:       "codex:01",
+		priority: 1,
+		group:    "codex_sub",
+		onSend: func(req *types.ChatRequest) []types.StreamChunk {
+			return []types.StreamChunk{
+				{
+					ID: "codex:01",
+					ToolCalls: []types.ToolCall{
+						{
+							ID:        "call_merchant_1",
+							Name:      "merchant_lookup",
+							Arguments: `{"merchant":{"store_gid":"gid://shopify/Shop/123","variant_gid":"gid://shopify/ProductVariant/456"},"fulfillment_channels":["pickup","ship"]}`,
+						},
+					},
+					FinishReason: "tool_calls",
+					Done:         true,
+				},
+			}
+		},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+
+	merchantPrompt := "Please check inventory.\n" +
+		"<merchant_data>{\"store\":\"gid://shopify/Shop/123\",\"note\":\"line1\\nline2 <b>bold</b>\"}</merchant_data>\n" +
+		"```json\n{\"raw\":true}\n```"
+
+	claudeBody := map[string]any{
+		"model":  "claude-3-7-sonnet-20250219",
+		"stream": true,
+		"tools": []map[string]any{
+			{
+				"name":         "merchant_lookup",
+				"description":  "Look up merchant/variant fulfillment info",
+				"input_schema": dynamicSchema,
+			},
+		},
+		"messages": []map[string]any{
+			{"role": "user", "content": merchantPrompt},
+		},
+	}
+	b, err := json.Marshal(claudeBody)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	if err := bridge.HandleClaudeMessages(w, req, pool, b); err != nil {
+		t.Fatalf("HandleClaudeMessages error: %v", err)
+	}
+
+	if backend.lastReq == nil {
+		t.Fatal("backend never received a request")
+	}
+
+	// 1. Prompt text (XML tags, escaped quotes, newlines, markdown fence,
+	// Shopify GIDs) must survive verbatim into the canonical request.
+	var promptSeen string
+	for _, m := range backend.lastReq.Messages {
+		if m.Role == "user" && strings.Contains(m.Content, "merchant_data") {
+			promptSeen = m.Content
+		}
+	}
+	if promptSeen != merchantPrompt {
+		t.Fatalf("prompt content mutated in transit:\nwant: %q\ngot:  %q", merchantPrompt, promptSeen)
+	}
+
+	// 2. The dynamic schema must round-trip with zero field loss (nested
+	// properties, required, enum, items, additionalProperties).
+	if len(backend.lastReq.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(backend.lastReq.Tools))
+	}
+	var gotSchema map[string]any
+	if err := json.Unmarshal(backend.lastReq.Tools[0].InputSchema, &gotSchema); err != nil {
+		t.Fatalf("unmarshal round-tripped schema: %v", err)
+	}
+	// Re-marshal-then-unmarshal the original for a normalized comparison
+	// (map key order / JSON number formatting is not semantically significant).
+	origBytes, _ := json.Marshal(dynamicSchema)
+	var wantSchema map[string]any
+	_ = json.Unmarshal(origBytes, &wantSchema)
+	// The engine's NormalizeJSONSchema only lowercases "type" strings and
+	// backfills an empty properties map — it must not drop or reshape
+	// anything else, so every original key must still be present with an
+	// equivalent value.
+	assertSchemaSubset(t, wantSchema, gotSchema)
+
+	// 3. Privacy redaction must not touch merchant identifiers or the tool
+	// schema/arguments — only auth/secret patterns.
+	before := *backend.lastReq
+	beforeMsgs := append([]types.ChatMessage(nil), backend.lastReq.Messages...)
+	res := privacy.RedactChatRequest(backend.lastReq)
+	if res.Len() != 0 {
+		t.Fatalf("expected zero redaction hits on merchant context, got: %s", res.Summary())
+	}
+	for i, m := range backend.lastReq.Messages {
+		if m.Content != beforeMsgs[i].Content {
+			t.Fatalf("redaction mutated message content: %q -> %q", beforeMsgs[i].Content, m.Content)
+		}
+	}
+	_ = before
+
+	// 4. Codex Responses wire format must still carry the tool call and its
+	// nested arguments intact for the next turn.
+	codexEncoded, err := tools.MarshalCodexResponsesRequest(backend.lastReq)
+	if err != nil {
+		t.Fatalf("MarshalCodexResponsesRequest failed: %v", err)
+	}
+	if !strings.Contains(string(codexEncoded), "gid://shopify/Shop/123") {
+		t.Fatalf("Codex payload lost merchant context: %s", codexEncoded)
+	}
+}
+
+// assertSchemaSubset fails the test if any key/value in want is missing or
+// different in got (recursively). got may have extra normalization-added
+// keys (e.g. a backfilled empty "properties" map) that want doesn't.
+func assertSchemaSubset(t *testing.T, want, got map[string]any) {
+	t.Helper()
+	for k, wv := range want {
+		gv, ok := got[k]
+		if !ok {
+			t.Fatalf("schema lost key %q: want %v", k, wv)
+		}
+		switch wvt := wv.(type) {
+		case map[string]any:
+			gvt, ok := gv.(map[string]any)
+			if !ok {
+				t.Fatalf("schema key %q changed type: want map, got %T", k, gv)
+			}
+			assertSchemaSubset(t, wvt, gvt)
+		case []any:
+			gvt, ok := gv.([]any)
+			if !ok || len(gvt) != len(wvt) {
+				t.Fatalf("schema key %q array mismatch: want %v, got %v", k, wvt, gv)
+			}
+			for i := range wvt {
+				if wm, ok := wvt[i].(map[string]any); ok {
+					gm, ok := gvt[i].(map[string]any)
+					if !ok {
+						t.Fatalf("schema key %q[%d] changed type: want map, got %T", k, i, gvt[i])
+					}
+					assertSchemaSubset(t, wm, gm)
+					continue
+				}
+				if fmt.Sprint(wvt[i]) != fmt.Sprint(gvt[i]) {
+					t.Fatalf("schema key %q[%d] mismatch: want %v, got %v", k, i, wvt[i], gvt[i])
+				}
+			}
+		default:
+			// "type" strings are lowercased by NormalizeJSONSchema; compare
+			// case-insensitively for strings, exactly otherwise.
+			ws, wIsStr := wv.(string)
+			gs, gIsStr := gv.(string)
+			if wIsStr && gIsStr {
+				if !strings.EqualFold(ws, gs) {
+					t.Fatalf("schema key %q mismatch: want %v, got %v", k, wv, gv)
+				}
+				continue
+			}
+			if fmt.Sprint(wv) != fmt.Sprint(gv) {
+				t.Fatalf("schema key %q mismatch: want %v, got %v", k, wv, gv)
+			}
+		}
 	}
 }
 

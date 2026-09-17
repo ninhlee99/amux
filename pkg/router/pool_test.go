@@ -99,115 +99,44 @@ func TestAccountPoolRouter_MultiSessionFailover(t *testing.T) {
 	}
 }
 
-type textOnlyAdapter struct {
-	mockAdapter
-}
-
-func (m *textOnlyAdapter) SupportsTools() bool { return false }
-
-func TestAccountPoolRouter_SkipTextOnlyWhenTools(t *testing.T) {
-	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "run this yourself:\ngit diff"}}
-	api := &mockAdapter{id: "gemini:api:01", priority: 2, content: "ok"}
-	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web, api})
-	r.SetPreferred("chatgpt:01")
-
-	// Coding task with tools: text-only web adapter is skipped in favor of native tool backend
-	ch, err := r.Send(context.Background(), &types.ChatRequest{
-		Messages: []types.ChatMessage{{Role: "user", Content: "implement new authentication function"}},
-		Tools:    []types.ToolDef{{Name: "Bash"}},
-	})
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	var text string
-	for chunk := range ch {
-		text += chunk.Content
-	}
-	if text != "ok" {
-		t.Fatalf("want native tool backend, got %q", text)
-	}
-}
-
-func TestAccountPoolRouter_WebTaskUsesWebEvenWithTools(t *testing.T) {
-	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "plan: step 1..."}}
-	api := &mockAdapter{id: "gemini:api:01", priority: 2, content: "native-api"}
-	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web, api})
-	r.SetPreferred("chatgpt:01")
-
-	// Planning/review task: web proxy is preferred even if tools were attached by client
-	ch, err := r.Send(context.Background(), &types.ChatRequest{
-		Messages: []types.ChatMessage{{Role: "user", Content: "lập kế hoạch kiến trúc hệ thống"}},
-		Tools:    []types.ToolDef{{Name: "Bash"}},
-	})
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	var text string
-	for chunk := range ch {
-		text += chunk.Content
-	}
-	if text != "plan: step 1..." {
-		t.Fatalf("want web proxy backend for plan task, got %q", text)
-	}
-}
-
-func TestAccountPoolRouter_WebOnlyToolsUsesWeb(t *testing.T) {
-	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "web-fallback"}}
+// TestAccountPoolRouter_ToolsDoNotAffectRouting locks in the account-equality
+// rule: an adapter must be picked purely by tier/availability, never by
+// whether the request carries tools[].
+func TestAccountPoolRouter_ToolsDoNotAffectRouting(t *testing.T) {
+	web := &mockAdapter{id: "chatgpt:web:01", priority: 1, content: "web-served"}
 	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web})
 
 	ch, err := r.Send(context.Background(), &types.ChatRequest{
-		Messages: []types.ChatMessage{{Role: "user", Content: "review readme"}},
+		Messages: []types.ChatMessage{{Role: "user", Content: "implement a function"}},
 		Tools:    []types.ToolDef{{Name: "Bash"}},
 	})
 	if err != nil {
-		t.Fatalf("web-only pool must still serve tools, got %v", err)
+		t.Fatalf("web-only pool must still serve tool-bearing requests, got %v", err)
 	}
 	var text string
 	for chunk := range ch {
 		text += chunk.Content
 	}
-	if text != "web-fallback" {
-		t.Fatalf("want web last-resort, got %q", text)
+	if text != "web-served" {
+		t.Fatalf("want web-served regardless of tools[], got %q", text)
 	}
 }
 
-func TestAccountPoolRouter_NativeToolFailsFallsOverToWeb(t *testing.T) {
-	api := &mockAdapter{id: "gemini:api:01", priority: 1, err: types.ErrRateLimitReached}
-	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 2, content: "web-rescued"}}
-	r := router.NewAccountPoolRouter([]types.ProviderAdapter{api, web})
-
-	ch, err := r.Send(context.Background(), &types.ChatRequest{
-		TaskKind: "coding",
-		Messages: []types.ChatMessage{{Role: "user", Content: "fix this bug"}},
-		Tools:    []types.ToolDef{{Name: "Bash"}},
-	})
-	if err != nil {
-		t.Fatalf("native failure must failover to web, got: %v", err)
-	}
-	var text string
-	for chunk := range ch {
-		text += chunk.Content
-	}
-	if text != "web-rescued" {
-		t.Fatalf("want web-rescued, got %q", text)
-	}
-}
-
-func TestAccountPoolRouter_SendNamedAllowsTextOnlyPin(t *testing.T) {
-	web := &textOnlyAdapter{mockAdapter: mockAdapter{id: "chatgpt:01", priority: 1, content: "pinned"}}
+func TestAccountPoolRouter_SendNamedIgnoresTools(t *testing.T) {
+	web := &mockAdapter{id: "chatgpt:web:01", priority: 1, content: "pinned"}
 	r := router.NewAccountPoolRouter([]types.ProviderAdapter{web})
-	ch, err := r.SendNamed(context.Background(), "chatgpt:01", &types.ChatRequest{
+	ch, err := r.SendNamed(context.Background(), "chatgpt:web:01", &types.ChatRequest{
 		Tools: []types.ToolDef{{Name: "Bash"}},
 	})
 	if err != nil {
-		t.Fatalf("X-Provider pin must still reach text-only backend, got %v", err)
+		t.Fatalf("X-Provider pin must still reach the backend regardless of tools[], got %v", err)
 	}
 	var text string
 	for chunk := range ch {
 		text += chunk.Content
 	}
 	if text != "pinned" {
-		t.Fatalf("want pinned web backend, got %q", text)
+		t.Fatalf("want pinned backend, got %q", text)
 	}
 }
 
@@ -382,59 +311,44 @@ func (m *mockGroupAdapter) Group() string {
 	return m.grp
 }
 
-func TestPickSessionAdapter_CodingStrictPriority(t *testing.T) {
-	aClaude := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-sub-1", priority: 1}, grp: router.GroupClaudeSub}
-	aCodex := &mockGroupAdapter{mockAdapter: mockAdapter{id: "codex-sub-1", priority: 1}, grp: router.GroupCodexSub}
-	aAGY := &mockGroupAdapter{mockAdapter: mockAdapter{id: "agy-sub-1", priority: 1}, grp: router.GroupAGYSub}
-	aAPI := &mockGroupAdapter{mockAdapter: mockAdapter{id: "openrouter-api", priority: 1}, grp: router.GroupAPIOther}
-	aWeb := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-web-1", priority: 1}, grp: router.GroupClaudeWeb}
+// TestAccountPoolRouter_TierStrictPriority locks in the cost/quota-only
+// priority order: subscription > web > api_key, regardless of task kind or
+// which adapter was registered first.
+func TestAccountPoolRouter_TierStrictPriority(t *testing.T) {
+	aSub := &mockGroupAdapter{mockAdapter: mockAdapter{id: "codex-sub-1", priority: 1, content: "sub"}, grp: "codex_sub"}
+	aWeb := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-web-1", priority: 1, content: "web"}, grp: "claude_web"}
+	aAPI := &mockGroupAdapter{mockAdapter: mockAdapter{id: "openrouter-api", priority: 1, content: "api"}, grp: "api_other"}
 
-	adapters := []types.ProviderAdapter{aWeb, aAPI, aAGY, aCodex, aClaude}
+	adapters := []types.ProviderAdapter{aWeb, aAPI, aSub}
 	r := router.NewAccountPoolRouter(adapters)
 
-	codingReq := &types.ChatRequest{TaskKind: router.TaskCoding}
-
-	// 1. All alive: Claude Subscription must be picked first
-	picked := r.PickSessionAdapterForTest(adapters, codingReq, false, false)
-	if picked == nil || picked.ID() != "claude-sub-1" {
-		t.Fatalf("expected claude-sub-1, got %v", picked)
+	send := func() string {
+		ch, err := r.Send(context.Background(), &types.ChatRequest{Messages: []types.ChatMessage{{Role: "user", Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		var text string
+		for chunk := range ch {
+			text += chunk.Content
+		}
+		return text
 	}
 
-	// 2. Claude cooled down: Codex Subscription must be picked next
-	r.SetCooldownForTest("claude-sub-1", 10*time.Minute)
-	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
-	if picked == nil || picked.ID() != "codex-sub-1" {
-		t.Fatalf("expected codex-sub-1, got %v", picked)
+	// 1. Subscription tier wins first, regardless of task kind.
+	if got := send(); got != "sub" {
+		t.Fatalf("expected subscription tier first, got %q", got)
 	}
 
-	// 3. Codex cooled down: AGY Subscription must be picked next
+	// 2. Subscription cooled down: web tier next.
 	r.SetCooldownForTest("codex-sub-1", 10*time.Minute)
-	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
-	if picked == nil || picked.ID() != "agy-sub-1" {
-		t.Fatalf("expected agy-sub-1, got %v", picked)
+	if got := send(); got != "web" {
+		t.Fatalf("expected web tier next, got %q", got)
 	}
 
-	// 4. AGY cooled down: API must be picked next
-	r.SetCooldownForTest("agy-sub-1", 10*time.Minute)
-	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
-	if picked == nil || picked.ID() != "openrouter-api" {
-		t.Fatalf("expected openrouter-api, got %v", picked)
-	}
-
-	// 5. API cooled down: Web proxy adapter must be fallback
-	r.SetCooldownForTest("openrouter-api", 10*time.Minute)
-	picked = r.PickSessionAdapterForTest(adapters, codingReq, false, false)
-	if picked == nil || picked.ID() != "claude-web-1" {
-		t.Fatalf("expected claude-web-1 fallback, got %v", picked)
-	}
-
-	// 6. Web task (e.g. Planning) must prioritize web proxy adapter directly
-	planReq := &types.ChatRequest{TaskKind: router.TaskPlan}
-	// Reset cooldowns
-	r.ClearCooldownsForTest()
-	picked = r.PickSessionAdapterForTest(adapters, planReq, false, false)
-	if picked == nil || picked.ID() != "claude-web-1" {
-		t.Fatalf("expected claude-web-1 for planning task, got %v", picked)
+	// 3. Web cooled down too: API key last resort.
+	r.SetCooldownForTest("claude-web-1", 10*time.Minute)
+	if got := send(); got != "api" {
+		t.Fatalf("expected api_key tier last, got %q", got)
 	}
 }
 

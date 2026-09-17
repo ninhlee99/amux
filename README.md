@@ -17,10 +17,7 @@
   <a href="#-luồng-claude-code--proxy--tools">Claude Code & Tools</a> •
   <a href="#-antigravity--agy-google-genai">Antigravity (AGY)</a> •
   <a href="#️-cấu-hình-provider-pool-amaccountsjson">Provider Pool</a> •
-  <a href="#-workspace-map-am-map">Workspace Map</a> •
-  <a href="STRUCT.md">Kiến Trúc</a> •
-  <a href="docs/AI_CODEBASE_MAP.md">Bản đồ AI</a> •
-  <a href="docs/WORKSPACE_MAP.md">Map client</a>
+  <a href="STRUCT.md">Kiến Trúc</a>
 </p>
 
 ---
@@ -46,7 +43,6 @@
 - 🚇 **HTTP CONNECT Tunneling:** Đóng vai trò forward proxy hỗ trợ các công cụ hoặc SDK cấu hình qua biến `HTTP_PROXY` / `HTTPS_PROXY`.
 - 🔐 **Bảo Mật Cao Cấp:** Lưu trữ chứng thực trong macOS Keychain; mã hóa tệp `accounts.json` bằng AES-256-GCM (`AMENC1:`) với Scrypt master key; khi bind `--public` tự động phát hành API Key tạm thời `amux-<auth-token>` (`am proxy token`).
 - 🔁 **Đồng Bộ Môi Trường Toàn Diện:** Tự động đồng bộ biến môi trường giữa `~/.claude/settings.json`, macOS GUI session qua `launchctl`, và shell qua `eval "$(am env)"` (tự động `unset` khi proxy tắt để trả về upstream gốc).
-- 🗺️ **Workspace Map (`am map`):** Bản đồ codebase theo project tại `~/.am/workspaces/<name>/` (local scan, **0 token API**). `init`/`update` = full; check/enrich chỉ `recent` ∪ `touched` + `learn`. Admin: `GET /_am/map?root=…`. Chi tiết: [`docs/WORKSPACE_MAP.md`](docs/WORKSPACE_MAP.md).
 
 ---
 
@@ -64,8 +60,8 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 3. Thêm các provider dự phòng vào pool: `am login chatgpt|claude|gemini|gemini-web|github|groq|kimi|grok` hoặc `am api add`.
 
 * **Tự động cập nhật:** `am setup --auto-update` (Cài đặt LaunchAgent kiểm tra bản mới định kỳ).
-* **Nâng cấp thủ công:** `am update` (hoặc `am update --force` để build lại từ mã nguồn mới nhất; giữ nguyên toàn bộ dữ liệu tại `~/.am/`).
-* **Gỡ cài đặt:** `am hook uninstall && rm -f /usr/local/bin/am /usr/local/bin/amux ~/.local/bin/am ~/.local/bin/amux`
+* **Nâng cấp thủ công:** `am update` (hoặc `am update --force` để build lại từ mã nguồn mới nhất; giữ nguyên toàn bộ dữ liệu tại `~/.am/`). Nếu máy chưa có `go`/`git`, `am update` tự động cài đặt hộ (qua Homebrew hoặc tải binary chính thức từ go.dev) rồi tiếp tục build — **không cần chạy lại lệnh `curl ... | sh`**.
+* **Gỡ cài đặt:** `am uninstall` — gỡ hooks khỏi mọi IDE/CLI đã tích hợp, tắt proxy daemon & auto-update, xoá binary (`am`/`amux`); dữ liệu tài khoản tại `~/.am/` được giữ nguyên. Dùng `am uninstall --purge` để xoá luôn cả `~/.am/`.
 
 ---
 
@@ -113,36 +109,11 @@ curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 | :--- | :--- |
 | `am usage [day\|week\|all]` | Báo cáo chi tiết lượng token đã tiêu thụ và hạn mức theo từng model/project |
 | `am logs [--errors] [--clean]` | Quản lý nhật ký hoạt động: `--errors` (xem lỗi), `--clean` (dọn dẹp log > 7 ngày) |
-| `am map [init\|recent\|viz]` | Hệ thống bản đồ codebase thông minh cho AI agent (gõ `am map --help` để xem chi tiết) |
 | `am setup [--auto-update]` | Cài đặt hooks, lệnh `/am:feedback`, kích hoạt tự động cập nhật |
-| `am update [--force]` | Nâng cấp amux lên bản mới nhất từ GitHub (giữ nguyên toàn bộ dữ liệu tài khoản) |
+| `am update [--force]` | Nâng cấp amux lên bản mới nhất từ GitHub; tự động cài `go`/`git` nếu thiếu (không cần chạy lại lệnh `curl \| sh`) |
+| `am uninstall [--purge]` | Gỡ hooks, tắt proxy/auto-update, xoá binary; `--purge` xoá luôn dữ liệu tài khoản tại `~/.am/` |
 | `am export` / `am import` | Đóng gói xuất / nhập bộ hồ sơ tài khoản mã hóa (`.amexp`) qua máy khác |
 | `am feedback [--error]` | Mở issue báo lỗi GitHub, tự động thu thập thông tin chẩn đoán đã khử dữ liệu nhạy cảm |
-
-> Agent: `am map recent` → đọc **GRAPH** (mesh + 1 subnet) → `am map get`/`learn`. Cấm dump bảng func dài. Repo amux: [`docs/AI_CODEBASE_MAP.md`](docs/AI_CODEBASE_MAP.md).
-
----
-
-## 🗺️ Workspace Map (`am map`)
-
-Mỗi repo client (traffic qua proxy) có bản đồ riêng:
-
-```sh
-cd /path/to/your-app
-am map init                 # lần đầu ONLY (full scan)
-am map recent --needs-learn # check hẹp (git ∪ touched)
-am map learn --file pkg/auth/login.go --func Login --summary "Issues JWT after bcrypt"
-am map show
-```
-
-- Lưu tại `~/.am/workspaces/<project-name>/` (`AI_CODEBASE_MAP.md`, `MODULES.md`, `ai-locate.yaml`, `annotations.json`, `focus.json`, **`project_root.txt` = abs path máy**).
-- Repo **amux**: `docs/GRAPH.md` (Mermaid) + `docs/GRAPH.html` (interactive) commit+push.
-- Xem liên kết: `am map viz` hoặc GitHub render Mermaid trong `GRAPH.md`; proxy `GET /_am/map/viz?root=…`.
-- Project **client**: map chỉ `~/.am/workspaces/<name>/` — không push vào git app.
-- Proxy lần đầu thấy project chưa có map → tự `EnsureMapIfMissing`.
-- Admin JSON: `GET http://127.0.0.1:8787/_am/map?root=/path/to/app`.
-
-Xem [`docs/WORKSPACE_MAP.md`](docs/WORKSPACE_MAP.md).
 
 ---
 
@@ -153,7 +124,7 @@ Cổng gateway amux đóng vai trò máy chủ trung gian thống nhất:
 - **Anthropic Endpoint:** `/v1/messages`
 - **Gemini Endpoint:** `/v1beta/models/...`, `:generateContent`, `:streamGenerateContent`, `:countTokens`
 - **Forward Proxy:** Hỗ trợ HTTP CONNECT tunneling qua biến `HTTP_PROXY` / `HTTPS_PROXY`.
-- **Admin (`/_am/*`):** `/_am/status`, `/_am/guard`, `/_am/sync`, `/_am/map` (workspace map JSON), …
+- **Admin (`/_am/*`):** `/_am/status`, `/_am/guard`, `/_am/guard/reset`, `/_am/sync`, …
 
 Khi chạy trên loopback (`127.0.0.1`), proxy **không** bắt buộc API key (chấp nhận bất kỳ token mẫu/dummy). Khi gắn cờ `--public` (lắng nghe `0.0.0.0`), hệ thống sẽ kích hoạt bảo mật nghiêm ngặt và tự sinh API Key tạm thời dạng `amux-<auth-token>`. Các client ngoài mạng bắt buộc phải truyền key này qua header `Authorization: Bearer <key>`, `X-Api-Key` hoặc `X-Am-Token`. Bạn có thể in key này bằng lệnh `am proxy token`.
 

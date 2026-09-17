@@ -104,23 +104,6 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 	}
 }
 
-func TestCmdMap_HelpSubcommand(t *testing.T) {
-	for _, flag := range []string{"help", "-h", "--help"} {
-		out := captureStdout(func() {
-			cmdMap([]string{flag})
-		})
-		if !strings.Contains(out, "amux map init") {
-			t.Errorf("cmdMap(%q) expected to contain 'amux map init', got: %s", flag, out)
-		}
-		if !strings.Contains(out, "amux map viz") {
-			t.Errorf("cmdMap(%q) expected to contain 'amux map viz', got: %s", flag, out)
-		}
-		if !strings.Contains(out, "amux map recent") {
-			t.Errorf("cmdMap(%q) expected to contain 'amux map recent', got: %s", flag, out)
-		}
-	}
-}
-
 func TestProxyDown_PublicFlag(t *testing.T) {
 	// Set public bind
 	_ = proxy.SaveBindPublic(true)
