@@ -44,15 +44,11 @@ func CompactConversation(req *types.ChatRequest, opt SafeCompactionOption) bool 
 		prefixMessages = req.Messages
 	}
 
-	shrinkReq := &types.ChatRequest{
-		Messages: prefixMessages,
-	}
-	ctxshrink.CompactConversation(shrinkReq)
-
+	compacted := ctxshrink.CompactMessages(prefixMessages)
 	if hasActiveToolPair {
-		req.Messages = append(shrinkReq.Messages, lastMsg)
+		req.Messages = append(compacted, lastMsg)
 	} else {
-		req.Messages = shrinkReq.Messages
+		req.Messages = compacted
 	}
 
 	return true
