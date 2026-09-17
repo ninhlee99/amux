@@ -41,41 +41,16 @@ func TestSanitizer(t *testing.T) {
 	}
 }
 
-func TestPacer_NoArtificialDelayOnlyRealBackoff(t *testing.T) {
-	cfg := PacerConfig{
-		InitialBackoff: 20 * time.Millisecond,
-		MaxBackoff:     100 * time.Millisecond,
-	}
-	p := NewPacer(cfg)
-
-	// Pace must never sleep — near-0ms latency requirement.
+func TestPace_ZeroLatency(t *testing.T) {
 	ctx := context.Background()
 	start := time.Now()
-	if err := p.Pace(ctx, "acc1", false); err != nil {
-		t.Fatalf("unexpected pace err: %v", err)
-	}
-	if err := p.Pace(ctx, "acc1", false); err != nil {
-		t.Fatalf("unexpected pace err: %v", err)
+	for i := 0; i < 100; i++ {
+		if err := Pace(ctx, "acc1", false); err != nil {
+			t.Fatalf("unexpected pace err: %v", err)
+		}
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
 		t.Errorf("Pace must not add artificial delay, took %v", elapsed)
-	}
-
-	// Backoff
-	p.RecordRateLimit("acc1", 30*time.Millisecond)
-	inBo, remaining := p.InBackoff("acc1")
-	if !inBo || remaining <= 0 {
-		t.Fatalf("expected in backoff")
-	}
-	if err := p.Pace(ctx, "acc1", false); !errors.Is(err, ErrAccountInBackoff) {
-		t.Errorf("expected ErrAccountInBackoff, got %v", err)
-	}
-
-	// Clearing backoff
-	p.ClearBackoff("acc1")
-	inBo, _ = p.InBackoff("acc1")
-	if inBo {
-		t.Errorf("expected backoff cleared")
 	}
 }
 
@@ -269,19 +244,5 @@ func TestHealthTracker_RealAuthStillQuarantines(t *testing.T) {
 	ht.RecordError("groq:01", errors.New("401 unauthorized"))
 	if q, _, _ := ht.IsQuarantined("groq:01"); !q {
 		t.Fatal("real 401/403 must still quarantine")
-	}
-}
-
-func TestGuardRecordError_PacerOnlyOnRateLimit(t *testing.T) {
-	ResetAll()
-	t.Cleanup(ResetAll)
-
-	RecordError("api:01", errors.New("connection reset by peer"))
-	if in, _ := GlobalPacer().InBackoff("api:01"); in {
-		t.Fatal("pacer backoff on generic error")
-	}
-	RecordError("api:01", types.ErrRateLimitReached)
-	if in, _ := GlobalPacer().InBackoff("api:01"); !in {
-		t.Fatal("pacer should backoff on ErrRateLimitReached")
 	}
 }

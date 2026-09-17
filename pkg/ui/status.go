@@ -480,7 +480,6 @@ func CmdGuard(args []string) {
 			term.Success("guard: reset health scores and backoff state for all accounts")
 		} else {
 			guard.GlobalHealth().Reset(target)
-			guard.GlobalPacer().Reset(target)
 			term.Success("guard: reset health score for %s", target)
 		}
 		return

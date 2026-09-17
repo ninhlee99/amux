@@ -149,33 +149,38 @@ mkdir -p "$tmp/amux-accounts"
 ensure_git
 ensure_go
 
-if [ -f "./main.go" ] && [ -f "./go.mod" ]; then
-  say "building am from local source..."
-  go build -o "$tmp/amux-accounts/am" . || die "build failed."
+if [ -f "./cmd/amux/main.go" ] && [ -f "./go.mod" ]; then
+  say "building amux from local source..."
+  go build -o "$tmp/amux-accounts/amux" ./cmd/amux || die "build failed."
+elif [ -f "./main.go" ] && [ -f "./go.mod" ]; then
+  say "building amux from local source..."
+  go build -o "$tmp/amux-accounts/amux" . || die "build failed."
 else
   say "cloning $REPO_URL..."
   git clone --depth 1 "$REPO_URL" "$tmp/amux-accounts/src" >/dev/null 2>&1 \
     || die "clone failed — check the URL and your network."
 
-  say "building am..."
-  ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/am" . ) \
+  say "building amux..."
+  ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" ./cmd/amux ) \
+    || ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" . ) \
     || die "build failed."
 fi
 
 if [ -w "$INSTALL_DIR" ]; then
-  mv "$tmp/amux-accounts/am" "$INSTALL_DIR/am"
-  ln -sf "$INSTALL_DIR/am" "$INSTALL_DIR/amux"
+  mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
+  rm -f "$INSTALL_DIR/am"
 else
   say "need sudo to write to $INSTALL_DIR..."
-  sudo mv "$tmp/amux-accounts/am" "$INSTALL_DIR/am"
-  sudo ln -sf "$INSTALL_DIR/am" "$INSTALL_DIR/amux"
+  sudo mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
+  sudo rm -f "$INSTALL_DIR/am"
 fi
 
-if [ "$INSTALL_DIR" != "/usr/local/bin" ] && [ -w "/usr/local/bin/am" ]; then
-  cp "$INSTALL_DIR/am" "/usr/local/bin/am" 2>/dev/null || true
+if [ "$INSTALL_DIR" != "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+  cp "$INSTALL_DIR/amux" "/usr/local/bin/amux" 2>/dev/null || true
+  rm -f "/usr/local/bin/am" 2>/dev/null || true
 fi
 
-say "installed am & amux -> $INSTALL_DIR"
+say "installed amux -> $INSTALL_DIR"
 
 AUTO_UPDATE_FLAG=""
 for arg in "$@"; do
@@ -187,12 +192,12 @@ if [ "${AM_AUTO_UPDATE:-}" = "1" ]; then
   AUTO_UPDATE_FLAG="--auto-update"
 fi
 
-if command -v am >/dev/null 2>&1; then
-  say "running 'am setup $AUTO_UPDATE_FLAG' (hook + /am:feedback slash command)..."
-  am setup $AUTO_UPDATE_FLAG || say "am setup reported an issue — you can re-run it any time: am setup $AUTO_UPDATE_FLAG"
+if command -v amux >/dev/null 2>&1; then
+  say "running 'amux setup $AUTO_UPDATE_FLAG'..."
+  amux setup $AUTO_UPDATE_FLAG || say "amux setup reported an issue — you can re-run it any time: amux setup $AUTO_UPDATE_FLAG"
 else
-  say "warning: $INSTALL_DIR isn't on PATH — add it, then run: am setup $AUTO_UPDATE_FLAG"
+  say "warning: $INSTALL_DIR isn't on PATH — add it, then run: amux setup $AUTO_UPDATE_FLAG"
 fi
 
 say ""
-say "done. Next: am add   (save your first account)"
+say "done. Next: amux id add [provider] (register your accounts)"

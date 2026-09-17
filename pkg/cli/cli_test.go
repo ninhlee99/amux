@@ -20,7 +20,7 @@ func TestToolAndName(t *testing.T) {
 		{[]string{"user@gmail.com"}, "claude", "user@gmail.com"},
 		{[]string{"codex", "personal"}, "codex", "personal"},
 		{[]string{"gemini", "my-key"}, "gemini", "my-key"},
-		{[]string{"claude1"}, "claude", "claude1"}, // not a unified ID, just a plain name -> default tool
+		{[]string{"claude1"}, "claude", "claude1"},
 		{[]string{"codexcli:01"}, "codex", "codexcli:01"},
 		{[]string{"geminicli:02"}, "antigravity", "geminicli:02"},
 	}
@@ -72,13 +72,12 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 		usageHelp()
 	})
 
-	// Check clean 6 categories
 	categories := []string{
-		"Essential (Daily Workflow):",
-		"Accounts & Providers:",
-		"Gateway & Proxy:",
-		"Pool & Routing:",
-		"Analytics & Utilities:",
+		"Core Commands:",
+		"Identity Management:",
+		"Gateway:",
+		"Configuration & Migration:",
+		"System:",
 	}
 	for _, cat := range categories {
 		if !strings.Contains(out, cat) {
@@ -86,9 +85,9 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 		}
 	}
 
-	// Verify public proxy down is documented
-	if !strings.Contains(out, "amux proxy down --public") {
-		t.Errorf("expected usageHelp to document 'amux proxy down --public'")
+	// Verify launcher is removed
+	if strings.Contains(out, "amux run") {
+		t.Errorf("expected 'amux run' launcher to be removed from usageHelp")
 	}
 
 	// Verify internal noise is stripped from main help
@@ -112,8 +111,8 @@ func TestProxyDown_PublicFlag(t *testing.T) {
 		t.Fatalf("expected IsPublic() true before test")
 	}
 
-	// Run proxy down --public via CLI
-	Run([]string{"amux", "proxy", "down", "--public"})
+	// Run proxy down --public via gateway stop
+	proxy.CmdProxyDownPublic(true, true)
 
 	if proxy.IsPublic() {
 		t.Errorf("expected IsPublic() false after amux proxy down --public")
@@ -123,4 +122,3 @@ func TestProxyDown_PublicFlag(t *testing.T) {
 		t.Errorf("expected empty token after proxy down --public, got: %s", tok)
 	}
 }
-
