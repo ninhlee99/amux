@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -340,3 +342,112 @@ func TestShouldForceWebTools_TitleJSONWithHistory(t *testing.T) {
 	}
 }
 
+
+// TestParseWebTools_DynamicSchemaArbitraryNestedParams verifies the web
+// tool-call emulator does not hardcode tool names or argument shapes: an
+// arbitrary, never-before-seen tool ("merchant_lookup") with deeply nested
+// object/array arguments must survive the ```tool_call fenced-JSON
+// extraction with zero data loss, exactly as any built-in tool would.
+func TestParseWebTools_DynamicSchemaArbitraryNestedParams(t *testing.T) {
+	defs := []types.ToolDef{{
+		Name:        "merchant_lookup",
+		Description: "Look up merchant/variant fulfillment info",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"merchant": {
+					"type": "object",
+					"properties": {
+						"store_gid": {"type": "string"},
+						"variant_gid": {"type": "string"}
+					}
+				},
+				"fulfillment_channels": {
+					"type": "array",
+					"items": {"type": "string", "enum": ["pickup", "ship", "digital"]}
+				}
+			}
+		}`),
+	}}
+
+	wantArgs := map[string]any{
+		"merchant": map[string]any{
+			"store_gid":   "gid://shopify/Shop/123",
+			"variant_gid": "gid://shopify/ProductVariant/456",
+		},
+		"fulfillment_channels": []any{"pickup", "ship"},
+	}
+	argsJSON, err := json.Marshal(wantArgs)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	text := "```tool_call\n" +
+		`{"name": "merchant_lookup", "arguments": ` + string(argsJSON) + `}` +
+		"\n```"
+
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "merchant_lookup" {
+		t.Fatalf("expected merchant_lookup, got %q", calls[0].Name)
+	}
+
+	var gotArgs map[string]any
+	if err := json.Unmarshal([]byte(calls[0].Arguments), &gotArgs); err != nil {
+		t.Fatalf("unmarshal round-tripped arguments: %v (raw: %s)", err, calls[0].Arguments)
+	}
+	if !reflect.DeepEqual(wantArgs, gotArgs) {
+		t.Fatalf("nested arguments not preserved:\nwant: %#v\ngot:  %#v", wantArgs, gotArgs)
+	}
+
+	// SSE reconstruction: FormatToolCalls / the tool_use event path must
+	// carry the same nested arguments through to the client-facing event.
+	formatted := FormatToolCalls(calls)
+	if !strings.Contains(formatted, "gid://shopify/Shop/123") {
+		t.Fatalf("formatted tool call lost nested merchant data: %s", formatted)
+	}
+}
+
+// TestParseWebTools_UnescapedQuotesInsideBashCommand is a regression test
+// for a real bug: the ```tool_call fenced-block path called a bare
+// json.Unmarshal and silently dropped the entire call whenever a web model
+// produced a shell command containing its own unescaped double quotes
+// (extremely common — e.g. `gh issue create --title "..." --body "..."`),
+// since it never routed through parseToolCallJSON's repair/fallback logic
+// the way the <tool_call>/[tool_call ...] paths already did.
+func TestParseWebTools_UnescapedQuotesInsideBashCommand(t *testing.T) {
+	cmd := "gh issue create --repo <repo-name> \\\n" +
+		"      --title \"bug(fix): infinite tool loop when verifying findings exhausts rate limits\" \\\n" +
+		"      --body \"### Bug description\n" +
+		"    When running `/open-test:fix` with multiple PRs or submodules, the agent gets stuck in an infinite tool loop.\n" +
+		"\n" +
+		"    ### Proposed solution\n" +
+		"    1. Add a circuit breaker.\""
+
+	defs := []types.ToolDef{{Name: "Bash"}}
+	// Hand-rolled JSON simulating a web model that forgot to escape the
+	// inner double quotes around --title/--body (a naive text-generation
+	// mistake, as opposed to native structured tool-calling which always
+	// escapes correctly).
+	handRolled := "{\"name\": \"Bash\", \"arguments\": {\"command\": \"" + cmd + "\"}}"
+	text := "```tool_call\n" + handRolled + "\n```"
+
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 recovered call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("expected Bash, got %q", calls[0].Name)
+	}
+	var got struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(calls[0].Arguments), &got); err != nil {
+		t.Fatalf("recovered arguments are not valid JSON: %v (raw: %s)", err, calls[0].Arguments)
+	}
+	if got.Command != cmd {
+		t.Fatalf("command not preserved byte-for-byte:\nwant=%q\ngot =%q", cmd, got.Command)
+	}
+}

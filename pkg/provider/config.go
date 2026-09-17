@@ -88,6 +88,35 @@ func (p ProviderConfig) InRotatePool() bool {
 	return p.Enabled == nil || *p.Enabled
 }
 
+// ToAccount converts a ProviderConfig to a flat Account struct.
+func (p ProviderConfig) ToAccount() types.Account {
+	authType := "api_key"
+	typ := types.AccountTypeAPIKey
+	switch p.Type {
+	case "chatgpt_web", "claude_web", "gemini_web":
+		authType = "cdp"
+		typ = types.AccountTypeWeb
+	case "codex_cli", "antigravity", "agy", "claude_code":
+		authType = "oauth"
+		typ = types.AccountTypeSubscription
+	}
+	if typ == types.AccountTypeSubscription && !types.IsSubscriptionTier(p.Plan) && p.Plan != "" {
+		typ = types.AccountTypeWeb
+	}
+	provider := p.IDE
+	if provider == "" || provider == "web" || provider == "api" {
+		provider = p.Type
+	}
+	return types.Account{
+		ID:           p.ID,
+		Provider:     provider,
+		Type:         typ,
+		AuthType:     authType,
+		UsagePercent: 0,
+		Active:       p.InRotatePool(),
+	}
+}
+
 // HasCredentials reports whether secrets/config look usable (ignores Enabled).
 func (p ProviderConfig) HasCredentials() bool {
 	switch p.Type {
@@ -161,7 +190,23 @@ type AccountsFile struct {
 	// WebPolicy: last_resort (default) | prefer | force — when web adapters may
 	// serve client tools[] (override with AM_WEB_POLICY).
 	WebPolicy string           `json:"webPolicy,omitempty"`
+	Accounts  []types.Account  `json:"accounts,omitempty"`
 	Providers []ProviderConfig `json:"providers"`
+}
+
+// FlatAccounts returns all accounts in a flat structure without nested group hierarchies.
+func (f *AccountsFile) FlatAccounts() []types.Account {
+	if f == nil {
+		return nil
+	}
+	if len(f.Accounts) > 0 {
+		return f.Accounts
+	}
+	var res []types.Account
+	for _, p := range f.Providers {
+		res = append(res, p.ToAccount())
+	}
+	return res
 }
 
 func DefaultAccountsPath() string {

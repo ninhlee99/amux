@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -139,5 +141,95 @@ func TestRotator_ShouldFailoverToProviderPool(t *testing.T) {
 	}
 	if r2.Active() != "b" {
 		t.Fatalf("active=%q, want b", r2.Active())
+	}
+}
+
+// makeUsageResp builds a fake upstream *http.Response carrying a 5h-window
+// utilization header, the same shape Rotator.Observe parses.
+func makeUsageResp(statusCode int, used float64) *http.Response {
+	h := http.Header{}
+	if used >= 0 {
+		h.Set("anthropic-ratelimit-unified-5h-utilization", strconv.FormatFloat(used, 'f', -1, 64))
+	}
+	return &http.Response{StatusCode: statusCode, Header: h}
+}
+
+// isCooling reports whether Status() shows a live cooldown for the profile.
+func isCooling(t *testing.T, r *Rotator, name string) bool {
+	t.Helper()
+	status := r.Status()
+	accts, _ := status["accounts"].([]map[string]any)
+	for _, a := range accts {
+		if a["profile"] == name {
+			_, ok := a["cooldown_until"]
+			return ok
+		}
+	}
+	t.Fatalf("profile %q not found in status", name)
+	return false
+}
+
+func newTestRotator(names ...string) *Rotator {
+	tokens := map[string]*types.Token{}
+	for _, n := range names {
+		tokens[n] = &types.Token{Access: "tok"}
+	}
+	return &Rotator{
+		tool:           "claude",
+		order:          names,
+		tokens:         tokens,
+		accounts:       map[string]string{},
+		cooldown:       map[string]time.Time{},
+		dead:           map[string]bool{},
+		autoSwitches:   map[string]int{},
+		manualSwitches: map[string]int{},
+		usedThreshold:  DefaultUsedThreshold,
+	}
+}
+
+// TestRotator_SingleAccountReaches100PctThreshold locks in the single-pool
+// rule: with exactly one subscription account and no pool alternatives, a
+// preemptive near-limit signal (99% used, no hard 429) must NOT trigger a
+// rotation — the lone account is allowed to ride all the way to 100%. A
+// real 429 (the provider's own hard limit) must still fail it over,
+// because at that point there is nothing left to preserve by waiting.
+func TestRotator_SingleAccountReaches100PctThreshold(t *testing.T) {
+	r := newTestRotator("solo")
+
+	r.Observe(makeUsageResp(http.StatusOK, 0.99))
+	if isCooling(t, r, "solo") {
+		t.Fatal("single account with no alternatives must not preemptively cool down before a real 429")
+	}
+
+	r.Observe(makeUsageResp(http.StatusTooManyRequests, 1.0))
+	if !isCooling(t, r, "solo") {
+		t.Fatal("a real 429 must still cool down even the only account")
+	}
+}
+
+// TestRotator_MultiAccountUsesConfiguredThreshold locks in the >=2 account
+// rule: the configured threshold (default 95%) applies, so a 99%-used
+// signal preemptively rotates away before ever hitting a hard 429.
+func TestRotator_MultiAccountUsesConfiguredThreshold(t *testing.T) {
+	r := newTestRotator("a", "b")
+
+	r.Observe(makeUsageResp(http.StatusOK, 0.99))
+	if !isCooling(t, r, "a") {
+		t.Fatal("second account available: 99% used must preemptively rotate at the 95% threshold")
+	}
+}
+
+// TestRotator_SingleAccountWithPoolAlternativesUsesThreshold verifies that
+// "alternatives" isn't limited to other Claude subscriptions — a non-empty
+// provider pool (Web/API accounts) also counts, so a solo Claude
+// subscription with a living pool still uses the normal threshold instead
+// of riding to 100%.
+func TestRotator_SingleAccountWithPoolAlternativesUsesThreshold(t *testing.T) {
+	r := newTestRotator("solo")
+	r.SetPoolSize(1)
+
+	r.Observe(makeUsageResp(http.StatusOK, 0.99))
+	if !isCooling(t, r, "solo") {
+		t.Fatal("solo account with a living provider pool must use the configured threshold, not ride to 100%")
 	}
 }

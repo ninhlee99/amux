@@ -59,6 +59,8 @@ Gateway & Proxy:
   proxy [up|down] [flags]     start/stop local proxy daemon (default: 127.0.0.1:8787)
                               flags: --public (bind 0.0.0.0 for LAN), -p/--port <N>, --force
                               amux proxy down --public: stop & revert to local 127.0.0.1
+  proxy add [--claude|--cursor|--codex|--all]     hook IDE settings to the proxy
+  proxy remove [--claude|--cursor|--codex|--all]  unhook IDE settings from the proxy
   proxy token                 view or generate admin token for public proxy
   env [--public]              export environment variables (eval "$(amux env)")
   guard [reset]               anti-ban defense status, health scores & cooldown reset
@@ -71,9 +73,10 @@ Pool & Routing:
 Analytics & Utilities:
   usage [day|week|all]        token usage and quota consumption
   logs [--errors] [--clean]   gateway request logs and error inspection
-  map [init|recent|viz]       codebase map for AI agents (see: amux map --help)
   setup [--auto-update]       install shell integration, hooks & auto-update
   update [--force]            update amux to latest version from GitHub
+                              (auto-installs git/go if missing, no re-curl needed)
+  uninstall [--purge]         remove hooks, proxy & binaries (--purge: also ~/.am data)
   export / import             backup or restore encrypted account bundles
   feedback [--error]          file GitHub issue with sanitized error logs
 `)
@@ -126,6 +129,15 @@ func Run(rawArgs []string) {
 			}
 		}
 		cmdUpdate(force, quiet)
+
+	case "uninstall":
+		purge := false
+		for _, a := range args {
+			if a == "--purge" || a == "--all" {
+				purge = true
+			}
+		}
+		cmdUninstall(purge)
 
 	case "add":
 		tool, name := toolAndName(args)
@@ -315,9 +327,6 @@ func Run(rawArgs []string) {
 	case "usage":
 		usage.PrintUsageReport(args)
 
-	case "map":
-		cmdMap(args)
-
 	case "logs", "log":
 		cmdLogs(args)
 
@@ -435,6 +444,26 @@ func Run(rawArgs []string) {
 				}
 				fmt.Println(tok)
 				return
+			case "add":
+				targets := proxyHookTargetsFromFlags(args[1:])
+				if len(targets) == 0 {
+					cmdHookInstall(nil)
+					return
+				}
+				for _, t := range targets {
+					cmdHookInstall([]string{t})
+				}
+				return
+			case "remove":
+				targets := proxyHookTargetsFromFlags(args[1:])
+				if len(targets) == 0 {
+					cmdHookUninstall(nil)
+					return
+				}
+				for _, t := range targets {
+					cmdHookUninstall([]string{t})
+				}
+				return
 			}
 		}
 		addr := proxy.ResolveListenAddr(proxyListenFromArgs(args))
@@ -504,6 +533,29 @@ func Run(rawArgs []string) {
 
 // proxyThresholdFromArgs reads --threshold N from args, else AM_ROTATE_THRESHOLD,
 // else the 95% default. Values may be percent (95) or fraction (0.95).
+// proxyHookTargetsFromFlags maps `amux proxy add|remove [--claude|--cursor|--codex|--all]`
+// flags onto hook.CanonicalTool names. Empty (or --all) means "every
+// available IDE" — callers pass nil through to cmdHookInstall/cmdHookUninstall
+// for that case.
+func proxyHookTargetsFromFlags(args []string) []string {
+	var targets []string
+	for _, a := range args {
+		switch strings.ToLower(a) {
+		case "--all":
+			return nil
+		case "--claude":
+			targets = append(targets, "claude")
+		case "--cursor":
+			targets = append(targets, "cursor")
+		case "--codex":
+			targets = append(targets, "codex")
+		case "--agy", "--antigravity":
+			targets = append(targets, "agy")
+		}
+	}
+	return targets
+}
+
 func proxyThresholdFromArgs(args []string) float64 {
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--threshold" && i+1 < len(args) {
@@ -1124,6 +1176,71 @@ func cmdHookUninstall(args []string) {
 	fmt.Println("also remove the `eval \"$(am env)\"` line from your shell rc if you added it.")
 }
 
+// cmdUninstall fully removes amux from the machine: hooks, the proxy
+// daemon, auto-update LaunchAgent, and the installed binaries. Account data
+// under ~/.am/ is kept unless --purge is passed, matching the project's
+// pattern of never deleting user data without an explicit opt-in flag.
+func cmdUninstall(purge bool) {
+	fmt.Println("== Gỡ cài đặt amux ==")
+
+	if proxy.ProxyUp() {
+		fmt.Println("đang tắt proxy daemon...")
+		proxy.CmdProxyDown(true, true)
+	}
+
+	fmt.Println("đang gỡ hooks khỏi các IDE/CLI đã tích hợp...")
+	cmdHookUninstall(nil)
+
+	if hook.IsAutoUpdateEnabled() {
+		fmt.Println("đang tắt tự động cập nhật (LaunchAgent)...")
+		if err := hook.SetupAutoUpdate(false); err != nil {
+			fmt.Fprintf(os.Stderr, "amux: cảnh báo: không thể tắt auto-update: %v\n", err)
+		}
+	}
+
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".local", "bin", "am"),
+		filepath.Join(home, ".local", "bin", "amux"),
+		"/usr/local/bin/am",
+		"/usr/local/bin/amux",
+	}
+	if self, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(self); err == nil {
+			candidates = append(candidates, resolved)
+		}
+	}
+	removed := map[string]bool{}
+	for _, p := range candidates {
+		if removed[p] {
+			continue
+		}
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			fmt.Fprintf(os.Stderr, "amux: không thể xoá %s: %v (thử: sudo rm -f %s)\n", p, err, p)
+			continue
+		}
+		removed[p] = true
+		fmt.Printf("✓ đã xoá %s\n", p)
+	}
+
+	if purge {
+		baseDir := types.BaseDir()
+		fmt.Printf("--purge: đang xoá toàn bộ dữ liệu tài khoản tại %s...\n", baseDir)
+		if err := os.RemoveAll(baseDir); err != nil {
+			fmt.Fprintf(os.Stderr, "amux: cảnh báo: không thể xoá %s: %v\n", baseDir, err)
+		} else {
+			fmt.Printf("✓ đã xoá %s\n", baseDir)
+		}
+	} else {
+		fmt.Printf("dữ liệu tài khoản tại %s được giữ nguyên (dùng `amux uninstall --purge` để xoá luôn).\n", types.BaseDir())
+	}
+
+	fmt.Println("\nĐã gỡ cài đặt amux. Xoá dòng `eval \"$(am env)\"` khỏi shell rc nếu bạn đã thêm trước đó.")
+}
+
 func cmdHookStatus(args []string) {
 	var target string
 	if len(args) > 0 {
@@ -1469,19 +1586,205 @@ func getRemoteHeadCommit(repoURL string) (string, error) {
 	return fields[0], nil
 }
 
+// ensureGitAvailable makes sure `git` is on PATH, installing it via Homebrew
+// when possible so `amux update` never forces the user back to re-running
+// the curl installer just to pick up a missing dependency.
+func ensureGitAvailable(quiet bool) bool {
+	if _, err := exec.LookPath("git"); err == nil {
+		return true
+	}
+	if !quiet {
+		fmt.Println("'git' chưa được cài đặt, đang tự động cài đặt...")
+	}
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("brew"); err == nil {
+			cmd := exec.Command("brew", "install", "git")
+			if !quiet {
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+			}
+			_ = cmd.Run()
+		} else {
+			// No Homebrew: trigger the Xcode Command Line Tools installer,
+			// which ships `git`. This pops a GUI prompt and cannot be
+			// waited on synchronously, so we ask the user to re-run.
+			_ = exec.Command("xcode-select", "--install").Run()
+		}
+	}
+	_, err := exec.LookPath("git")
+	return err == nil
+}
+
+// ensureGoAvailable makes sure a `go` toolchain new enough to build amux is
+// on PATH, mirroring install.sh's ensure_go: try Homebrew first, then fall
+// back to downloading the official tarball into ~/.go and wiring it into
+// PATH/GOROOT for this process (plus the user's shell rc for next time).
+// This means a machine that lost or never had Go can still run
+// `amux update` end-to-end without the user re-running the curl installer.
+func ensureGoAvailable(quiet bool) bool {
+	if goVersionOK() {
+		return true
+	}
+	if !quiet {
+		fmt.Println("'go' (>= 1.22) chưa được cài đặt hoặc quá cũ, đang tự động cài đặt...")
+	}
+
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("brew"); err == nil {
+			cmd := exec.Command("brew", "install", "go")
+			if !quiet {
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+			}
+			_ = cmd.Run()
+			for _, p := range []string{"/opt/homebrew/bin", "/usr/local/bin"} {
+				if _, err := os.Stat(filepath.Join(p, "go")); err == nil {
+					os.Setenv("PATH", p+string(os.PathListSeparator)+os.Getenv("PATH"))
+				}
+			}
+			if goVersionOK() {
+				return true
+			}
+		}
+	}
+
+	goArch := ""
+	switch runtime.GOARCH {
+	case "arm64":
+		goArch = "arm64"
+	case "amd64":
+		goArch = "amd64"
+	default:
+		if !quiet {
+			fmt.Printf("kiến trúc CPU không được hỗ trợ để tự cài Go: %s\n", runtime.GOARCH)
+		}
+		return false
+	}
+	goOS := runtime.GOOS
+	if goOS != "darwin" && goOS != "linux" {
+		return false
+	}
+
+	goVer := "go1.23.6"
+	if out, err := exec.Command("curl", "-fsSL", "https://go.dev/VERSION?m=text").Output(); err == nil {
+		if v := strings.Fields(string(out)); len(v) > 0 && strings.HasPrefix(v[0], "go") {
+			goVer = v[0]
+		}
+	}
+
+	tmp, err := os.MkdirTemp("", "amux-go-dl-*")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(tmp)
+
+	tarName := fmt.Sprintf("%s.%s-%s.tar.gz", goVer, goOS, goArch)
+	tarPath := filepath.Join(tmp, tarName)
+	downloadURL := "https://go.dev/dl/" + tarName
+	if !quiet {
+		fmt.Printf("đang tải Go từ %s...\n", downloadURL)
+	}
+	dl := exec.Command("curl", "-fsSL", downloadURL, "-o", tarPath)
+	if !quiet {
+		dl.Stderr = os.Stderr
+	}
+	if err := dl.Run(); err != nil {
+		return false
+	}
+
+	home, _ := os.UserHomeDir()
+	goTarget := filepath.Join(home, ".go")
+	_ = os.RemoveAll(goTarget)
+	_ = os.MkdirAll(goTarget, 0o755)
+	extract := exec.Command("tar", "-C", goTarget, "--strip-components=1", "-xzf", tarPath)
+	if !quiet {
+		extract.Stderr = os.Stderr
+	}
+	if err := extract.Run(); err != nil {
+		return false
+	}
+
+	goBin := filepath.Join(goTarget, "bin")
+	os.Setenv("PATH", goBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	os.Setenv("GOROOT", goTarget)
+	appendGoToShellRC(goTarget)
+
+	if !quiet {
+		fmt.Println("Go đã được cài đặt tự động tại", goTarget)
+	}
+	return goVersionOK()
+}
+
+// goVersionOK reports whether `go` is on PATH and reports version >= 1.22.
+func goVersionOK() bool {
+	if _, err := exec.LookPath("go"); err != nil {
+		return false
+	}
+	out, err := exec.Command("go", "version").Output()
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 3 {
+		return false
+	}
+	ver := strings.TrimPrefix(fields[2], "go")
+	parts := strings.SplitN(ver, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, _ := strconv.Atoi(parts[0])
+	minor, _ := strconv.Atoi(parts[1])
+	return major > 1 || (major == 1 && minor >= 22)
+}
+
+// appendGoToShellRC persists the ~/.go toolchain on PATH for future shells
+// (this process already has it via os.Setenv above).
+func appendGoToShellRC(goTarget string) {
+	home, _ := os.UserHomeDir()
+	rc := ""
+	switch {
+	case strings.HasSuffix(os.Getenv("SHELL"), "/zsh"):
+		rc = filepath.Join(home, ".zshrc")
+	case strings.HasSuffix(os.Getenv("SHELL"), "/bash"):
+		rc = filepath.Join(home, ".bash_profile")
+	}
+	if rc == "" {
+		for _, c := range []string{filepath.Join(home, ".zshrc"), filepath.Join(home, ".bash_profile"), filepath.Join(home, ".bashrc")} {
+			if _, err := os.Stat(c); err == nil {
+				rc = c
+				break
+			}
+		}
+	}
+	if rc == "" {
+		return
+	}
+	existing, _ := os.ReadFile(rc)
+	if strings.Contains(string(existing), goTarget+"/bin") {
+		return
+	}
+	f, err := os.OpenFile(rc, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "\n# Go binary (installed automatically by amux)\nexport GOROOT=\"%s\"\nexport PATH=\"%s/bin:$PATH\"\n", goTarget, goTarget)
+}
+
 func cmdUpdate(force, quiet bool) {
 	if !quiet {
 		fmt.Println("== Cập nhật amux lên phiên bản mới nhất ==")
 	}
-	if _, err := exec.LookPath("git"); err != nil {
+	if !ensureGitAvailable(quiet) {
 		if !quiet {
-			die("yêu cầu cài đặt 'git' trước khi cập nhật")
+			die("yêu cầu cài đặt 'git' trước khi cập nhật (tự động cài đặt thất bại)")
 		}
 		return
 	}
-	if _, err := exec.LookPath("go"); err != nil {
+	if !ensureGoAvailable(quiet) {
 		if !quiet {
-			die("yêu cầu cài đặt 'go' (>= 1.22) trước khi cập nhật")
+			die("yêu cầu cài đặt 'go' (>= 1.22) trước khi cập nhật (tự động cài đặt thất bại)")
 		}
 		return
 	}

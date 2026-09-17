@@ -36,8 +36,31 @@ type ProfileMeta struct {
 	Proxy string `json:"proxy,omitempty"`
 	// Plan indicates subscription tier ("pro", "team", "free").
 	Plan string `json:"plan,omitempty"`
-	// ID is a short handle like "claude1", assigned by position when listed.
 	ID string `json:"-"`
+}
+
+// ToAccount converts a ProfileMeta to a flat Account struct.
+func (p ProfileMeta) ToAccount() Account {
+	id := p.Name
+	if id == "" {
+		id = p.ID
+	}
+	isSub := IsSubscriptionTier(p.Plan)
+	if p.Plan == "" && (p.Tool == "claude" || p.Tool == "antigravity") {
+		isSub = true
+	}
+	typ := AccountTypeSubscription
+	if !isSub {
+		typ = AccountTypeWeb
+	}
+	return Account{
+		ID:           id,
+		Provider:     p.Tool,
+		Type:         typ,
+		AuthType:     "oauth",
+		UsagePercent: 0,
+		Active:       !p.Disabled,
+	}
 }
 
 // ProfileEntry is an artifact payload within a profile bundle.

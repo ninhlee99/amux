@@ -41,15 +41,14 @@ func TestSanitizer(t *testing.T) {
 	}
 }
 
-func TestPacer_SpacingAndBackoff(t *testing.T) {
+func TestPacer_NoArtificialDelayOnlyRealBackoff(t *testing.T) {
 	cfg := PacerConfig{
-		MinRequestInterval: 10 * time.Millisecond,
-		InitialBackoff:     20 * time.Millisecond,
-		MaxBackoff:         100 * time.Millisecond,
+		InitialBackoff: 20 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
 	}
 	p := NewPacer(cfg)
 
-	// Normal pacing
+	// Pace must never sleep — near-0ms latency requirement.
 	ctx := context.Background()
 	start := time.Now()
 	if err := p.Pace(ctx, "acc1", false); err != nil {
@@ -58,8 +57,8 @@ func TestPacer_SpacingAndBackoff(t *testing.T) {
 	if err := p.Pace(ctx, "acc1", false); err != nil {
 		t.Fatalf("unexpected pace err: %v", err)
 	}
-	if time.Since(start) < 10*time.Millisecond {
-		t.Errorf("expected pacing delay of at least 10ms")
+	if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
+		t.Errorf("Pace must not add artificial delay, took %v", elapsed)
 	}
 
 	// Backoff

@@ -2,9 +2,7 @@ package guard
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,14 +39,8 @@ var (
 	ErrAccountInBackoff = errors.New("guard: account is currently in cooldown backoff")
 )
 
-// PacerConfig controls the pacing behavior.
+// PacerConfig controls rate-limit cooldown behavior.
 type PacerConfig struct {
-	// MinRequestInterval is the minimum duration between consecutive requests to the same account.
-	MinRequestInterval time.Duration
-	// WebJitterMin is minimum random jitter added to web-session requests.
-	WebJitterMin time.Duration
-	// WebJitterMax is maximum random jitter added to web-session requests.
-	WebJitterMax time.Duration
 	// InitialBackoff is the starting backoff duration when a 429 is received without Retry-After.
 	InitialBackoff time.Duration
 	// MaxBackoff is the maximum backoff duration cap.
@@ -56,14 +48,10 @@ type PacerConfig struct {
 }
 
 // DefaultPacerConfig provides safe production defaults.
-// Web jitter is intentionally wider — browser sessions trip bot buckets on burst.
 func DefaultPacerConfig() PacerConfig {
 	return PacerConfig{
-		MinRequestInterval: 250 * time.Millisecond,
-		WebJitterMin:       280 * time.Millisecond,
-		WebJitterMax:       900 * time.Millisecond,
-		InitialBackoff:     30 * time.Second,
-		MaxBackoff:         15 * time.Minute,
+		InitialBackoff: 30 * time.Second,
+		MaxBackoff:     15 * time.Minute,
 	}
 }
 
@@ -72,23 +60,18 @@ type backoffState struct {
 	attempts int
 }
 
-// Pacer coordinates request timing across accounts to eliminate bot-like burst patterns.
+// Pacer tracks per-account rate-limit cooldowns. It performs no artificial
+// throttling or delay — the only wait it ever imposes is honoring a
+// provider's own 429 / Retry-After cooldown, so a rate-limited account isn't
+// hammered again until the provider says it's safe to retry.
 type Pacer struct {
 	mu           sync.Mutex
 	cfg          PacerConfig
-	lastRequest  map[string]time.Time
 	backoffState map[string]*backoffState
 }
 
-// NewPacer creates a new request pacer with the given configuration.
+// NewPacer creates a new rate-limit cooldown tracker with the given configuration.
 func NewPacer(cfg PacerConfig) *Pacer {
-	if cfg.MinRequestInterval <= 0 {
-		cfg.MinRequestInterval = 250 * time.Millisecond
-	}
-	if cfg.WebJitterMax <= cfg.WebJitterMin {
-		cfg.WebJitterMin = 100 * time.Millisecond
-		cfg.WebJitterMax = 350 * time.Millisecond
-	}
 	if cfg.InitialBackoff <= 0 {
 		cfg.InitialBackoff = 30 * time.Second
 	}
@@ -97,7 +80,6 @@ func NewPacer(cfg PacerConfig) *Pacer {
 	}
 	return &Pacer{
 		cfg:          cfg,
-		lastRequest:  make(map[string]time.Time),
 		backoffState: make(map[string]*backoffState),
 	}
 }
@@ -133,7 +115,7 @@ func (p *Pacer) RecordRateLimit(accountID string, retryAfter time.Duration) time
 
 	var wait time.Duration
 	if retryAfter > 0 {
-		// Respect upstream Retry-After + small safety buffer (1-3s)
+		// Respect upstream Retry-After + small safety buffer.
 		wait = retryAfter + 2*time.Second
 	} else {
 		// Exponential backoff: base * 2^(attempts-1)
@@ -148,10 +130,6 @@ func (p *Pacer) RecordRateLimit(accountID string, retryAfter time.Duration) time
 		wait = p.cfg.MaxBackoff
 	}
 
-	// Add random jitter of up to 10% to prevent thundering herd
-	jitterMs, _ := rand.Int(rand.Reader, big.NewInt(1000))
-	wait += time.Duration(jitterMs.Int64()) * time.Millisecond
-
 	st.until = time.Now().Add(wait)
 	return wait
 }
@@ -163,53 +141,13 @@ func (p *Pacer) ClearBackoff(accountID string) {
 	delete(p.backoffState, accountID)
 }
 
-// Pace waits the necessary duration to maintain healthy cadence before dispatching.
-// For web sessions (isWeb == true), adds humanized random micro-jitter.
+// Pace checks whether the account is in a rate-limit cooldown. Unlike prior
+// versions, it never sleeps or injects artificial spacing/jitter — it either
+// returns immediately, or returns ErrAccountInBackoff if the provider itself
+// rate-limited this account and the cooldown window hasn't elapsed yet.
 func (p *Pacer) Pace(ctx context.Context, accountID string, isWeb bool) error {
-	p.mu.Lock()
-	// 1. Check backoff first
-	if st, ok := p.backoffState[accountID]; ok {
-		now := time.Now()
-		if now.Before(st.until) {
-			p.mu.Unlock()
-			return ErrAccountInBackoff
-		}
-		delete(p.backoffState, accountID)
-	}
-
-	// 2. Compute minimum spacing interval (web accounts get a longer floor)
-	now := time.Now()
-	var wait time.Duration
-	minInterval := p.cfg.MinRequestInterval
-	if isWeb && minInterval < 500*time.Millisecond {
-		minInterval = 500 * time.Millisecond
-	}
-	if last, ok := p.lastRequest[accountID]; ok {
-		elapsed := now.Sub(last)
-		if elapsed < minInterval {
-			wait = minInterval - elapsed
-		}
-	}
-
-	// 3. Add humanized micro-jitter for web sessions
-	if isWeb {
-		jitterSpan := p.cfg.WebJitterMax - p.cfg.WebJitterMin
-		if jitterSpan > 0 {
-			r, _ := rand.Int(rand.Reader, big.NewInt(jitterSpan.Milliseconds()))
-			wait += p.cfg.WebJitterMin + time.Duration(r.Int64())*time.Millisecond
-		}
-	}
-
-	// Reserve the slot timestamp
-	p.lastRequest[accountID] = now.Add(wait)
-	p.mu.Unlock()
-
-	if wait > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
-		}
+	if in, _ := p.InBackoff(accountID); in {
+		return ErrAccountInBackoff
 	}
 	return nil
 }
@@ -218,7 +156,6 @@ func (p *Pacer) Pace(ctx context.Context, accountID string, isWeb bool) error {
 func (p *Pacer) Reset(accountID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.lastRequest, accountID)
 	delete(p.backoffState, accountID)
 }
 
@@ -226,6 +163,5 @@ func (p *Pacer) Reset(accountID string) {
 func (p *Pacer) ResetAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lastRequest = make(map[string]time.Time)
 	p.backoffState = make(map[string]*backoffState)
 }

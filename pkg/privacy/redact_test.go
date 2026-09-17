@@ -455,3 +455,43 @@ func TestRedactChatRequest_OpenAIToolFormat(t *testing.T) {
 		t.Fatalf("tool result over-redacted: %s", req.Messages[2].Content)
 	}
 }
+
+// TestRedactChatRequest_LeavesMerchantAndDomainContext locks in that the
+// redactor only scans for auth/secret patterns — it must never mangle
+// business/domain identifiers (Shopify GIDs, order/variant IDs) or
+// structured context markup (XML tags) embedded in prompt content, even
+// though a real secret elsewhere in the same message must still be caught.
+func TestRedactChatRequest_LeavesMerchantAndDomainContext(t *testing.T) {
+	merchantBlock := `<merchant_data>{"store":"gid://shopify/Shop/123","variant":"gid://shopify/ProductVariant/456","order_id":"gid://shopify/Order/789"}</merchant_data>`
+	req := &types.ChatRequest{
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: merchantBlock + "\nAlso here is a real key: sk-ant-abcdefghijklmnopqrstuvwxyz123456"},
+		},
+		Tools: []types.ToolDef{{
+			Name:        "merchant_lookup",
+			Description: "Look up a Shopify variant by gid://shopify/ProductVariant/... id",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"variant_gid":{"type":"string"}}}`),
+		}},
+	}
+	before := req.Messages[0].Content
+	res := RedactChatRequest(req)
+
+	if !strings.Contains(req.Messages[0].Content, "gid://shopify/Shop/123") ||
+		!strings.Contains(req.Messages[0].Content, "gid://shopify/ProductVariant/456") ||
+		!strings.Contains(req.Messages[0].Content, "gid://shopify/Order/789") {
+		t.Fatalf("merchant GIDs were redacted: %s", req.Messages[0].Content)
+	}
+	if !strings.Contains(req.Messages[0].Content, "<merchant_data>") || !strings.Contains(req.Messages[0].Content, "</merchant_data>") {
+		t.Fatalf("XML context tags were stripped: %s", req.Messages[0].Content)
+	}
+	if req.Tools[0].Description != "Look up a Shopify variant by gid://shopify/ProductVariant/... id" {
+		t.Fatalf("tool description mutated: %s", req.Tools[0].Description)
+	}
+	if strings.Contains(req.Messages[0].Content, "sk-ant-abcdefghijklmnopqrstuvwxyz123456") {
+		t.Fatalf("real API key was NOT redacted (false negative): %s", req.Messages[0].Content)
+	}
+	if res.Len() == 0 {
+		t.Fatal("expected exactly one redaction hit for the real API key")
+	}
+	_ = before
+}

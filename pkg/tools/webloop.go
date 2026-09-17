@@ -903,20 +903,15 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		add(m[1], m[2], m[3])
 	}
 	for _, m := range reToolJSON.FindAllStringSubmatch(text, -1) {
-		var probe struct {
-			Name      string          `json:"name"`
-			ID        string          `json:"id"`
-			Arguments json.RawMessage `json:"arguments"`
-			Input     json.RawMessage `json:"input"`
+		// Route through parseToolCallJSON (not a bare json.Unmarshal) so a
+		// web model's hand-written JSON — which routinely contains
+		// unescaped inner quotes/newlines from a shell command like
+		// `gh issue create --title "..." --body "..."` — still recovers
+		// via repairJSON / the regex fallback instead of being silently
+		// dropped on the first parse error.
+		if name, id, args, ok := parseToolCallJSON(m[1]); ok {
+			add(name, id, args)
 		}
-		if json.Unmarshal([]byte(m[1]), &probe) != nil || probe.Name == "" {
-			continue
-		}
-		args := probe.Arguments
-		if len(args) == 0 {
-			args = probe.Input
-		}
-		add(probe.Name, probe.ID, string(args))
 	}
 	if allowBashFence {
 		if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok || len(allow) == 0 {
@@ -1233,7 +1228,15 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 				if mid := reID.FindStringSubmatch(raw); len(mid) > 1 {
 					id = mid[1]
 				}
-				reCmd := regexp.MustCompile(`(?s)"command"\s*:\s*"(.*?)"\s*\}*\s*\}*$`)
+				// Greedy (not lazy) capture: a shell command routinely
+				// contains its own unescaped double quotes (e.g. `--title
+				// "..."`), which a web model — generating this JSON by hand
+				// instead of via a structured-output API — frequently fails
+				// to escape. A lazy `.*?` would stop at the first such
+				// inner quote and truncate the command; greedy `.*`
+				// backtracks from the end of the string to find the real
+				// closing quote right before the trailing `}`s instead.
+				reCmd := regexp.MustCompile(`(?s)"command"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
 				if mcmd := reCmd.FindStringSubmatch(raw); len(mcmd) > 1 {
 					cmd := mcmd[1]
 					b, _ := json.Marshal(map[string]string{"command": cmd})

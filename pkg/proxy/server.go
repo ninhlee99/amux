@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"amux-accounts/pkg/monitor"
-	"amux-accounts/pkg/nav"
 	"bufio"
 	"bytes"
 	"crypto/subtle"
@@ -107,9 +106,6 @@ func RunProxy(addr, upstream string) error {
 	pool := router.NewAccountPoolRouter(adapters)
 	if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 		pool.SetDirectory(all)
-	}
-	if f, err := provider.LoadConfigFile(provider.DefaultAccountsPath()); err == nil && f != nil {
-		router.SetWebPolicy(f.WebPolicy)
 	}
 
 	// Wire the /btw queue into the bridge so in-flight user notes get
@@ -343,6 +339,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	if toolPool == nil {
 		toolPool = chatPool
 	}
+	if rot != nil && toolPool != nil {
+		rot.SetPoolSize(toolPool.Len())
+	}
 	mux := http.NewServeMux()
 
 	// 1. OpenAI Standard Gateway
@@ -461,10 +460,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 
 	mux.HandleFunc("/_am/btw", HandleBtw)
 
-	// Client workspace map paths (same as `am map show` JSON).
-	mux.HandleFunc("/_am/map", handleAmMapBundle)
-	mux.HandleFunc("/_am/map/viz", handleAmMapViz)
-
 	mux.HandleFunc("/_am/sync", func(w http.ResponseWriter, r *http.Request) {
 		profile.SyncActiveFromSystem("claude")
 		rot.RefreshFromDisk()
@@ -474,9 +469,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			if toolPool != chatPool {
 				toolPool.Reload(reloaded)
 			}
-		}
-		if f, err := provider.LoadConfigFile(provider.DefaultAccountsPath()); err == nil && f != nil {
-			router.SetWebPolicy(f.WebPolicy)
 		}
 		if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 			chatPool.SetDirectory(all)
@@ -597,7 +589,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				xProvider = strings.TrimSpace(r.Header.Get("x-provider"))
 			}
 
-			hasTools := anthropicRequestHasTools(body)
 			// Caller-supplied credential only — deliberately excludes this
 			// *proxy process's* own ANTHROPIC_API_KEY env var. While the
 			// proxy is up, routing must stay inside the pool/rotator; a key
@@ -691,31 +682,23 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 			}
 
-			isWebTask := false
-			if parsedReq != nil {
-				c := router.ClassifyTask(parsedReq)
-				isWebTask = router.IsWebTask(c.Kind)
-			}
-
+			// Routing between native Claude and the account pool is decided
+			// ONLY by account/quota availability (manual pin, explicit mode,
+			// caller credential, subscription exhaustion) — never by
+			// whether the request carries tools[] or by task
+			// classification. See §2.1 account-equality rule.
 			switch {
 			case usePool:
 				// already decided via X-Provider
 			case toolPool != nil && toolPool.ManualPin():
 				usePool = true
-			case isWebTask && toolPool != nil && !toolPool.ManualPin() && toolPool.HasLivingGroup(
-				router.GroupClaudeWeb, router.GroupChatGPTWeb, router.GroupGeminiWeb,
-				router.GroupAGYSub, router.GroupAGYFree,
-				router.GroupAPIOther,
-				router.GroupCodexSub, router.GroupCodexFree,
-			):
+			case mode.Get() == "provider":
 				usePool = true
-			case hasTools && claudeUsable:
+			case claudeUsable:
 				if rot.ProfileCount() > 0 {
 					rot.EnsureUsableActive()
 				}
 				usePool = false
-			case mode.Get() == "provider":
-				usePool = true
 			case hasAPIKey:
 				usePool = false
 			case rot.ShouldFailoverToProviderPool():
@@ -757,18 +740,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 							r.ContentLength = int64(len(body))
 							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 						}
-					}
-				}
-			}
-
-			// Task loop detection: warn immediately if stuck in a loop and prune token-wasting redundant loop context
-			if parsedReq != nil {
-				if loopDetected, _ := guard.DetectAndPruneLoop(parsedReq); loopDetected {
-					if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
-						body = newBody
-						r.Body = io.NopCloser(bytes.NewReader(body))
-						r.ContentLength = int64(len(body))
-						r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 					}
 				}
 			}
@@ -1117,82 +1088,6 @@ func anthropicUpstreamReady(rot *Rotator, r *http.Request, authToken string) boo
 		return rot.Token() != ""
 	}
 	return false
-}
-
-func handleAmMapBundle(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	root := strings.TrimSpace(r.URL.Query().Get("root"))
-	if root == "" {
-		root = usage.ProjectForRemoteAddr(r.RemoteAddr)
-	}
-	if root == "" {
-		http.Error(w, "missing project root (use ?root=/path/to/repo or call from proxied client)", http.StatusBadRequest)
-		return
-	}
-	b := nav.Resolve(root)
-	if b.IsAmuxRepository() {
-		b.PrimaryMap = "docs/AI_CODEBASE_MAP.md (amux tool — in-repo path relative to amux root)"
-		b.PrimaryLocate = "docs/ai-locate.yaml"
-	}
-	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
-	// Narrow git∪touched focus — prefer this over reading full GRAPH.md.
-	if mode == "recent" {
-		rep, err := nav.RecentFocus(root, "HEAD", false)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mode":   "recent",
-			"paths":  b.AsPathsOnly(),
-			"recent": rep,
-			"hint":   "Use recent funcs only. Never dump full GRAPH/MODULES into the LLM.",
-		})
-		return
-	}
-	// Default: paths-only (token-safe). Agents must not dump full GRAPH.
-	// Opt-in dump: ?full=1
-	if r.URL.Query().Get("full") == "1" || strings.EqualFold(r.URL.Query().Get("full"), "true") || mode == "full" {
-		_ = json.NewEncoder(w).Encode(b)
-		return
-	}
-	_ = json.NewEncoder(w).Encode(b.AsPathsOnly())
-}
-
-func handleAmMapViz(w http.ResponseWriter, r *http.Request) {
-	root := strings.TrimSpace(r.URL.Query().Get("root"))
-	if root == "" {
-		root = usage.ProjectForRemoteAddr(r.RemoteAddr)
-	}
-	if root == "" {
-		http.Error(w, "missing project root (use ?root=/path/to/repo)", http.StatusBadRequest)
-		return
-	}
-	focus := strings.TrimSpace(r.URL.Query().Get("module"))
-	scan, g, err := nav.LoadGraphForDir(root)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	htmlBytes, err := nav.RenderGraphHTML(scan, g, focus)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(htmlBytes)
-}
-
-// anthropicRequestHasTools reports whether a /v1/messages body includes a
-// non-empty tools array (Claude Code agent requests).
-func anthropicRequestHasTools(body []byte) bool {
-	var wrap struct {
-		Tools []json.RawMessage `json:"tools"`
-	}
-	if err := json.Unmarshal(body, &wrap); err != nil {
-		return false
-	}
-	return len(wrap.Tools) > 0
 }
 
 // redactOutboundBody rewrites r.Body in place, replacing secrets with samples

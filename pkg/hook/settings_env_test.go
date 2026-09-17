@@ -197,3 +197,42 @@ func TestSyncCodexSettingsEnv_SetThenUnset(t *testing.T) {
 		t.Fatal("unrelated tui config must survive")
 	}
 }
+
+func TestSyncCursorSettingsEnv_SetThenUnset(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	_ = os.MkdirAll(filepath.Join(tmp, ".cursor"), 0o755)
+
+	if err := SyncCursorSettingsEnv(true, "http://127.0.0.1:8787"); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	m := LoadCursorSettings()
+	if m["cursor.general.openaiBaseUrl"] != "http://127.0.0.1:8787/v1" {
+		t.Fatalf("expected cursor openai base url set, got %v", m)
+	}
+	if m["openai.baseUrl"] != "http://127.0.0.1:8787/v1" {
+		t.Fatalf("expected openai.baseUrl set, got %v", m)
+	}
+	if m["openai.apiKey"] != "am-proxy" {
+		t.Fatalf("expected openai.apiKey set, got %v", m)
+	}
+
+	if !ClientSettingsPointToProxy() {
+		t.Fatal("expected ClientSettingsPointToProxy to be true")
+	}
+
+	if err := SyncCursorSettingsEnv(false, ""); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	m = LoadCursorSettings()
+	if _, ok := m["cursor.general.openaiBaseUrl"]; ok {
+		t.Fatalf("expected cursor.general.openaiBaseUrl cleared, got %v", m)
+	}
+	if _, ok := m["openai.baseUrl"]; ok {
+		t.Fatalf("expected openai.baseUrl cleared, got %v", m)
+	}
+	if _, ok := m["openai.apiKey"]; ok {
+		t.Fatalf("expected openai.apiKey cleared, got %v", m)
+	}
+}
+

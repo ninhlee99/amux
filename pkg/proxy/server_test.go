@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -315,7 +316,10 @@ func TestHandler_AllClaudeCoolingFailsOverToPool(t *testing.T) {
 
 // Claude Code agent request (tools[]) + usable OAuth → Anthropic reverse
 // proxy even when mode=provider (API-key style; web cannot emit tool_use).
-func TestHandler_MessagesWithToolsUsesClaudeWhenUsable(t *testing.T) {
+// Account-equality rule: tools[] presence must never affect routing.
+// Explicit provider mode routes to the pool whether or not the request
+// carries tool definitions.
+func TestHandler_MessagesWithToolsIgnoredForRouting(t *testing.T) {
 	rot := &Rotator{
 		tool:           "claude",
 		order:          []string{"a"},
@@ -346,8 +350,11 @@ func TestHandler_MessagesWithToolsUsesClaudeWhenUsable(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer am-proxy")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusTeapot {
-		t.Fatalf("expected Anthropic reverse-proxy for tools request, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusTeapot {
+		t.Fatal("tools[] must not force native Claude reverse-proxy — expected pool")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from pool, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -701,5 +708,75 @@ func TestDynamicProxyRoundTripper_WhitespaceProxyURLDoesNotPanic(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status=%d", resp.StatusCode)
+	}
+}
+
+// TestHandler_ClaudeDirectPassthroughPreservesBodyAndSSE locks in the
+// zero-mutation passthrough guarantee for same-dialect traffic (§2.2):
+// when Claude Code talks to a usable native Claude account, the request
+// body (including embedded XML context tags and dynamic tool schemas) must
+// reach the real Anthropic upstream byte-for-byte, and the upstream's raw
+// SSE response bytes must reach the client byte-for-byte — no intermediate
+// JSON decode/re-encode round-trip.
+func TestHandler_ClaudeDirectPassthroughPreservesBodyAndSSE(t *testing.T) {
+	t.Setenv("AM_HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	const sseBody = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"<merchant_data>ok</merchant_data>\"}}\n\n"
+
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Upstream-Marker", "anthropic-direct")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseBody))
+	}))
+	defer upstream.Close()
+
+	rot := &Rotator{
+		tool:           "claude",
+		order:          []string{"a"},
+		tokens:         map[string]*types.Token{"a": {Access: "tok"}},
+		accounts:       map[string]string{},
+		cooldown:       map[string]time.Time{},
+		dead:           map[string]bool{},
+		autoSwitches:   map[string]int{},
+		manualSwitches: map[string]int{},
+		usedThreshold:  DefaultUsedThreshold,
+	}
+	life := NewLifecycle()
+	mode := &ProxyMode{}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{&stubAdapter{id: "stub"}})
+	rp, err := newReverseProxy(upstream.URL, rot)
+	if err != nil {
+		t.Fatalf("newReverseProxy: %v", err)
+	}
+	sw := &swappableHandler{}
+	h := newHandler(rot, life, mode, pool, pool, rp, upstream.URL, sw, "", func() {})
+	sw.Set(h)
+
+	// Model already "claude-sonnet-5" so the non-opus default-model rewrite
+	// (a deliberate, surgical top-level-field edit) does not fire, isolating
+	// this test to the passthrough path itself.
+	bodyStr := `{"model":"claude-sonnet-5","stream":true,"tools":[{"name":"custom_tool","input_schema":{"type":"object","properties":{"x":{"type":"string"}}}}],"messages":[{"role":"user","content":"<merchant_data>{\"a\":1}</merchant_data>"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(bodyStr))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer am-proxy")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from passthrough, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if string(gotBody) != bodyStr {
+		t.Fatalf("upstream received mutated body:\nwant: %s\ngot:  %s", bodyStr, string(gotBody))
+	}
+	if rec.Body.String() != sseBody {
+		t.Fatalf("client received mutated SSE stream:\nwant: %q\ngot:  %q", sseBody, rec.Body.String())
+	}
+	if rec.Header().Get("X-Upstream-Marker") != "anthropic-direct" {
+		t.Fatalf("upstream response header lost: %v", rec.Header())
 	}
 }

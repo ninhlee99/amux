@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"amux-accounts/pkg/nav"
 	"amux-accounts/pkg/types"
 )
 
@@ -72,14 +71,6 @@ func WrapUsageCapture(resp *http.Response, account string) {
 	if resp.Request != nil {
 		project = ProjectForRemoteAddr(resp.Request.RemoteAddr)
 		session = resp.Request.Header.Get("X-Claude-Code-Session-Id")
-		if project != "" {
-			if _, err := nav.EnsureMapIfMissing(project); err != nil {
-				// best-effort: usage must not fail on map gen
-			} else {
-				b := nav.Resolve(project)
-				_ = nav.EnsureWorkspace(b)
-			}
-		}
 	}
 
 	gzipped := strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip")
