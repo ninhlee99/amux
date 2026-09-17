@@ -641,6 +641,27 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				bridge.EnrichRequestMetadata(r, parsedReq)
 			}
 
+			// Model safeguard & default:
+			// If ANTHROPIC_MODEL is not explicitly set to an Opus model by the user,
+			// always default and downgrade to claude-sonnet-5. Never upgrade to Opus on fallback.
+			envModel := strings.ToLower(strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
+			userExplicitOpus := strings.Contains(envModel, "opus")
+			if !userExplicitOpus {
+				currentModel := ""
+				if parsedReq != nil {
+					currentModel = strings.ToLower(strings.TrimSpace(parsedReq.Model))
+				}
+				if currentModel == "" || currentModel == "default" || strings.Contains(currentModel, "opus") {
+					if parsedReq != nil {
+						parsedReq.Model = "claude-sonnet-5"
+					}
+					body = rewriteClaudeModelInBody(body, "claude-sonnet-5")
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					r.ContentLength = int64(len(body))
+					r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				}
+			}
+
 			proj := ""
 			if parsedReq != nil {
 				proj = parsedReq.Project()
@@ -959,4 +980,22 @@ func redactOutboundBody(r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+}
+
+// rewriteClaudeModelInBody updates or sets the "model" field in raw JSON /v1/messages body
+func rewriteClaudeModelInBody(body []byte, targetModel string) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	modelBytes, err := json.Marshal(targetModel)
+	if err != nil {
+		return body
+	}
+	m["model"] = modelBytes
+	newBody, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return newBody
 }

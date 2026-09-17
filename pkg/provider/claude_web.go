@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +75,11 @@ func (a *ClaudeWebAdapter) model() string {
 	m := a.TargetModel
 	if m == "" {
 		m = claudeWebDefaultModel
+	}
+	// Unless user explicitly requested Opus via ANTHROPIC_MODEL env, never upgrade to Opus to preserve quota.
+	envModel := strings.ToLower(strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
+	if !strings.Contains(envModel, "opus") && strings.Contains(strings.ToLower(m), "opus") {
+		return claudeWebDefaultModel
 	}
 	// Free plan cannot sustain Opus — keep Sonnet to avoid soft-ban / quality cliff.
 	if strings.EqualFold(strings.TrimSpace(a.PlanTier), "free") &&

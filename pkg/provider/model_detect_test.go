@@ -152,8 +152,8 @@ func TestDetectClaudeWebModel_QueriesOrganizationsEndpoint(t *testing.T) {
 	claudeWebOrganizationsURL = srv.URL
 	defer func() { claudeWebOrganizationsURL = orig }()
 
-	if got := DetectClaudeWebModel("sess-key", ""); got != "claude-opus-5" {
-		t.Fatalf("got %q, want claude-opus-5", got)
+	if got := DetectClaudeWebModel("sess-key", ""); got != "claude-sonnet-5" {
+		t.Fatalf("got %q, want claude-sonnet-5", got)
 	}
 }
 
@@ -179,14 +179,20 @@ func TestDetectClaudeWebModel_UnauthorizedReturnsEmpty(t *testing.T) {
 }
 
 func TestClaudeWebAdapter_ModelFreePlanDemotesOpus(t *testing.T) {
+	t.Setenv("ANTHROPIC_MODEL", "")
 	a := &ClaudeWebAdapter{TargetModel: "claude-opus-5", PlanTier: "free"}
 	if got := a.model(); got != claudeWebDefaultModel {
 		t.Fatalf("free+opus → %q, want %q", got, claudeWebDefaultModel)
 	}
 	a.PlanTier = "claude_pro"
-	if got := a.model(); got != "claude-opus-5" {
-		t.Fatalf("pro keeps opus, got %q", got)
+	if got := a.model(); got != claudeWebDefaultModel {
+		t.Fatalf("pro without ANTHROPIC_MODEL demotes opus → %q, want %q", got, claudeWebDefaultModel)
 	}
+	t.Setenv("ANTHROPIC_MODEL", "claude-opus-5")
+	if got := a.model(); got != "claude-opus-5" {
+		t.Fatalf("pro with explicit ANTHROPIC_MODEL=opus keeps opus, got %q", got)
+	}
+	t.Setenv("ANTHROPIC_MODEL", "")
 	a.TargetModel = ""
 	a.PlanTier = "free"
 	if got := a.model(); got != claudeWebDefaultModel {
