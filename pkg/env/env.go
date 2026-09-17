@@ -50,6 +50,7 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 	if proxyUp {
 		fmt.Printf("export ANTHROPIC_BASE_URL=%s\n", proxyBase)
 		fmt.Printf("export ANTHROPIC_AUTH_TOKEN=am-proxy\n")
+		fmt.Printf("export ANTHROPIC_MODEL=claude-sonnet-5\n")
 		fmt.Printf("export OPENAI_BASE_URL=%s/v1\n", proxyBase)
 		fmt.Printf("export OPENAI_API_KEY=am-proxy\n")
 		fmt.Printf("export GEMINI_API_BASE=%s\n", proxyBase)
@@ -72,6 +73,9 @@ func PrintEnvExports(proxyUp bool, hasProfiles bool, proxyBase string) {
 		}
 		if _, ok := m["ANTHROPIC_AUTH_TOKEN"]; !ok {
 			fmt.Printf("unset ANTHROPIC_AUTH_TOKEN\n")
+		}
+		if _, ok := m["ANTHROPIC_MODEL"]; !ok {
+			fmt.Printf("unset ANTHROPIC_MODEL\n")
 		}
 		if _, ok := m["OPENAI_BASE_URL"]; !ok {
 			fmt.Printf("unset OPENAI_BASE_URL\n")

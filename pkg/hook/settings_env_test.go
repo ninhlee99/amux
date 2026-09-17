@@ -28,6 +28,9 @@ func TestSyncClaudeSettingsEnv_SetThenUnset(t *testing.T) {
 	if got["ANTHROPIC_AUTH_TOKEN"] != "am-proxy" {
 		t.Fatalf("expected AUTH_TOKEN set, got %v", got)
 	}
+	if got["ANTHROPIC_MODEL"] != "claude-sonnet-5" {
+		t.Fatalf("expected ANTHROPIC_MODEL set, got %v", got)
+	}
 	if got["FOO"] != "bar" {
 		t.Fatalf("expected unrelated key preserved, got %v", got)
 	}
@@ -41,6 +44,9 @@ func TestSyncClaudeSettingsEnv_SetThenUnset(t *testing.T) {
 	}
 	if _, ok := got["ANTHROPIC_AUTH_TOKEN"]; ok {
 		t.Fatalf("expected AUTH_TOKEN removed, got %v", got)
+	}
+	if _, ok := got["ANTHROPIC_MODEL"]; ok {
+		t.Fatalf("expected ANTHROPIC_MODEL removed, got %v", got)
 	}
 	if got["FOO"] != "bar" {
 		t.Fatalf("expected unrelated key preserved after unset, got %v", got)

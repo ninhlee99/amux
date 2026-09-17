@@ -303,7 +303,7 @@ func InstalledEvents() []string {
 
 // claudeSettingsEnvKeys are the vars we own inside settings["env"] — never
 // touch anything else a user put there themselves.
-var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"}
+var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"}
 
 // SyncClaudeSettingsEnv mirrors the proxy's reachability into
 // ~/.claude/settings.json's "env" block, which Claude Code reads at the
@@ -313,8 +313,9 @@ var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN
 // proxy goes up or down won't see this either, but every session opened
 // from that point on will, without the user needing to `eval` anything.
 //
-// proxyUp true  -> set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN to proxyBase.
-// proxyUp false -> remove both keys so a new session falls through to the
+// proxyUp true  -> set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN to proxyBase
+//                  and default ANTHROPIC_MODEL to claude-sonnet-5.
+// proxyUp false -> remove keys so a new session falls through to the
 // real Anthropic API on whatever ANTHROPIC_API_KEY / subscription login it
 // already has.
 func SyncClaudeSettingsEnv(proxyUp bool, proxyBase string) error {
@@ -326,6 +327,7 @@ func SyncClaudeSettingsEnv(proxyUp bool, proxyBase string) error {
 	if proxyUp {
 		env["ANTHROPIC_BASE_URL"] = proxyBase
 		env["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+		env["ANTHROPIC_MODEL"] = "claude-sonnet-5"
 	} else {
 		for _, k := range claudeSettingsEnvKeys {
 			delete(env, k)

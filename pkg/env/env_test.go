@@ -29,6 +29,9 @@ func TestPrintEnvExports_ProxyUpIncludesGatewayCreds(t *testing.T) {
 	if !strings.Contains(out, "export ANTHROPIC_AUTH_TOKEN=am-proxy\n") {
 		t.Fatalf("missing AUTH_TOKEN: %q", out)
 	}
+	if !strings.Contains(out, "export ANTHROPIC_MODEL=claude-sonnet-5\n") {
+		t.Fatalf("missing ANTHROPIC_MODEL: %q", out)
+	}
 	if !strings.Contains(out, "export OPENAI_BASE_URL=http://127.0.0.1:8787/v1\n") {
 		t.Fatalf("missing OPENAI_BASE_URL: %q", out)
 	}
@@ -83,6 +86,9 @@ func TestPrintEnvExports_ProxyDownUnsetsAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(out, "unset ANTHROPIC_AUTH_TOKEN\n") {
 		t.Fatalf("missing unset AUTH_TOKEN: %q", out)
+	}
+	if !strings.Contains(out, "unset ANTHROPIC_MODEL\n") {
+		t.Fatalf("missing unset ANTHROPIC_MODEL: %q", out)
 	}
 	if !strings.Contains(out, "unset OPENAI_BASE_URL\n") {
 		t.Fatalf("missing unset OPENAI_BASE_URL: %q", out)
