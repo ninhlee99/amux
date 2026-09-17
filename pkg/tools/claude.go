@@ -121,9 +121,14 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 		model = "claude-3-7-sonnet-20250219"
 	}
 
+	maxTokens := 8192
+	if req.MaxTokens > 0 {
+		maxTokens = req.MaxTokens
+	}
+
 	payload := map[string]any{
 		"model":      model,
-		"max_tokens": 8192,
+		"max_tokens": maxTokens,
 		"stream":     true,
 	}
 	if !req.Stream {
@@ -232,7 +237,7 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 
 	if len(systemInstructions) > 0 {
 		sysText := strings.Join(systemInstructions, "\n\n")
-		if req.SystemCacheControl {
+		if req.SystemCacheControl || len(sysText) >= 1024 {
 			payload["system"] = []anthropicBlock{
 				{
 					"type":          "text",

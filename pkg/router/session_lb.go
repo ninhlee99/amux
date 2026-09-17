@@ -131,7 +131,7 @@ func (r *AccountPoolRouter) livingForSessionBalance(adapters []types.ProviderAda
 	var living []types.ProviderAdapter
 	for _, a := range adapters {
 		grp := DetermineAdapterGroup(a)
-		if IsClaudeSubscriptionGroup(grp) {
+		if IsClaudeSubscriptionGroup(grp) && req != nil && req.ClientDialect == "claude" {
 			continue
 		}
 		if shouldSkipAdapter(a, req, nativeAvailable, strongerThanFree) {

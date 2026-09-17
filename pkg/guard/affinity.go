@@ -86,8 +86,12 @@ func ExtractSessionKey(r *http.Request, req *types.ChatRequest) string {
 		}
 		// Derive from initial conversation turn fingerprint if there are multiple messages
 		if len(req.Messages) > 1 {
-			// Hash first user/system message content to identify the root thread
+			// Hash first user/system message content + project to identify the root thread
 			h := sha256.New()
+			if proj := req.Project(); proj != "" {
+				h.Write([]byte(proj))
+				h.Write([]byte("::"))
+			}
 			h.Write([]byte(req.Messages[0].Role))
 			h.Write([]byte(":"))
 			h.Write([]byte(req.Messages[0].Content))

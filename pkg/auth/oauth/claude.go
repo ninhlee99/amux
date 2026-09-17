@@ -44,6 +44,9 @@ type ClaudeUserProfile struct {
 
 // LoginClaudeCode executes the standalone OAuth PKCE flow for Claude Code CLI.
 func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, string, error) {
+	// Snapshot currently active login on the system before starting new login
+	profile.SyncActiveFromSystem("claude")
+
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
 		return nil, "", fmt.Errorf("generate PKCE: %w", err)
@@ -90,6 +93,9 @@ func LoginClaudeCode(ctx context.Context, customName string) (*types.Token, stri
 // LoginClaudeCodeManual executes the manual / device code flow for Claude Code CLI
 // without requiring local browser callback listener.
 func LoginClaudeCodeManual(ctx context.Context, customName string) (*types.Token, string, error) {
+	// Snapshot currently active login on the system before starting new login
+	profile.SyncActiveFromSystem("claude")
+
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
 		return nil, "", fmt.Errorf("generate PKCE: %w", err)

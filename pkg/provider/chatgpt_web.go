@@ -28,9 +28,17 @@ type ChatGPTWebAdapter struct {
 	PlanTier     string // "plus" | "pro" | "team" | "free" | …
 	HTTPClient   *http.Client
 
-	mu              sync.Mutex
-	convID          string
-	parentMessageID string
+	mu      sync.Mutex
+	convMgr *ProjectConversationManager
+}
+
+func (a *ChatGPTWebAdapter) convs() *ProjectConversationManager {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.convMgr == nil {
+		a.convMgr = NewProjectConversationManager(a.AdapterID, DefaultMaxTurnsPerConversation, DefaultConversationTTL)
+	}
+	return a.convMgr
 }
 
 const chatGPTConversationURL = "https://chatgpt.com/backend-api/conversation"
@@ -165,15 +173,19 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		return nil, fmt.Errorf("%s: sentinel: %w", a.AdapterID, err)
 	}
 
+	project := req.Project()
+	cm := a.convs()
 	rotatedConv := false
 	for {
-		a.mu.Lock()
-		convID := a.convID
-		parentID := a.parentMessageID
-		a.mu.Unlock()
+		activeConv, hasActive := cm.GetActive(project)
+		var convID, parentID string
+		if hasActive && activeConv != nil && !rotatedConv {
+			convID = activeConv.ID
+			parentID = activeConv.ParentID
+		}
 
 		if rotatedConv {
-			a.resetConversation()
+			cm.ResetProject(project)
 			convID = ""
 			parentID = ""
 		}
@@ -239,8 +251,8 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			resp.Body.Close()
 			if !rotatedConv {
 				rotatedConv = true
-				a.resetConversation()
-				log.Printf("%s: rate limited on current thread — starting a new ChatGPT conversation", a.AdapterID)
+				cm.ResetProject(project)
+				log.Printf("%s: rate limited on current thread for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
 				continue
 			}
 			return nil, types.ErrRateLimitReached
@@ -253,8 +265,8 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			if isChatGPTRateLimit(resp.StatusCode, msg) {
 				if !rotatedConv {
 					rotatedConv = true
-					a.resetConversation()
-					log.Printf("%s: rate limited on current thread — starting a new ChatGPT conversation", a.AdapterID)
+					cm.ResetProject(project)
+					log.Printf("%s: rate limited on current thread for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
 					continue
 				}
 				return nil, fmt.Errorf("%s: %w: %s", a.AdapterID, types.ErrRateLimitReached, msg)
@@ -262,8 +274,8 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			if resp.StatusCode == http.StatusNotFound {
 				if !rotatedConv {
 					rotatedConv = true
-					a.resetConversation()
-					log.Printf("%s: conversation not found — starting a new ChatGPT conversation", a.AdapterID)
+					cm.ResetProject(project)
+					log.Printf("%s: conversation not found for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
 					continue
 				}
 			}
@@ -271,41 +283,22 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		out := make(chan types.StreamChunk)
-		go streamChatGPTWeb(ctx, a, resp, out)
+		go streamChatGPTWeb(ctx, a, project, req.SessionID, resp, out)
 		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 	}
 }
 
-func (a *ChatGPTWebAdapter) resetConversation() {
-	a.mu.Lock()
-	a.convID = ""
-	a.parentMessageID = ""
-	a.mu.Unlock()
-	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ClearConversation: true,
-		ClearParent:       true,
-	})
-	log.Printf("%s: cleared ChatGPT conversation (will open a new thread next turn)", a.AdapterID)
+// ResetConversation clears all server-side ChatGPT threads across all projects.
+func (a *ChatGPTWebAdapter) ResetConversation() {
+	a.convs().ResetAll()
 }
 
-// ResetConversation clears the server-side ChatGPT thread (provider handoff).
-func (a *ChatGPTWebAdapter) ResetConversation() { a.resetConversation() }
-
-func (a *ChatGPTWebAdapter) persistConversation(convID, parentID string) {
-	a.mu.Lock()
-	a.convID = convID
-	a.parentMessageID = parentID
-	a.mu.Unlock()
-	if err := UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ConversationID:  convID,
-		ParentMessageID: parentID,
-		ClearParent:     parentID == "",
-	}); err != nil {
-		log.Printf("%s: persist conversation: %v", a.AdapterID, err)
-	}
+// ResetConversationForScope clears the thread for a specific project.
+func (a *ChatGPTWebAdapter) ResetConversationForScope(scopeKey string) {
+	a.convs().ResetProject(scopeKey)
 }
 
-func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Response, out chan<- types.StreamChunk) {
+func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessionID string, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
 
@@ -328,7 +321,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Resp
 		}
 		if payload == "[DONE]" {
 			if convID != "" && msgID != "" {
-				a.persistConversation(convID, msgID)
+				a.convs().Register(project, sessionID, convID, msgID, nil)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -356,7 +349,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Resp
 		if chunk.Error != nil {
 			errStr := fmt.Sprintf("%v", chunk.Error)
 			if isChatGPTRateLimit(0, errStr) {
-				a.resetConversation()
+				a.convs().ResetProject(project)
 				sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: %w: %s", id, types.ErrRateLimitReached, errStr), Done: true})
 			} else {
 				sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: error: %v", id, chunk.Error), Done: true})
@@ -419,7 +412,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Resp
 
 		if chunk.Message.Status == "finished_successfully" && lastText != "" {
 			if convID != "" && msgID != "" {
-				a.persistConversation(convID, msgID)
+				a.convs().Register(project, sessionID, convID, msgID, nil)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -431,7 +424,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, resp *http.Resp
 		return
 	}
 	if convID != "" && msgID != "" {
-		a.persistConversation(convID, msgID)
+		a.convs().Register(project, sessionID, convID, msgID, nil)
 	}
 	if !doneSent && ctx.Err() == nil {
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})

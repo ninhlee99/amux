@@ -39,6 +39,9 @@ type codexTokenResponse struct {
 
 // LoginCodex executes standalone OAuth PKCE flow for OpenAI Codex.
 func LoginCodex(ctx context.Context, customName string) (string, error) {
+	// Snapshot currently active login on the system before starting new login
+	_, _ = syncExistingCodexAuth("")
+
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
 		return "", fmt.Errorf("generate PKCE: %w", err)
@@ -57,6 +60,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 	vals.Set("code_challenge_method", "S256")
 	vals.Set("id_token_add_organizations", "true")
 	vals.Set("codex_cli_simplified_flow", "true")
+	vals.Set("prompt", "login")
 	vals.Set("state", state)
 	vals.Set("originator", "codex_cli_rs")
 	authURL := CodexAuthURL + "?" + vals.Encode()
@@ -182,6 +186,9 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 // LoginCodexDeviceFlow executes the native device code flow using codex CLI if available,
 // or falls back to web OAuth flow with dual-channel terminal prompt.
 func LoginCodexDeviceFlow(ctx context.Context, customName string) (string, error) {
+	// Snapshot currently active login on the system before starting new login
+	_, _ = syncExistingCodexAuth("")
+
 	codexPath := findCodexBinary()
 	if codexPath != "" {
 		fmt.Printf("Found Codex CLI at %s\n", codexPath)

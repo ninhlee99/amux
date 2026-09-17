@@ -33,14 +33,66 @@ type ContentPointer struct {
 	FirstSeenAt time.Time
 }
 
-// GlobalToolDeduplicator manages content-addressable storage for large tool outputs.
-// It detects identical outputs (e.g. repeated file reads, bash command outputs, build logs)
-// across multiple turns or across account switches, replacing subsequent occurrences with
-// a compact pointer reference.
-// Bounded by maxEntries: when full, the oldest (by FirstSeenAt) entry is evicted.
-type GlobalToolDeduplicator struct {
+// ProjectToolStore manages content-addressable storage for a single project's large tool outputs.
+type ProjectToolStore struct {
 	mu         sync.RWMutex
 	store      map[string]ContentPointer // hash -> pointer
+	minRunes   int
+	ttl        time.Duration
+	maxEntries int
+}
+
+func newProjectToolStore(minRunes int, ttl time.Duration, maxEntries int) *ProjectToolStore {
+	return &ProjectToolStore{
+		store:      make(map[string]ContentPointer),
+		minRunes:   minRunes,
+		ttl:        ttl,
+		maxEntries: maxEntries,
+	}
+}
+
+func (s *ProjectToolStore) evictOldestLocked() {
+	var oldestHash string
+	var oldestTime time.Time
+	for hash, ptr := range s.store {
+		if oldestHash == "" || ptr.FirstSeenAt.Before(oldestTime) {
+			oldestHash = hash
+			oldestTime = ptr.FirstSeenAt
+		}
+	}
+	if oldestHash != "" {
+		delete(s.store, oldestHash)
+	}
+}
+
+func (s *ProjectToolStore) putPointerLocked(ptr ContentPointer) {
+	if s.maxEntries > 0 && len(s.store) >= s.maxEntries {
+		if _, exists := s.store[ptr.Hash]; !exists {
+			s.evictOldestLocked()
+		}
+	}
+	s.store[ptr.Hash] = ptr
+}
+
+func (s *ProjectToolStore) hasValidPointer(hash string) bool {
+	ptr, exists := s.store[hash]
+	if !exists {
+		return false
+	}
+	if time.Since(ptr.FirstSeenAt) > s.ttl {
+		delete(s.store, hash)
+		return false
+	}
+	return true
+}
+
+// GlobalToolDeduplicator manages content-addressable storage for large tool outputs,
+// strictly isolated per project root. It detects identical outputs (e.g. repeated file reads,
+// bash command outputs, build logs) across multiple turns or across account switches within
+// the same project, replacing subsequent occurrences with a compact pointer reference.
+type GlobalToolDeduplicator struct {
+	mu         sync.RWMutex
+	projects   map[string]*ProjectToolStore // project -> store
 	minRunes   int
 	ttl        time.Duration
 	maxEntries int
@@ -67,40 +119,39 @@ func NewGlobalToolDeduplicator(minRunes int, ttl time.Duration) *GlobalToolDedup
 	if ttl <= 0 {
 		ttl = DefaultPointerTTL
 	}
-	d := &GlobalToolDeduplicator{
-		store:      make(map[string]ContentPointer),
+	return &GlobalToolDeduplicator{
+		projects:   make(map[string]*ProjectToolStore),
 		minRunes:   minRunes,
 		ttl:        ttl,
 		maxEntries: MaxDedupEntries,
 	}
-	return d
 }
 
-// evictOldestLocked removes the single oldest entry from store.
-// Must be called with d.mu held (write lock).
-func (d *GlobalToolDeduplicator) evictOldestLocked() {
-	var oldestHash string
-	var oldestTime time.Time
-	for hash, ptr := range d.store {
-		if oldestHash == "" || ptr.FirstSeenAt.Before(oldestTime) {
-			oldestHash = hash
-			oldestTime = ptr.FirstSeenAt
-		}
+func normalizeProjectKey(project string) string {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "global"
 	}
-	if oldestHash != "" {
-		delete(d.store, oldestHash)
-	}
+	return strings.TrimRight(strings.ReplaceAll(project, "\\", "/"), "/")
 }
 
-// putPointerLocked stores a ContentPointer, evicting the oldest entry if maxEntries is reached.
-// Must be called with d.mu held (write lock).
-func (d *GlobalToolDeduplicator) putPointerLocked(ptr ContentPointer) {
-	if d.maxEntries > 0 && len(d.store) >= d.maxEntries {
-		if _, exists := d.store[ptr.Hash]; !exists {
-			d.evictOldestLocked()
-		}
+func (d *GlobalToolDeduplicator) getStore(project string) *ProjectToolStore {
+	key := normalizeProjectKey(project)
+	d.mu.RLock()
+	s, ok := d.projects[key]
+	d.mu.RUnlock()
+	if ok {
+		return s
 	}
-	d.store[ptr.Hash] = ptr
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if s, ok = d.projects[key]; ok {
+		return s
+	}
+	s = newProjectToolStore(d.minRunes, d.ttl, d.maxEntries)
+	d.projects[key] = s
+	return s
 }
 
 // HashContent computes SHA256 hex digest of string content.
@@ -109,13 +160,9 @@ func HashContent(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// DeduplicateMessages traverses the conversation messages from oldest to newest.
-// For historical tool results (older than the last keepRecentToolResults), if their content
-// has already been seen earlier in the conversation or in the global cache, it replaces
-// the repetitive text with a compact pointer summary:
-// "[amux content-dedup: hash=xxx, lines=N, bytes=M, preview: ... (identical to prior output)]"
-// This saves huge token amounts when agents repeatedly read or re-read files.
-func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, keepRecentToolResults int) []types.ChatMessage {
+// DeduplicateMessages traverses the conversation messages from oldest to newest within
+// the store of a single project.
+func (s *ProjectToolStore) DeduplicateMessages(msgs []types.ChatMessage, keepRecentToolResults int) []types.ChatMessage {
 	if len(msgs) == 0 {
 		return msgs
 	}
@@ -141,8 +188,8 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 		protectedSet[idx] = true
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	out := make([]types.ChatMessage, len(msgs))
 	copy(out, msgs)
@@ -157,7 +204,7 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 
 		content := out[i].Content
 		r := []rune(content)
-		if len(r) < d.minRunes {
+		if len(r) < s.minRunes {
 			continue
 		}
 
@@ -166,12 +213,12 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 		// If protected (recent turn), store in cache so future turns can deduplicate against it,
 		// but do NOT modify this message itself.
 		if protectedSet[i] {
-			if _, exists := d.store[hash]; !exists {
+			if _, exists := s.store[hash]; !exists {
 				snippet := string(r)
 				if len(r) > 120 {
 					snippet = string(r[:120]) + "..."
 				}
-				d.putPointerLocked(ContentPointer{
+				s.putPointerLocked(ContentPointer{
 					Hash:        hash,
 					Snippet:     snippet,
 					LineCount:   strings.Count(content, "\n") + 1,
@@ -185,8 +232,8 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 		}
 
 		// Historical tool message: check if seen before
-		if sessionSeen[hash] || d.hasValidPointer(hash) {
-			ptr := d.store[hash]
+		if sessionSeen[hash] || s.hasValidPointer(hash) {
+			ptr := s.store[hash]
 			snippet := ptr.Snippet
 			if snippet == "" {
 				if len(r) > 120 {
@@ -213,7 +260,7 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 			if len(r) > 120 {
 				snippet = string(r[:120]) + "..."
 			}
-			d.putPointerLocked(ContentPointer{
+			s.putPointerLocked(ContentPointer{
 				Hash:        hash,
 				Snippet:     snippet,
 				LineCount:   strings.Count(content, "\n") + 1,
@@ -228,52 +275,87 @@ func (d *GlobalToolDeduplicator) DeduplicateMessages(msgs []types.ChatMessage, k
 	return out
 }
 
-func (d *GlobalToolDeduplicator) hasValidPointer(hash string) bool {
-	ptr, exists := d.store[hash]
-	if !exists {
-		return false
-	}
-	if time.Since(ptr.FirstSeenAt) > d.ttl {
-		delete(d.store, hash)
-		return false
-	}
-	return true
+// DeduplicateMessages traverses the conversation messages from oldest to newest within the scope
+// of the given project.
+// For historical tool results (older than the last keepRecentToolResults), if their content
+// has already been seen earlier in the conversation or in that project's cache, it replaces
+// the repetitive text with a compact pointer summary:
+// "[amux dedup-cache: hash=xxx, lines=N, bytes=M, preview: ... (identical to prior output)]"
+// This saves massive token amounts when agents repeatedly read or re-read files.
+func (d *GlobalToolDeduplicator) DeduplicateMessages(project string, msgs []types.ChatMessage, keepRecentToolResults int) []types.ChatMessage {
+	return d.getStore(project).DeduplicateMessages(msgs, keepRecentToolResults)
 }
 
-// Reset clears the deduplicator memory (useful for testing).
+// Reset clears the deduplicator memory across all projects.
 func (d *GlobalToolDeduplicator) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.store = make(map[string]ContentPointer)
+	d.projects = make(map[string]*ProjectToolStore)
 }
 
-// Size returns the count of cached content pointers.
+// ResetProject clears the deduplicator memory for a specific project.
+func (d *GlobalToolDeduplicator) ResetProject(project string) {
+	key := normalizeProjectKey(project)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.projects, key)
+}
+
+// Size returns the count of cached content pointers across all projects.
 func (d *GlobalToolDeduplicator) Size() int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return len(d.store)
+	total := 0
+	for _, store := range d.projects {
+		store.mu.RLock()
+		total += len(store.store)
+		store.mu.RUnlock()
+	}
+	return total
+}
+
+// ProjectSize returns the count of cached content pointers for a specific project.
+func (d *GlobalToolDeduplicator) ProjectSize(project string) int {
+	key := normalizeProjectKey(project)
+	d.mu.RLock()
+	store, ok := d.projects[key]
+	d.mu.RUnlock()
+	if !ok || store == nil {
+		return 0
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return len(store.store)
 }
 
 func defaultDedupCachePath() string {
 	return filepath.Join(types.BaseDir(), "cache", "tool_dedup.json")
 }
 
-// SaveSnapshot saves the deduplicator state atomically to disk.
+// SaveSnapshot saves all projects' deduplicator states atomically to disk.
 func (d *GlobalToolDeduplicator) SaveSnapshot(path string) error {
 	if path == "" {
 		path = defaultDedupCachePath()
 	}
 	d.mu.RLock()
 	now := time.Now()
-	valid := make(map[string]ContentPointer)
-	for k, v := range d.store {
-		if now.Sub(v.FirstSeenAt) <= d.ttl {
-			valid[k] = v
+	allValid := make(map[string]map[string]ContentPointer)
+	for prj, store := range d.projects {
+		store.mu.RLock()
+		prjValid := make(map[string]ContentPointer)
+		for k, v := range store.store {
+			if now.Sub(v.FirstSeenAt) <= store.ttl {
+				prjValid[k] = v
+			}
+		}
+		store.mu.RUnlock()
+		if len(prjValid) > 0 {
+			allValid[prj] = prjValid
 		}
 	}
 	d.mu.RUnlock()
 
-	if len(valid) == 0 {
+	if len(allValid) == 0 {
 		return nil
 	}
 
@@ -281,7 +363,7 @@ func (d *GlobalToolDeduplicator) SaveSnapshot(path string) error {
 		return err
 	}
 
-	data, err := json.Marshal(valid)
+	data, err := json.Marshal(allValid)
 	if err != nil {
 		return err
 	}
@@ -293,7 +375,7 @@ func (d *GlobalToolDeduplicator) SaveSnapshot(path string) error {
 	return os.Rename(tmpFile, path)
 }
 
-// LoadSnapshot restores the deduplicator state from disk.
+// LoadSnapshot restores the deduplicator states from disk.
 func (d *GlobalToolDeduplicator) LoadSnapshot(path string) error {
 	if path == "" {
 		path = defaultDedupCachePath()
@@ -306,18 +388,33 @@ func (d *GlobalToolDeduplicator) LoadSnapshot(path string) error {
 		return err
 	}
 
-	var loaded map[string]ContentPointer
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		return err
+	var nested map[string]map[string]ContentPointer
+	if err := json.Unmarshal(data, &nested); err == nil && len(nested) > 0 {
+		now := time.Now()
+		for prj, ptrMap := range nested {
+			store := d.getStore(prj)
+			store.mu.Lock()
+			for k, v := range ptrMap {
+				if now.Sub(v.FirstSeenAt) <= store.ttl {
+					store.store[k] = v
+				}
+			}
+			store.mu.Unlock()
+		}
+		return nil
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	now := time.Now()
-	for k, v := range loaded {
-		if now.Sub(v.FirstSeenAt) <= d.ttl {
-			d.store[k] = v
+	var legacy map[string]ContentPointer
+	if err := json.Unmarshal(data, &legacy); err == nil && len(legacy) > 0 {
+		store := d.getStore("global")
+		store.mu.Lock()
+		now := time.Now()
+		for k, v := range legacy {
+			if now.Sub(v.FirstSeenAt) <= store.ttl {
+				store.store[k] = v
+			}
 		}
+		store.mu.Unlock()
 	}
 	return nil
 }

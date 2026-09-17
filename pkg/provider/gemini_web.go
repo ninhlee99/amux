@@ -35,14 +35,22 @@ type GeminiWebAdapter struct {
 	PlanTier    string // "pro" | "free" | …
 	HTTPClient  *http.Client
 
-	mu           sync.Mutex
-	cid          string
-	metadataJSON string // JSON array of chat.metadata strings
-	accessToken  string // SNlM0e
-	buildLabel   string // cfb2h
-	sessionID    string // FdrFJe
-	reqID        int
-	inited       bool
+	mu          sync.Mutex
+	convMgr     *ProjectConversationManager
+	accessToken string // SNlM0e
+	buildLabel  string // cfb2h
+	sessionID   string // FdrFJe
+	reqID       int
+	inited      bool
+}
+
+func (a *GeminiWebAdapter) convs() *ProjectConversationManager {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.convMgr == nil {
+		a.convMgr = NewProjectConversationManager(a.AdapterID, DefaultMaxTurnsPerConversation, DefaultConversationTTL)
+	}
+	return a.convMgr
 }
 
 const (
@@ -79,10 +87,21 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		return nil, err
 	}
 
-	meta := a.loadMetadata()
+	project := req.Project()
+	cm := a.convs()
 	rotated := false
 	for attempt := 0; attempt < 2; attempt++ {
-		// After rotate, force full flatten — server chat memory is gone.
+		activeConv, hasActive := cm.GetActive(project)
+		var meta []string
+		if hasActive && activeConv != nil && !rotated {
+			meta = activeConv.Metadata
+		}
+		if rotated {
+			cm.ResetProject(project)
+			meta = nil
+		}
+
+		// After rotate or when meta is empty, force full context.
 		continuing := len(meta) > 0 && !rotated
 		prompt := WebBackendPrompt(req, continuing)
 		text, newMeta, err := a.streamGenerate(ctx, prompt, meta)
@@ -90,9 +109,8 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			if isGeminiUsageLimit(err) {
 				if !rotated {
 					rotated = true
-					a.resetConversation()
-					meta = nil
-					log.Printf("%s: rate/usage limit on thread — starting a new Gemini chat", a.AdapterID)
+					cm.ResetProject(project)
+					log.Printf("%s: rate/usage limit on thread for project %s — starting a new Gemini chat", a.AdapterID, project)
 					continue
 				}
 				return nil, fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrRateLimitReached, err)
@@ -102,7 +120,9 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			}
 			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 		}
-		a.persistMetadata(newMeta)
+		if len(newMeta) > 0 && newMeta[0] != "" {
+			cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
+		}
 		out := make(chan types.StreamChunk, 2)
 		go func() {
 			defer close(out)
@@ -159,49 +179,15 @@ func (a *GeminiWebAdapter) ensureInit(ctx context.Context) error {
 	return nil
 }
 
-func (a *GeminiWebAdapter) loadMetadata() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if strings.TrimSpace(a.metadataJSON) == "" {
-		return nil
-	}
-	var meta []string
-	if err := json.Unmarshal([]byte(a.metadataJSON), &meta); err != nil {
-		return nil
-	}
-	return meta
+// ResetConversation clears all server-side Gemini threads across all projects.
+func (a *GeminiWebAdapter) ResetConversation() {
+	a.convs().ResetAll()
 }
 
-func (a *GeminiWebAdapter) persistMetadata(meta []string) {
-	if len(meta) == 0 || meta[0] == "" {
-		return
-	}
-	a.mu.Lock()
-	cid := meta[0]
-	a.cid = cid
-	b, _ := json.Marshal(meta)
-	a.metadataJSON = string(b)
-	metaJSON := a.metadataJSON
-	a.mu.Unlock()
-	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ConversationID: cid,
-		MetadataJSON:   metaJSON,
-	})
+// ResetConversationForScope clears the Gemini thread for a specific project.
+func (a *GeminiWebAdapter) ResetConversationForScope(scopeKey string) {
+	a.convs().ResetProject(scopeKey)
 }
-
-func (a *GeminiWebAdapter) resetConversation() {
-	a.mu.Lock()
-	a.cid = ""
-	a.metadataJSON = ""
-	a.mu.Unlock()
-	_ = UpdateProviderChatState(DefaultAccountsPath(), a.AdapterID, ChatState{
-		ClearConversation: true,
-		ClearMetadata:     true,
-	})
-}
-
-// ResetConversation clears the server-side Gemini thread (provider handoff).
-func (a *GeminiWebAdapter) ResetConversation() { a.resetConversation() }
 
 func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, metadata []string) (text string, newMeta []string, err error) {
 	a.mu.Lock()

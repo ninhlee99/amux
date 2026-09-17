@@ -117,17 +117,23 @@ func CmdLogin(args []string) {
 		opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
 		if err := oauth.InteractiveOAuthWithOptions("codex", opts); err != nil {
 			fmt.Printf("Login failed: %v\n", err)
+			return
 		}
+		CmdAccounts()
 	case "agy", "antigravity":
 		opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
 		if err := oauth.InteractiveOAuthWithOptions("antigravity", opts); err != nil {
 			fmt.Printf("Login failed: %v\n", err)
+			return
 		}
+		CmdAccounts()
 	case "claude-code", "claude-oauth":
 		opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
 		if err := oauth.InteractiveOAuthWithOptions("claude", opts); err != nil {
 			fmt.Printf("Login failed: %v\n", err)
+			return
 		}
+		CmdAccounts()
 	case "chatgpt", "chatgpt-web", "chatgptweb":
 		loginChatGPT(flags)
 	case "claude", "claude-web", "claudeweb":
@@ -135,7 +141,9 @@ func CmdLogin(args []string) {
 			opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
 			if err := oauth.InteractiveOAuthWithOptions("claude", opts); err != nil {
 				fmt.Printf("Login failed: %v\n", err)
+				return
 			}
+			CmdAccounts()
 		} else {
 			loginClaude(flags)
 		}
@@ -151,7 +159,9 @@ func CmdLogin(args []string) {
 		if flags.isOAuth || flags.isDevice {
 			if err := oauth.InteractiveOAuth("kimi", ""); err != nil {
 				fmt.Printf("Login failed: %v\n", err)
+				return
 			}
+			CmdAccounts()
 		} else {
 			loginKimi(flags)
 		}
@@ -159,7 +169,9 @@ func CmdLogin(args []string) {
 		if flags.isOAuth || flags.isDevice {
 			if err := oauth.InteractiveOAuth("grok", ""); err != nil {
 				fmt.Printf("Login failed: %v\n", err)
+				return
 			}
+			CmdAccounts()
 		} else {
 			loginGrok(flags)
 		}
@@ -430,6 +442,7 @@ func savePoolLogin(providerType, accountEmail string, build func(provider.PoolSl
 	default:
 		fmt.Printf("Saved as %s.\n", slot.ID)
 	}
+	CmdAccounts()
 }
 
 func loginGemini(f loginFlags) {
@@ -477,6 +490,7 @@ func loginGemini(f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved Gemini as %s.\n", id)
+	CmdAccounts()
 }
 
 func loginGeminiWeb(f loginFlags) {
@@ -541,6 +555,7 @@ func loginGeminiWeb(f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved Gemini Web as %s.\n", id)
+	CmdAccounts()
 }
 
 func loginGitHubModels(f loginFlags) {
@@ -576,6 +591,7 @@ func loginGitHubModels(f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved GitHub Models as %s.\n", id)
+	CmdAccounts()
 }
 
 type openAICompatSpec struct {
@@ -620,6 +636,7 @@ func loginOpenAICompat(spec openAICompatSpec, f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved %s as %s (model: %s).\n", spec.Name, id, model)
+	CmdAccounts()
 }
 
 func loginGroq(f loginFlags) {

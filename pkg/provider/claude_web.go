@@ -33,9 +33,18 @@ type ClaudeWebAdapter struct {
 	// re-fetching org) on every message.
 	mu              sync.Mutex
 	orgID           string
-	convUUID        string
+	convMgr         *ProjectConversationManager
 	cookieRefreshed bool // one CDP jar refresh per adapter lifetime (or after 429)
 	planChecked     bool // one org-capability re-detect when plan looks free/stale
+}
+
+func (a *ClaudeWebAdapter) convs() *ProjectConversationManager {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.convMgr == nil {
+		a.convMgr = NewProjectConversationManager(a.AdapterID, DefaultMaxTurnsPerConversation, DefaultConversationTTL)
+	}
+	return a.convMgr
 }
 
 const (
@@ -162,15 +171,17 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 
 	model := a.model()
 	const maxAttempts = 4
+	project := req.Project()
+	cm := a.convs()
 	var resp *http.Response
 	refreshedFor429 := false
 	rotatedConv := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		a.mu.Lock()
-		hasThread := a.convUUID != ""
-		a.mu.Unlock()
+		activeConv, hasActive := cm.GetActive(project)
+		hasValidThread := hasActive && activeConv.ID != ""
+
 		// After rotate, server thread is empty → force full flatten (not delta).
-		prompt := WebBackendPrompt(req, hasThread && !rotatedConv)
+		prompt := WebBackendPrompt(req, hasValidThread && !rotatedConv)
 
 		payloadMap := map[string]any{
 			"prompt":      prompt,
@@ -184,7 +195,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
 		}
 
-		orgID, convUUID, err := a.ensureConversation(ctx, model)
+		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -202,13 +213,13 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 		}
 
-		// Stale conversation on disk → drop and open a new thread once.
+		// Stale conversation on disk or server → drop and open a new thread once.
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 			resp.Body.Close()
 			if !rotatedConv {
 				rotatedConv = true
-				a.resetConversation()
-				log.Printf("%s: conversation gone — starting a new Claude thread", a.AdapterID)
+				cm.ResetProject(project)
+				log.Printf("%s: conversation gone for project %s — starting a new Claude thread", a.AdapterID, project)
 				continue
 			}
 			return nil, fmt.Errorf("%s: conversation not found after rotate", a.AdapterID)
@@ -235,8 +246,8 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		// Plan/bot limit on this thread → open a fresh conversation and retry once.
 		if !rotatedConv {
 			rotatedConv = true
-			a.resetConversation()
-			log.Printf("%s: rate limited on current thread — starting a new Claude conversation", a.AdapterID)
+			cm.ResetProject(project)
+			log.Printf("%s: rate limited on current thread for project %s — starting a new Claude conversation", a.AdapterID, project)
 			if retryAfter > 0 {
 				wait := time.Duration(retryAfter) * time.Second
 				if wait > 2*time.Minute {
@@ -263,47 +274,42 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 }
 
-// ensureConversation reuses a persisted org+conversation across process
-// restarts. Creates a new Claude thread only when none is cached (or after
-// resetConversation on rate-limit / 404).
-func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model string) (orgID, convUUID string, err error) {
+// ensureConversation reuses the server-side Claude conversation for the specific project if within turn limits.
+func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string) (orgID, convUUID string, err error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if a.orgID == "" {
 		id, e := a.getOrganizationID(ctx)
 		if e != nil {
+			a.mu.Unlock()
 			return "", "", e
 		}
 		a.orgID = id
 	}
-	if a.convUUID == "" {
-		id, e := a.createConversation(ctx, a.orgID, model)
-		if e != nil {
-			return "", "", e
-		}
-		a.convUUID = id
-		a.persistConversationLocked()
-		log.Printf("%s: created Claude conversation %s", a.AdapterID, id)
-	}
-	return a.orgID, a.convUUID, nil
-}
-
-func (a *ClaudeWebAdapter) resetConversation() {
-	a.mu.Lock()
-	a.convUUID = ""
-	a.persistConversationLocked()
+	orgID = a.orgID
 	a.mu.Unlock()
+
+	cm := a.convs()
+	if c, ok := cm.GetActive(project); ok && c.ID != "" {
+		cm.Register(project, sessionID, c.ID, "", nil)
+		return orgID, c.ID, nil
+	}
+
+	id, e := a.createConversation(ctx, orgID, model)
+	if e != nil {
+		return "", "", e
+	}
+	cm.Register(project, sessionID, id, "", nil)
+	return orgID, id, nil
 }
 
-// ResetConversation clears the server-side Claude.ai thread (provider handoff).
-func (a *ClaudeWebAdapter) ResetConversation() { a.resetConversation() }
+// ResetConversation clears all server-side Claude.ai threads.
+func (a *ClaudeWebAdapter) ResetConversation() {
+	a.convs().ResetAll()
+}
 
-// persistConversationLocked writes org/conv to accounts.json. Caller holds a.mu.
-func (a *ClaudeWebAdapter) persistConversationLocked() {
-	if err := UpdateProviderConversation(DefaultAccountsPath(), a.AdapterID, a.orgID, a.convUUID); err != nil {
-		log.Printf("%s: persist conversation: %v", a.AdapterID, err)
-	}
+// ResetConversationForScope clears the server-side Claude.ai thread for a specific project.
+func (a *ClaudeWebAdapter) ResetConversationForScope(scopeKey string) {
+	a.convs().ResetProject(scopeKey)
 }
 
 func lastUserPrompt(messages []types.ChatMessage) string {
@@ -340,7 +346,7 @@ func (a *ClaudeWebAdapter) mapClaudeHTTPError(resp *http.Response) error {
 	}
 	// Stale conversation — drop cache so the next turn opens a new one.
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-		a.resetConversation()
+		a.ResetConversation()
 	}
 	return fmt.Errorf("%s: status %d: %s", a.AdapterID, resp.StatusCode, msg)
 }

@@ -290,6 +290,7 @@ func Run(rawArgs []string) {
 		if err := oauth.InteractiveOAuth(target, customName, flags...); err != nil {
 			die("oauth error: %v", err)
 		}
+		ui.CmdAccounts()
 
 	case "doctor":
 		if len(args) > 0 && (args[0] == "providers" || args[0] == "provider") {
@@ -611,6 +612,9 @@ func cmdAdd(tool, name string) {
 	if !ok {
 		die("unknown tool %q", tool)
 	}
+	// Snapshot currently active login on the system before asking user to login new account
+	profile.SyncActiveFromSystem(tool)
+
 	loginHint(tool)
 	fmt.Print("press Enter when you've logged in… ")
 	var ignored string
@@ -646,6 +650,7 @@ func cmdAdd(tool, name string) {
 			die("update failed: %v", err)
 		}
 		fmt.Printf("Updated profile %q (%s, plan: %s).\n", pName, acct, plan)
+		ui.CmdAccounts()
 		return
 	}
 	pName := profileName(name, acct)
@@ -654,6 +659,7 @@ func cmdAdd(tool, name string) {
 		die("save failed: %v", err)
 	}
 	fmt.Printf("Saved new profile %q (%s, plan: %s).\n", pName, acct, plan)
+	ui.CmdAccounts()
 }
 
 func profileName(name, acct string) string {

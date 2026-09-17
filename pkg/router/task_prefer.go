@@ -12,41 +12,24 @@ import (
 func PreferredGroupsForTask(kind string) []string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case TaskCoding, TaskFix:
-		// Implement / fix → prefer native API + Codex; web still allowed later.
+		// Coding / fix tasks: Claude subscription -> Codex -> AGY -> API -> Web.
 		return []string{
-			GroupAPIOther,
+			GroupClaudeSub,
 			GroupCodexSub, GroupCodexFree,
 			GroupAGYSub, GroupAGYFree,
+			GroupAPIOther,
 			GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb,
 		}
-	case TaskAnalysis:
-		// Analyze / explain → prefer web (+ AGY); API/Codex still failover.
+	case TaskPlan, TaskClarify, TaskAnalysis, TaskReview, TaskCompact, TaskQuality:
+		// Planning, clarification, analysis, review, compact, quality:
+		// Prioritize Web proxy accounts first (saving subscription limits and API tokens);
+		// failover to AGY, API, Codex, Claude Sub.
 		return []string{
 			GroupClaudeWeb, GroupChatGPTWeb, GroupGeminiWeb,
 			GroupAGYSub, GroupAGYFree,
 			GroupAPIOther,
 			GroupCodexSub, GroupCodexFree,
-		}
-	case TaskReview:
-		return []string{
-			GroupClaudeWeb, GroupGeminiWeb, GroupChatGPTWeb,
-			GroupAGYSub, GroupAGYFree,
-			GroupAPIOther,
-			GroupCodexSub, GroupCodexFree,
-		}
-	case TaskCompact:
-		return []string{
-			GroupChatGPTWeb, GroupClaudeWeb, GroupGeminiWeb,
-			GroupAPIOther,
-			GroupAGYSub, GroupAGYFree,
-			GroupCodexSub, GroupCodexFree,
-		}
-	case TaskQuality:
-		return []string{
-			GroupGeminiWeb, GroupClaudeWeb, GroupChatGPTWeb,
-			GroupAGYSub, GroupAGYFree,
-			GroupAPIOther,
-			GroupCodexSub, GroupCodexFree,
+			GroupClaudeSub,
 		}
 	default:
 		return nil

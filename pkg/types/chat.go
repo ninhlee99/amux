@@ -2,8 +2,11 @@ package types
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -93,8 +96,10 @@ type ChatMessage struct {
 type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	Temperature float64       `json:"temperature,omitempty"`
+	Stream              bool          `json:"stream"`
+	Temperature         float64       `json:"temperature,omitempty"`
+	ExplicitTemperature bool          `json:"-"`
+	MaxTokens           int           `json:"max_tokens,omitempty"`
 	Tools       []ToolDef     `json:"tools,omitempty"`
 	// ToolChoice mirrors OpenAI/Anthropic tool_choice when set ("auto",
 	// "none", or a named tool). Adapters that don't support it ignore it.
@@ -124,6 +129,55 @@ type ChatRequest struct {
 	TaskKind string `json:"-"`
 	// SystemCacheControl signals whether the system prompt should have an ephemeral cache breakpoint.
 	SystemCacheControl bool `json:"system_cache_control,omitempty"`
+}
+
+// Project returns the project directory / root if present in Metadata.
+func (req *ChatRequest) Project() string {
+	if req == nil || req.Metadata == nil {
+		return ""
+	}
+	for _, k := range []string{"project", "cwd", "root", "workspace", "project_root"} {
+		if v, ok := req.Metadata[k].(string); ok {
+			if s := strings.TrimSpace(v); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// ScopeKey returns a distinct key identifying the project + session combination
+// to ensure complete isolation between different projects and sessions.
+func (req *ChatRequest) ScopeKey() string {
+	if req == nil {
+		return "global"
+	}
+	proj := req.Project()
+	sess := strings.TrimSpace(req.SessionID)
+	if sess == "" && req.Metadata != nil {
+		if s, ok := req.Metadata["session_id"].(string); ok {
+			sess = strings.TrimSpace(s)
+		} else if s, ok := req.Metadata["conversation_id"].(string); ok {
+			sess = strings.TrimSpace(s)
+		}
+	}
+	if proj != "" && sess != "" {
+		return proj + "::" + sess
+	}
+	if proj != "" {
+		return proj + "::default"
+	}
+	if sess != "" {
+		return "unknown::" + sess
+	}
+	if len(req.Messages) > 0 {
+		h := sha256.New()
+		h.Write([]byte(req.Messages[0].Role))
+		h.Write([]byte(":"))
+		h.Write([]byte(req.Messages[0].Content))
+		return "thread::" + hex.EncodeToString(h.Sum(nil))[:16]
+	}
+	return "global"
 }
 
 // UsageStats holds token usage and prompt caching metrics.

@@ -12,6 +12,7 @@ import (
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
@@ -44,6 +45,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		return
 	}
 	req.ClientDialect = openaiClientDialect(r)
+	EnrichRequestMetadata(r, req)
 
 	// Session switch detection & compact for OpenAI clients (Cursor/Codex)
 	targetAccount := pool.Preferred()
@@ -52,12 +54,27 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
 		if len(req.Messages) > 4 {
-			req.Messages = ctxshrink.CompactForAccountSwitch(req.Messages, 6)
+			req.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 		}
 	} else {
 		// Run global deduplication on historical tool results
-		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
+		req.Messages = ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Project(), req.Messages, 2)
 	}
+
+	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
+	if canReplay {
+		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
+			recordChatUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens)
+			logChatRequest(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, time.Now(), nil)
+			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
+				replayKey[:8], req.Project(), cached.InputTokens)
+			_ = cached.Serve(w, req.Stream)
+			return
+		}
+	}
+
+	rec := ctxshrink.NewRecordingWriter(w)
+	w = rec
 
 	var initialFlusher http.Flusher
 	if req.Stream {
@@ -246,6 +263,14 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 			cachedTokens = finalUsage.CacheReadInputTokens
 		}
 		recordChatUsage(r, pool, req.Model, inputTokens, outTok, cachedTokens)
+		if canReplay && len(rec.Events()) > 0 {
+			ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
+				ContentType:  "text/event-stream",
+				SSEEvents:    rec.Events(),
+				InputTokens:  inputTokens,
+				OutputTokens: outTok,
+			})
+		}
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outTok, started, toolCalls)
 		return
 	}
@@ -335,6 +360,14 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+	if canReplay && len(rec.Body()) > 0 {
+		ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
+			ContentType:  "application/json",
+			Body:         rec.Body(),
+			InputTokens:  inputTokens,
+			OutputTokens: completionTokens,
+		})
+	}
 	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, cachedTokens)
 	logChatRequest(r, pool, req, pickLogOutput(full.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 }
@@ -360,11 +393,13 @@ func openaiClientDialect(r *http.Request) string {
 // into the canonical ChatRequest (tools use function.parameters on the wire).
 func openAIBodyToChatRequest(body []byte) (*types.ChatRequest, error) {
 	var wrap struct {
-		Model       string  `json:"model"`
-		Stream      bool    `json:"stream"`
-		Temperature float64 `json:"temperature"`
-		ToolChoice  any     `json:"tool_choice"`
-		Messages    []struct {
+		Model               string   `json:"model"`
+		Stream              bool     `json:"stream"`
+		Temperature         *float64 `json:"temperature"`
+		MaxTokens           int      `json:"max_tokens"`
+		MaxCompletionTokens int      `json:"max_completion_tokens"`
+		ToolChoice          any      `json:"tool_choice"`
+		Messages            []struct {
 			Role       string                 `json:"role"`
 			Content    json.RawMessage        `json:"content"`
 			Name       string                 `json:"name"`
@@ -376,13 +411,27 @@ func openAIBodyToChatRequest(body []byte) (*types.ChatRequest, error) {
 		return nil, err
 	}
 
+	temp := 0.0
+	explicitTemp := false
+	if wrap.Temperature != nil {
+		temp = *wrap.Temperature
+		explicitTemp = true
+	}
+
+	maxTok := wrap.MaxTokens
+	if wrap.MaxCompletionTokens > 0 {
+		maxTok = wrap.MaxCompletionTokens
+	}
+
 	req := &types.ChatRequest{
-		Model:         wrap.Model,
-		Stream:        wrap.Stream,
-		Temperature:   wrap.Temperature,
-		ToolChoice:    wrap.ToolChoice,
-		FullContext:   true,
-		ClientDialect: tools.DialectCursor,
+		Model:               wrap.Model,
+		Stream:              wrap.Stream,
+		Temperature:         temp,
+		ExplicitTemperature: explicitTemp,
+		MaxTokens:           maxTok,
+		ToolChoice:          wrap.ToolChoice,
+		FullContext:         true,
+		ClientDialect:       tools.DialectCursor,
 	}
 	if tools, err := tools.ParseCursorTools(body); err == nil {
 		req.Tools = tools

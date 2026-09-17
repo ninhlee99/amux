@@ -134,3 +134,18 @@ func TestPoolSendStreaming_CancelWaitsForWorker(t *testing.T) {
 		t.Fatal("worker still running after handler returned")
 	}
 }
+
+func TestEnrichRequestMetadata_ProjectExtraction(t *testing.T) {
+	httpReq := httptest.NewRequest("POST", "/v1/messages", nil)
+	httpReq.Header.Set("X-Project-Root", "/Users/ninh.le/Documents/apps/amux")
+
+	chatReq := &types.ChatRequest{SessionID: "sess-abc"}
+	EnrichRequestMetadata(httpReq, chatReq)
+
+	if chatReq.Project() != "/Users/ninh.le/Documents/apps/amux" {
+		t.Fatalf("expected project /Users/ninh.le/Documents/apps/amux, got %q", chatReq.Project())
+	}
+	if chatReq.ScopeKey() != "/Users/ninh.le/Documents/apps/amux::sess-abc" {
+		t.Fatalf("expected scope key /Users/ninh.le/Documents/apps/amux::sess-abc, got %q", chatReq.ScopeKey())
+	}
+}

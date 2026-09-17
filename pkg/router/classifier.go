@@ -13,6 +13,8 @@ const (
 	TaskGeneral  = "general"
 	TaskCoding   = "coding"
 	TaskAnalysis = "analysis"
+	TaskPlan     = "plan"
+	TaskClarify  = "clarify"
 	TaskReview   = "review"
 	TaskCompact  = "compact"
 	TaskQuality  = "quality"
@@ -48,6 +50,18 @@ var (
 		`algorithm|thuật\s*toán|complexity|formal\s*proof|chứng\s*minh|` +
 		`multi-agent|suy\s*luận\s*từng\s*bước|step\s*by\s*step\s*reasoning|` +
 		`investigate\s*why|tại\s*sao\s*bị\s*lỗi` +
+		`)\b`)
+
+	rePlanIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`lên\s*kế\s*hoạch|kế\s*hoạch|lập\s*kế\s*hoạch|plan|planning|/plan|roadmap|` +
+		`chiến\s*lược|strategy|proposal|đề\s*xuất|thiết\s*kế\s*giải\s*pháp|solution\s*design|` +
+		`architecture\s*plan|phác\s*thảo|outline|workflow|quy\s*trình|bước\s*triển\s*khai|implementation\s*plan|migration\s*plan` +
+		`)\b`)
+
+	reClarifyIntent = regexp.MustCompile(`(?i)\b(?:` +
+		`làm\s*rõ\s*yêu\s*cầu|làm\s*rõ|clarify|clarification|/grill-me|interview|phỏng\s*vấn|` +
+		`hỏi\s*thêm|câu\s*hỏi|question|yêu\s*cầu\s*chi\s*tiết|requirement\s*clarification|` +
+		`xác\s*nhận\s*lại|confirm\s*requirement|thắc\s*mắc|trao\s*đổi\s*yêu\s*cầu` +
 		`)\b`)
 
 	reAnalysisIntent = regexp.MustCompile(`(?i)\b(?:` +
@@ -210,6 +224,10 @@ func detectTaskKind(text string, hasMutating, hasDiff, hasStackTrace bool) strin
 		switch {
 		case reFixIntent.MatchString(text) || hasStackTrace:
 			return TaskFix
+		case rePlanIntent.MatchString(text) && !reCodingIntent.MatchString(text):
+			return TaskPlan
+		case reClarifyIntent.MatchString(text) && !reCodingIntent.MatchString(text):
+			return TaskClarify
 		case reReviewIntent.MatchString(text) && (hasDiff || !hasMutating):
 			return TaskReview
 		case reCompactIntent.MatchString(text):
@@ -221,6 +239,10 @@ func detectTaskKind(text string, hasMutating, hasDiff, hasStackTrace bool) strin
 		case reAnalysisIntent.MatchString(text) && !reCodingIntent.MatchString(text):
 			// "phân tích" with a full agent tool catalog still leans analysis.
 			return TaskAnalysis
+		case rePlanIntent.MatchString(text):
+			return TaskPlan
+		case reClarifyIntent.MatchString(text):
+			return TaskClarify
 		case reCodingIntent.MatchString(text):
 			return TaskCoding
 		case reReviewIntent.MatchString(text):
@@ -234,6 +256,18 @@ func detectTaskKind(text string, hasMutating, hasDiff, hasStackTrace bool) strin
 		return TaskReview
 	}
 	return TaskGeneral
+}
+
+// IsWebTask reports whether the task should be routed preferentially to web proxies
+// (planning, clarification, analysis, review, compaction, quality evaluation) to conserve
+// subscription quotas and API costs.
+func IsWebTask(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case TaskAnalysis, TaskPlan, TaskClarify, TaskReview, TaskCompact, TaskQuality:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestHasMutatingTools(req *types.ChatRequest) bool {

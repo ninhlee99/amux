@@ -71,8 +71,37 @@ type googleTokenResponse struct {
 	TokenType    string `json:"token_type"`
 }
 
+func syncExistingAntigravityAuth() {
+	profile.SyncActiveFromSystem("antigravity")
+	profile.SyncActiveFromSystem("gemini")
+
+	home, _ := os.UserHomeDir()
+	credsPath := filepath.Join(home, ".gemini", "antigravity-cli", "credentials.json")
+	data, err := os.ReadFile(credsPath)
+	if err == nil {
+		var creds struct {
+			Email        string `json:"email"`
+			RefreshToken string `json:"refresh_token"`
+		}
+		if err := json.Unmarshal(data, &creds); err == nil && creds.Email != "" && creds.RefreshToken != "" {
+			slot := provider.ResolvePoolSlot(provider.DefaultAccountsPath(), "antigravity", creds.Email)
+			_ = provider.UpsertPoolProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+				ID:           slot.ID,
+				Type:         "antigravity",
+				Priority:     slot.Priority,
+				Account:      creds.Email,
+				RefreshToken: creds.RefreshToken,
+				Model:        "gemini-2.5-pro",
+			}, slot.RenameFrom)
+		}
+	}
+}
+
 // LoginAntigravity executes standalone Google OAuth PKCE flow for Antigravity / AGY.
 func LoginAntigravity(ctx context.Context, customName string) (string, error) {
+	// Snapshot currently active login on the system before starting new login
+	syncExistingAntigravityAuth()
+
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
 		return "", fmt.Errorf("generate PKCE: %w", err)

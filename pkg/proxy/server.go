@@ -635,9 +635,50 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				usePool = true
 			}
 
+			var parsedReq *types.ChatRequest
+			if rReq, err := bridge.ToChatRequest(body); err == nil {
+				parsedReq = rReq
+				bridge.EnrichRequestMetadata(r, parsedReq)
+			}
+
+			proj := ""
+			if parsedReq != nil {
+				proj = parsedReq.Project()
+			}
+
+			// Deterministic Replay Cache: identical requests (e.g. repeated prompt, linter, tests)
+			// return the exact cached response instantly with 0 tokens and 0 cost.
+			rawReplayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeRawHashForProject(proj, body)
+			if canReplay {
+				if cached, found := ctxshrink.GlobalReplayCache().GetForProject(proj, rawReplayKey); found {
+					isStream := false
+					if parsedReq != nil {
+						isStream = parsedReq.Stream
+					}
+					term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
+						rawReplayKey[:8], proj, cached.InputTokens)
+					usage.AppendUsageEntry(types.UsageEntry{
+						Time:      time.Now(),
+						Account:   "replay-cache",
+						Output:    cached.OutputTokens,
+						CacheRead: cached.InputTokens,
+					})
+					_ = cached.Serve(w, isStream)
+					return
+				}
+			}
+
+			isWebTask := false
+			if parsedReq != nil {
+				c := router.ClassifyTask(parsedReq)
+				isWebTask = router.IsWebTask(c.Kind)
+			}
+
 			switch {
 			case usePool:
 				// already decided via X-Provider
+			case isWebTask && toolPool != nil && !toolPool.ManualPin() && toolPool.HasLivingGroup(router.GroupClaudeWeb, router.GroupChatGPTWeb, router.GroupGeminiWeb):
+				usePool = true
 			case hasTools && claudeUsable:
 				if rot.ProfileCount() > 0 {
 					rot.EnsureUsableActive()
@@ -672,14 +713,14 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 					targetAccount = "pool"
 				}
 			}
-			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, nil, targetAccount); switched {
-				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 4 {
-					compacted := ctxshrink.CompactForAccountSwitch(req.Messages, 6)
-					if len(compacted) < len(req.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(req.Messages) {
+			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount); switched {
+				if parsedReq != nil && len(parsedReq.Messages) > 4 {
+					compacted := ctxshrink.CompactForAccountSwitchProject(parsedReq.Project(), parsedReq.Messages, 6)
+					if len(compacted) < len(parsedReq.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
 						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to save tokens on cold account",
-							prevAcct, targetAccount, len(req.Messages), len(compacted))
-						req.Messages = compacted
-						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+							prevAcct, targetAccount, len(parsedReq.Messages), len(compacted))
+						parsedReq.Messages = compacted
+						if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
 							body = newBody
 							r.Body = io.NopCloser(bytes.NewReader(body))
 							r.ContentLength = int64(len(body))
@@ -689,11 +730,11 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 			} else {
 				// Regular request within same account: deduplicate repeated historical tool outputs
-				if req, err := bridge.ToChatRequest(body); err == nil && len(req.Messages) > 2 {
-					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(req.Messages, 2)
-					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(req.Messages) {
-						req.Messages = deduped
-						if newBody, err := tools.MarshalClaudeMessagesRequest(req, req.Model); err == nil {
+				if parsedReq != nil && len(parsedReq.Messages) > 2 {
+					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(parsedReq.Project(), parsedReq.Messages, 2)
+					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
+						parsedReq.Messages = deduped
+						if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
 							body = newBody
 							r.Body = io.NopCloser(bytes.NewReader(body))
 							r.ContentLength = int64(len(body))
@@ -730,6 +771,19 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 					"no provider pool configured) — fix the pool with `am ls` / `am add`, or stop the proxy to fall "+
 					"back to the real Anthropic API (`am proxy down`)", http.StatusServiceUnavailable)
 				return
+			}
+
+			// Optimize native Anthropic request with prompt caching breakpoints (system, tools, penultimate turn)
+			if optBody, ok := ctxshrink.OptimizeAnthropicPromptCaching(body); ok {
+				body = optBody
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			}
+			if beta := r.Header.Get("anthropic-beta"); beta == "" {
+				r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
+			} else if !strings.Contains(beta, "prompt-caching") {
+				r.Header.Set("anthropic-beta", beta+",prompt-caching-2024-07-31")
 			}
 
 			rp.ServeHTTP(w, r)
