@@ -6,19 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"amux-accounts/pkg/types"
 )
 
 var (
 	storeMu sync.RWMutex
 )
 
-// DefaultIdentitiesPath returns ~/.am/identities.json.
+// DefaultIdentitiesPath returns ~/.amux/identities.json.
 func DefaultIdentitiesPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "identities.json"
-	}
-	return filepath.Join(home, ".am", "identities.json")
+	return filepath.Join(types.BaseDir(), "identities.json")
 }
 
 // LoadConfig loads the flat identity config from disk. If the file does not exist,
@@ -183,4 +181,48 @@ func SetActive(path string, id string) error {
 	}
 
 	return SaveConfig(path, cfg)
+}
+
+// SetAutoRotate updates whether an identity is eligible for automatic rotation.
+func SetAutoRotate(path string, id string, enabled bool) error {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for i := range cfg.Identities {
+		if cfg.Identities[i].ID == id {
+			cfg.Identities[i].AutoRotate = &enabled
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("identity %q not found", id)
+	}
+
+	return SaveConfig(path, cfg)
+}
+
+// CanAutoRotateByID checks if an identity is eligible for auto-rotation/switching.
+// If not found in config, defaults to true. If found and CanAutoRotate() is false, returns false.
+func CanAutoRotateByID(path string, id string) bool {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return true
+	}
+	for _, ident := range cfg.Identities {
+		if ident.ID == id {
+			return ident.CanAutoRotate()
+		}
+	}
+	return true
+}
+
+// AutoRotateFilter returns a predicate function for auto-rotation eligibility.
+func AutoRotateFilter(path string) func(id string) bool {
+	return func(id string) bool {
+		return CanAutoRotateByID(path, id)
+	}
 }

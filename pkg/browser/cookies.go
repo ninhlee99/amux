@@ -38,28 +38,43 @@ func KnownBrowsers() []BrowserInfo {
 			out = append(out, BrowserInfo{Name: "Firefox", CookiePath: m})
 		}
 	}
-	out = append(out,
-		BrowserInfo{
-			Name:            "Microsoft Edge",
-			CookiePath:      filepath.Join(home, "Library/Application Support/Microsoft Edge/Default/Cookies"),
-			KeychainService: "Microsoft Edge Safe Storage",
-		},
-		BrowserInfo{
-			Name:            "Google Chrome",
-			CookiePath:      filepath.Join(home, "Library/Application Support/Google/Chrome/Default/Cookies"),
-			KeychainService: "Chrome Safe Storage",
-		},
-		BrowserInfo{
-			Name:            "Arc",
-			CookiePath:      filepath.Join(home, "Library/Application Support/Arc/User Data/Default/Cookies"),
-			KeychainService: "Arc Safe Storage",
-		},
-		BrowserInfo{
-			Name:            "Brave",
-			CookiePath:      filepath.Join(home, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies"),
-			KeychainService: "Brave Safe Storage",
-		},
-	)
+
+	chromiumDefs := []struct {
+		name     string
+		baseDir  string
+		keychain string
+	}{
+		{"Microsoft Edge", "Library/Application Support/Microsoft Edge", "Microsoft Edge Safe Storage"},
+		{"Google Chrome", "Library/Application Support/Google/Chrome", "Chrome Safe Storage"},
+		{"Arc", "Library/Application Support/Arc/User Data", "Arc Safe Storage"},
+		{"Brave", "Library/Application Support/BraveSoftware/Brave-Browser", "Brave Safe Storage"},
+	}
+
+	for _, c := range chromiumDefs {
+		base := filepath.Join(home, c.baseDir)
+		candidates := []string{
+			filepath.Join(base, "Default", "Network", "Cookies"),
+			filepath.Join(base, "Default", "Cookies"),
+		}
+		if profMatches, _ := filepath.Glob(filepath.Join(base, "Profile *")); len(profMatches) > 0 {
+			for _, pm := range profMatches {
+				candidates = append(candidates,
+					filepath.Join(pm, "Network", "Cookies"),
+					filepath.Join(pm, "Cookies"),
+				)
+			}
+		}
+
+		for _, cand := range candidates {
+			if _, err := os.Stat(cand); err == nil {
+				out = append(out, BrowserInfo{
+					Name:            c.name,
+					CookiePath:      cand,
+					KeychainService: c.keychain,
+				})
+			}
+		}
+	}
 	return out
 }
 

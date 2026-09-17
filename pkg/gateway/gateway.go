@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/types"
 )
 
 // GatewayStatus represents the live status of the Universal AI Gateway.
@@ -27,13 +28,13 @@ type GatewayStatus struct {
 	Upstream     string         `json:"upstream,omitempty"`
 	Mode         string         `json:"mode,omitempty"`
 	Sessions     int            `json:"sessions"`
+	PublicMode   bool           `json:"public_mode"`
 	Pool         map[string]any `json:"pool,omitempty"`
 }
 
-// PIDFilePath returns ~/.am/gateway.pid.
+// PIDFilePath returns ~/.amux/gateway.pid.
 func PIDFilePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".am", "gateway.pid")
+	return filepath.Join(types.BaseDir(), "gateway.pid")
 }
 
 // IsRunning reports whether the gateway is responding to HTTP requests.

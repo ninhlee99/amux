@@ -10,10 +10,15 @@ import (
 	"strings"
 )
 
-// BaseDir returns the root storage directory (~/.am, or overridden via
-// $AM_HOME — the original var name — or $AM_DIR, checked second so either
-// still works).
+// BaseDir returns the root storage directory (~/.amux, or overridden via
+// $AMUX_HOME or $AMUX_DIR, with fallback to legacy $AM_HOME / $AM_DIR / ~/.am).
 func BaseDir() string {
+	if d := os.Getenv("AMUX_HOME"); d != "" {
+		return d
+	}
+	if d := os.Getenv("AMUX_DIR"); d != "" {
+		return d
+	}
 	if d := os.Getenv("AM_HOME"); d != "" {
 		return d
 	}
@@ -21,7 +26,15 @@ func BaseDir() string {
 		return d
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".am")
+	amuxDir := filepath.Join(home, ".amux")
+	legacyDir := filepath.Join(home, ".am")
+	if _, err := os.Stat(amuxDir); err == nil {
+		return amuxDir
+	}
+	if _, err := os.Stat(legacyDir); err == nil {
+		return legacyDir
+	}
+	return amuxDir
 }
 
 // CurrentUser returns the current OS username.

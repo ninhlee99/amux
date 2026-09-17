@@ -60,8 +60,9 @@ amux setup
 
 ### 3. Add Identities
 ```bash
-amux id add claude    # OAuth, CLI snapshot, or browser login
+amux id add claude    # OAuth, CLI snapshot, or CDP browser login
 amux id add codex     # OpenAI Codex CLI or standalone OAuth
+amux id add custom    # Any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, Together)
 ```
 
 ### 4. Inspect Runtime & Quotas
@@ -75,116 +76,140 @@ amux status
 
 ### 1. Setup & Diagnostics
 ```bash
-amux setup           # Guided setup wizard
-amux status          # Real-time dashboard of identities, quotas, and gateway state
-amux doctor          # Probes OS Keychain access, upstream network, tools, and daemon
+amux setup                          # Guided setup wizard
+amux status                         # Real-time dashboard of identities, quotas, and gateway state
+amux usage day [YYYY-MM-DD]         # Per-account breakdown for a specific date
+amux usage week [YYYY-MM-DD]        # Daily token breakdown for all accounts across the week
+amux usage month [YYYY-MM]          # Weekly summary & daily breakdown for the month
+amux doctor                         # Probes OS Keychain access, upstream network, tools, and daemon
 ```
 
 ### 2. Identity Management (`amux id`)
 ```bash
-amux id list         # Display flat accounts, tier, credentials status, and usage %
-amux id add [tool]   # Add identity (OAuth PKCE, API key, local session, or CDP)
-amux id select [id]  # Manual account switch (interactive picker; updates OS Keychain)
-amux id health       # Probe token lifetimes and quota limits
-amux id remove <id>  # Delete identity from persistence
+amux id list                        # Display flat accounts, tier, credentials status, usage % & auto-switch
+amux id add [provider]              # Add identity: claude, codex, antigravity, or custom
+amux id select [id]                 # Manual account switch (interactive picker; updates OS Keychain)
+amux id auto <id> [on|off]          # Toggle auto-rotation (off = MANUAL ONLY; excluded from auto-switch)
+amux id health                      # Probe token lifetimes and quota limits
+amux id remove <id>                 # Delete identity from persistence
 ```
 
 ### 3. Universal Gateway (`amux gateway`)
 ```bash
-amux gateway start   # Start detached background gateway service (:8787)
-amux gateway stop    # Gracefully stop the gateway daemon
-amux gateway status  # Inspect socket status and active IDE hooks
+amux gateway start [-d] [--public]  # Start gateway service (:8787 or 0.0.0.0:8787 in public mode)
+amux gateway stop [--public]        # Stop gateway daemon
+amux gateway status                 # Inspect socket status, active IDE hooks, and public mode status
+amux gateway token [new|clear]      # Manage gateway bearer access token for external/remote clients
 
-# Manual IDE hook overrides:
-amux gateway hook --claude
-amux gateway hook --cursor
-amux gateway hook --codex
-amux gateway hook --all
-amux gateway unhook [--claude|--cursor|--codex|--all]
+# IDE Hook Injection (Routes IDE requests through gateway for live failover & switch):
+amux gateway hook claude            # Hook Claude Code (sets ANTHROPIC_BASE_URL in ~/.claude/settings.json)
+amux gateway hook cursor            # Hook Cursor IDE
+amux gateway hook codex             # Hook Codex CLI
+amux gateway hook all               # Hook all detected IDEs
+amux gateway unhook [target]        # Restore direct native execution (claude, cursor, codex, all)
 ```
 
 ### 4. Configuration & Migration
 ```bash
-amux config                        # Inspect active JSON configuration
-amux config threshold <percent>    # Update multi-account failover threshold (default: 95.0)
-amux migrate                       # Non-destructive auto-migration from legacy accounts
+amux config                         # Inspect active JSON configuration
+amux config threshold <percent>     # Update multi-account failover threshold (default: 95.0)
+amux migrate                        # Non-destructive auto-migration from legacy accounts
 ```
 
 ### 5. System
 ```bash
-amux update [--force]   # In-place update to latest GitHub release
-amux uninstall [--purge] # Remove hooks and binaries (--purge also wipes ~/.am)
+amux update [--force]               # In-place update to latest GitHub release
+amux uninstall [--purge]            # Remove hooks and binaries (--purge also wipes ~/.amux)
 ```
 
 ---
 
-## 🧰 The Universal Tool Engine
+## 🧰 The Universal Tool Engine & Protocols
 
-Tools and function calls never undergo point-to-point translations. All requests and responses pass through the **Canonical Tool Model**:
+Tools and function calls never undergo fragile point-to-point conversions. All requests and responses pass through the **Canonical Tool Model**:
+
 ```
-Inbound Wire -> Tool Adapter -> Canonical UniversalTool IR -> Security Layer -> Adapter -> Target Wire
+Inbound Wire Format
+       ↓
+Input Dialect Adapter (Anthropic / OpenAI / Gemini / MCP)
+       ↓
+Canonical UniversalTool IR (100% JSON Schema Constraint Preserved)
+       ↓
+Security & Privacy Layer (Protected XML & Secret Isolation)
+       ↓
+Output Dialect Adapter / Web-Loop Emulator
+       ↓
+Target Wire Format
 ```
 
-### Canonical Intermediate Representation
+### 1. Canonical Intermediate Representation (IR)
 - **`UniversalTool`**: ID, Name, Description, InputSchema (`map[string]interface{}`), Source, Metadata.
 - **`UniversalToolCall`**: ID, Name, Arguments (`map[string]interface{}`), RawJSON.
-- **`UniversalToolResult`**: ToolCallID, Success, Output string, Error (*UniversalToolError), Metadata.
+- **`UniversalToolResult`**: ToolCallID, Success, Output string, Error (`*UniversalToolError`), Metadata.
+- **`UniversalToolError`**: Code, Message, Retryable, Provider.
 
-### Supported Bidirectional Formats
-- **Anthropic Claude**: `tool_use` (id, name, input) ↔ `tool_result` (tool_use_id, content, is_error).
-- **OpenAI Function Calling**: `tool_calls` (id, type: "function", name, arguments) ↔ `role: "tool"`.
-- **Google Gemini**: `functionCall` (name, args) ↔ `functionResponse` (name, response).
-- **Model Context Protocol (MCP)**: `tools/list` manifests ↔ `tools/call` invocations and results.
-- **Agent Text-Loop**: Detects and adapts `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`.
+### 2. Supported Tool Formats & Dialects
+- **Anthropic Claude Code (`DialectClaude`)**:
+  - Declaration: `tools[]` with `name`, `description`, `input_schema`, and `cache_control: {"type": "ephemeral"}`.
+  - Invocations: Content block `type: "tool_use"` (`id`, `name`, `input`).
+  - Responses: Content block `type: "tool_result"` (`tool_use_id`, `content`, `is_error`).
+  - CoT Preservation: Preserves Anthropic `thinking` blocks (`budget_tokens`, `signature`) across turns.
+- **OpenAI / Cursor / Codex CLI (`DialectCursor`, `DialectCodex`)**:
+  - Declaration: `tools[]` with `type: "function"`, `function: {name, description, parameters}`.
+  - Invocations: `tool_calls[]` (`id`, `type: "function"`, `function: {name, arguments: string}`).
+  - Responses: Message with `role: "tool"`, `tool_call_id`, `content`.
+  - CoT Preservation: Reasoning effort (`low`, `medium`, `high`) for o1 / o3-mini / Codex.
+- **Google Gemini / Antigravity (`DialectGemini`)**:
+  - Declaration: `functionDeclarations[]` with `name`, `description`, `parameters`.
+  - Invocations: `functionCall` (`name`, `args`).
+  - Responses: `functionResponse` (`name`, `response`).
+  - CoT Preservation: Gemini Thought Signatures (`thought: true`, `parts: [{thought: "..."}]`).
 
-### 100% JSON Schema Constraint Preservation
-The engine strictly guarantees that JSON schema constraints (`properties`, `required`, `enum`, `items`, `oneOf`, `anyOf`, `default`, `description`, `additionalProperties`) survive conversion 100% intact.
+### 3. Model Context Protocol (MCP) Support
+- Fully compliant with the Anthropic Model Context Protocol specification:
+  - Manifest discovery: `tools/list` returns schema definitions.
+  - Tool invocation: `tools/call` with `params: {name, arguments}`.
+  - Result schema: `mcpResult` with `content: [{type: "text", text}], isError`.
+- **Automatic Namespacing Resolution**: Intelligently normalizes namespaced MCP tools (e.g. `mcp__server__tool`, `mcp_server_tool`, `server_tool`) across all client IDEs and backend providers.
 
-### Universal Web-Loop Tool Emulation
-For Web Session accounts lacking native API function calling:
-1. Serializes `UniversalTool` definitions into system instructions with strict format specifications.
-2. Intercepts streaming chunks matching the ````tool_call` delimiter.
+### 4. Claude Code Skills & Protected Syntax (`pkg/tools/protect.go`)
+- **Skill Tool Preservation**: The Claude Code `Skill` tool (e.g. `Skill(skill="review")`, `load_skill`, `run_skill`) is recognized and mapped bidirectionally.
+- **Protected Tags**: AMUX guarantees that syntax markers including `<skills>`, `<available_skills>`, `<skill_definition>`, `<thinking>`, and `<context>` are **never truncated, redacted, or mutated**.
+- **Privacy Redactor**: Targets strictly secret authorization headers (`Authorization: Bearer ...`, `x-api-key: ...`, `Cookie: session=...`) and standalone API keys (`sk-ant-`, `sk-proj-`, `AIzaSy`). Code diffs, file trees, and skill definitions remain 100% intact.
+
+### 5. Universal Web-Loop Tool Emulation (`webloop.go`)
+For Web Session accounts (Claude Web, ChatGPT Web, Gemini Web) lacking native API function calling:
+1. Serializes `UniversalTool` definitions into the system prompt with strict schema specifications.
+2. Intercepts streaming chunks matching `<tool_call>...</tool_call>` or ````tool_call ...````.
 3. Emits native client tool events (`content_block_start` for Claude, `delta.tool_calls` for OpenAI).
-4. Injects client `tool_result` back as user turns for uninterrupted multi-turn execution.
+4. Injects client `tool_result` back as user turns for uninterrupted multi-turn loops.
 
 ---
 
-## 🛡️ Protected Syntax & Targeted Privacy Isolation
+## 🛡️ Public Gateway Security & Rate Limiting
 
-### Protected Patterns
-AMUX enforces zero mutation, zero sanitization, and zero truncation for:
-- **XML Boundaries**: `<tools>`, `<merchant_data>`, `<context>`, `<thinking>`, `<function_calls>`, etc.
-- **Domain Identifiers**: Shopify global GraphQL IDs (`gid://shopify/<Resource>/<Id>`).
-- **Version Control Markers**: Git commit SHAs (40-char & 7-char hex), cryptographic hashes (`sha256:`, `md5:`), and Unified Diff Headers (`--- a/...`, `+++ b/...`, `@@ ... @@`).
-- **Terminal Fences**: ````bash````, ````shell````, ````tool_call````, and inline signatures (`Bash(command="...")`).
-
-### Targeted Isolation Redactor
-`pkg/privacy/redact.go` scans **ONLY**:
-1. Authorization headers (`Authorization: Bearer ...`, `x-api-key: ...`, `Cookie: session=...`).
-2. Standalone API keys with known provider prefixes (`sk-ant-`, `sk-proj-`, `sk-`, `AIzaSy`, `ghp_`).
-Broad regexes across message bodies are strictly excluded, eliminating payload corruption.
+When running in public mode (`amux gateway start --public`):
+- **Ephemeral Bearer Token**: Generates a 24-byte cryptographically random token `amux-<48 hex chars>` persisted at `~/.amux/proxy.token` (`0600`).
+- **Zero-Touch Local Bypass**: Loopback traffic (`127.0.0.1`, `::1`) bypasses auth challenges so local developer CLI workflows never break.
+- **Constant-Time Verification**: Remote requests require `Authorization: Bearer amux-...`, verified via `subtle.ConstantTimeCompare` to prevent timing attacks.
+- **Anti-Brute-Force Rate Limiting**: Max **10 failed authentication attempts per minute**. Violating IPs receive `HTTP 429 Too Many Requests`.
+- **Memory DoS Protection**: Bounded sliding-window tracking (max 50,000 IPs, 20 timestamps per IP) with automatic expired entry eviction.
 
 ---
 
-## 🏗️ Architecture Directory Structure
+## ⚖️ Architectural Comparison: AMUX vs Other Open-Source Tools
 
-```
-amux/
-├── cmd/
-│   └── amux/                 # Minimal binary entry point (< 25 lines)
-├── pkg/
-│   ├── cli/                  # Decomposed single-responsibility CLI modules (< 65 lines dispatcher)
-│   ├── identity/             # Flat Identity model, OS Keychain rotation & threshold engine
-│   ├── gateway/              # Universal AI Gateway, 1:1 passthrough & dynamic IDE hooking
-│   ├── router/               # Quota-aware routing, session affinity & tier ordering
-│   ├── tools/                # Universal Tool Engine, canonical IR & bidirectional adapters
-│   ├── context/              # Context memory & safe compaction (active only on mid-session rotation)
-│   ├── agent/                # Multi-agent coordination & delegation lifecycle
-│   ├── telemetry/            # Millisecond-precision structured logging & metrics
-│   ├── privacy/              # Isolated header & credential redactor
-│   ├── usage/                # Accurate token capture & rolling quota calculation
-│   └── ui/                   # Terminal dashboard & interactive selectors
-```
+| Dimension | LiteLLM / LiteLLM Proxy | One-API / New-API | Ad-hoc CLI Proxies | **AMUX** |
+| :--- | :--- | :--- | :--- | :--- |
+| **Primary Architecture** | Cloud API Gateway / Proxy | Multi-tenant Token Reseller | Shell Wrapper / Hook Hack | **AI Development Runtime & Universal Gateway** |
+| **Zero-Touch OS Keychain** | ❌ None (Requires base URL) | ❌ None (Manual API keys) | ❌ None (Overwrites `.zshrc`) | ✅ **Silent macOS Keychain Swapping** |
+| **Account Tier Parity** | ❌ API Keys only | ❌ API Keys only | ⚠️ Single Account / Flaky | ✅ **Subscription (OAuth) → Web (CDP) → API Key** |
+| **Web Account Support** | ❌ No browser/web support | ❌ No browser/web support | ⚠️ Fragile session cookies | ✅ **Headless Chromium CDP + Cookie Auto-sync** |
+| **Tool Calling Matrix** | ⚠️ OpenAI format biased | ⚠️ Partial API translation | ❌ Passthrough only (Breaks) | ✅ **Canonical IR (Claude ↔ OpenAI ↔ Gemini ↔ MCP)** |
+| **MCP Protocol Support** | ❌ No native MCP mapping | ❌ None | ❌ None | ✅ **Bidirectional MCP (`tools/list`, `tools/call`)** |
+| **Prompt Cache Protection**| ❌ Unaware of prompt cache | ❌ Incompatible | ❌ Re-hashes entire history | ✅ **Preserves Cache Prefix (Up to 90% Cost Saving)** |
+| **Conditional Hooking** | ❌ Always proxies | ❌ Always proxies | ⚠️ Permanent environment var | ✅ **Hooks only when ALL subs hit 95%; Auto-detaches** |
+| **Footprint & Runtime** | Heavy Python / Node service | Heavy Go + MySQL + Redis | Bash / Python scripts | ✅ **Single Native Go Binary (<25MB, 0 DB)** |
 
 ---
 
@@ -198,4 +223,5 @@ Verification includes:
 - **Cross-Dialect Matrix**: Claude ↔ OpenAI, Claude ↔ Gemini, MCP ↔ Claude, Web Emulation ↔ Client Tool Calls.
 - **Payload Integrity**: `<merchant_data>`, `gid://shopify/...`, git diffs, and terminal invocations round-trip verification.
 - **Keychain Rotation**: Multi-account 95% threshold failover and single-account 100% capacity rule.
+- **Auto-Switch OFF Exclusion**: Strict exclusion of manual-only accounts across Subscription and Web tiers.
 - **Passthrough Fidelity**: 1:1 bitwise streaming verification for matching dialects.

@@ -22,6 +22,7 @@ import (
 	"amux-accounts/pkg/bridge"
 	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/guard"
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
@@ -104,6 +105,7 @@ func RunProxy(addr, upstream string) error {
 
 	adapters, _ := provider.LoadAccounts(provider.DefaultAccountsPath())
 	pool := router.NewAccountPoolRouter(adapters)
+	pool.SetAutoRotateFilter(identity.AutoRotateFilter(""))
 	if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 		pool.SetDirectory(all)
 	}
@@ -725,11 +727,15 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 			}
 			switched, prevAcct := guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount)
-			if switched {
-				if parsedReq != nil && len(parsedReq.Messages) > 4 {
+			if switched && parsedReq != nil {
+				// Only compact if transcript is actually massive (>20 messages and >30,000 tokens)
+				// or target is web tier. Preserves exact text & prompt cache for normal subscription accounts.
+				isLargeContext := len(parsedReq.Messages) > 20 && ctxshrink.EstimateMessagesTokens(parsedReq.Messages) > 30000
+				isWebTarget := strings.Contains(strings.ToLower(targetAccount), "web")
+				if isLargeContext || isWebTarget {
 					compacted := ctxshrink.CompactForAccountSwitchProject(parsedReq.Project(), parsedReq.Messages, 6)
 					if len(compacted) < len(parsedReq.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
-						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to save tokens on cold account",
+						term.LogProxy("session switched (%s → %s): compacting %d turns down to %d to protect token budget on cold account",
 							prevAcct, targetAccount, len(parsedReq.Messages), len(compacted))
 						parsedReq.Messages = compacted
 						if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {

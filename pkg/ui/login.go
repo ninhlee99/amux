@@ -24,6 +24,8 @@ import (
 
 // loginFlags holds optional non-interactive credentials passed on the CLI.
 type loginFlags struct {
+	name       string // custom provider name
+	baseURL    string // custom endpoint base URL
 	model      string
 	token      string // access token / API key / sessionKey
 	cookie     string // raw Cookie header or name=value
@@ -43,6 +45,16 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 	providerName = strings.ToLower(args[0])
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "--name", "--id":
+			if i+1 < len(args) {
+				f.name = args[i+1]
+				i++
+			}
+		case "--base-url", "--url", "--endpoint":
+			if i+1 < len(args) {
+				f.baseURL = args[i+1]
+				i++
+			}
 		case "--model":
 			if i+1 < len(args) {
 				f.model = args[i+1]
@@ -93,11 +105,12 @@ func CmdLogin(args []string) {
 	var flags loginFlags
 	if len(args) == 0 {
 		fmt.Println("Select provider to login:")
-		fmt.Println("  [1] claude (Claude Code OAuth / Web)")
+		fmt.Println("  [1] claude (Claude Code OAuth / Device / Web)")
 		fmt.Println("  [2] codex  (OpenAI Codex OAuth)")
 		fmt.Println("  [3] gemini (Google AI Studio / Antigravity OAuth)")
 		fmt.Println("  [4] cursor (Cursor API Key / Token)")
-		ans := strings.TrimSpace(term.ReadLine("Select [1-4] (claude/codex/gemini/cursor): "))
+		fmt.Println("  [5] custom (Ollama, DeepSeek, vLLM, OpenAI-compatible)")
+		ans := strings.TrimSpace(term.ReadLine("Select [1-5] (claude/codex/gemini/cursor/custom): "))
 		switch strings.ToLower(ans) {
 		case "1", "claude":
 			target = "claude"
@@ -107,8 +120,10 @@ func CmdLogin(args []string) {
 			target = "gemini"
 		case "4", "cursor":
 			target = "cursor"
+		case "5", "custom":
+			target = "custom"
 		default:
-			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor")
+			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor, custom")
 			return
 		}
 	} else {
@@ -141,10 +156,16 @@ func CmdLogin(args []string) {
 	case "claude", "claude-web", "claudeweb":
 		if target == "claude" && !flags.isOAuth && !flags.isDevice && !flags.isManual && flags.token == "" && flags.cookie == "" {
 			fmt.Println("Choose login method for Claude:")
-			fmt.Println("  [1] Claude Code OAuth (Auto-login via browser -> Access Token & Refresh Token) [Default]")
-			fmt.Println("  [2] Claude Web (sessionKey cookie for claude.ai web session pool)")
-			ans := term.ReadLine("Select [1/2] (Enter = 1): ")
-			if ans == "" || ans == "1" {
+			fmt.Println("  [1] Claude Code OAuth (Tự động mở trình duyệt & lấy Access Token) [Default - Enter]")
+			fmt.Println("  [2] Login with Device / Remote Code (Lấy mã xác thực qua web - không cần callback localhost)")
+			fmt.Println("  [3] Claude Web (sessionKey cookie cho claude.ai web session pool)")
+			ans := strings.TrimSpace(term.ReadLine("Select [1-3] (Enter = 1): "))
+			switch ans {
+			case "2", "device":
+				flags.isDevice = true
+			case "3", "web":
+				// Proceed to loginClaude web session
+			default:
 				flags.isOAuth = true
 			}
 		}
@@ -188,9 +209,77 @@ func CmdLogin(args []string) {
 		}
 	case "cursor":
 		loginCursor(flags)
+	case "custom", "openai-compatible", "ollama", "vllm", "deepseek", "together", "siliconflow":
+		loginCustom(target, flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, cursor (or run: am login)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, cursor, custom (or run: am login)\n", target)
 	}
+}
+
+func loginCustom(target string, f loginFlags) {
+	fmt.Println("== Setup Custom OpenAI-Compatible Provider ==")
+	name := f.name
+	if name == "" {
+		if target != "custom" && target != "openai-compatible" {
+			name = target
+		} else {
+			name = strings.TrimSpace(readLinePrompt("Provider name/id (e.g. ollama, deepseek, vllm): "))
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "custom"
+	}
+
+	baseURL := strings.TrimSpace(f.baseURL)
+	if baseURL == "" {
+		defURL := "http://localhost:11434/v1"
+		if strings.Contains(strings.ToLower(name), "deepseek") {
+			defURL = "https://api.deepseek.com/v1"
+		}
+		baseURL = strings.TrimSpace(readLinePrompt(fmt.Sprintf("Base URL [default: %s]: ", defURL)))
+		if baseURL == "" {
+			baseURL = defURL
+		}
+	}
+
+	model := strings.TrimSpace(f.model)
+	if model == "" {
+		model = strings.TrimSpace(readLinePrompt("Model name (e.g. deepseek-chat, llama3.3, mistral): "))
+		if model == "" {
+			model = "default"
+		}
+	}
+
+	key := strings.TrimSpace(f.token)
+	if key == "" && !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
+		key = strings.TrimSpace(readLinePrompt("API Key (optional, press Enter if no auth): "))
+	}
+
+	idPrefix := fmt.Sprintf("%s:api", name)
+	id, priorityFloor, multi := nextPoolID(idPrefix)
+	priority := provider.PriorityAPICustom
+	if multi {
+		priority = priorityFloor
+	}
+
+	cfg := provider.ProviderConfig{
+		ID:       id,
+		Type:     "openai_compatible",
+		Priority: priority,
+		BaseURL:  baseURL,
+		APIKey:   key,
+		Model:    model,
+	}
+
+	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	proxy.Sync()
+	fmt.Printf("✓ Saved custom provider %q as %s (URL: %s, model: %s).\n", name, id, baseURL, model)
+	CmdAccounts()
 }
 
 func loginCursor(f loginFlags) {

@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/proxy"
+	"amux-accounts/pkg/types"
 )
 
 // CmdUpdate updates amux to the latest version from GitHub.
@@ -81,32 +84,113 @@ func cmdUninstall(purge bool) {
 	}
 
 	if purge {
-		amDir := filepath.Join(home, ".am")
-		if err := os.RemoveAll(amDir); err != nil {
-			fmt.Printf("Could not remove %s: %v\n", amDir, err)
+		amuxDir := types.BaseDir()
+		if err := os.RemoveAll(amuxDir); err != nil {
+			fmt.Printf("Could not remove %s: %v\n", amuxDir, err)
 		} else {
-			fmt.Printf("Purged configuration directory: %s\n", amDir)
+			fmt.Printf("Purged configuration directory: %s\n", amuxDir)
 		}
+		legacyDir := filepath.Join(home, ".am")
+		_ = os.RemoveAll(legacyDir)
 	} else {
-		fmt.Printf("Identity data at ~/.am/ preserved (use --purge to delete).\n")
+		fmt.Printf("Identity data at ~/.amux/ preserved (use --purge to delete).\n")
 	}
 
 	fmt.Println("Uninstall complete.")
+}
+
+// tryUpdatePrebuilt downloads the latest pre-built binary from GitHub Releases.
+// Returns true if the binary was successfully downloaded and installed.
+func tryUpdatePrebuilt(targetBin string, quiet bool) bool {
+	arch := runtime.GOARCH // "arm64" or "amd64"
+	if arch != "arm64" && arch != "amd64" {
+		return false
+	}
+	url := "https://github.com/ninhlee99/amux/releases/latest/download/amux-darwin-" + arch
+	if !quiet {
+		fmt.Printf("Trying pre-built binary: %s\n", url)
+	}
+
+	resp, err := http.Get(url) //nolint:gosec
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return false
+	}
+	defer resp.Body.Close()
+
+	tmp, err := os.CreateTemp("", "amux-prebuilt-*")
+	if err != nil {
+		return false
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		return false
+	}
+	tmp.Close()
+	_ = os.Chmod(tmpName, 0o755)
+
+	// Verify the downloaded binary works
+	verifyCmd := exec.Command(tmpName, "version")
+	verifyCmd.Stdout = io.Discard
+	verifyCmd.Stderr = io.Discard
+	if err := verifyCmd.Run(); err != nil {
+		// Try "help" as fallback check
+		verifyCmd2 := exec.Command(tmpName, "help")
+		verifyCmd2.Stdout = io.Discard
+		verifyCmd2.Stderr = io.Discard
+		if err2 := verifyCmd2.Run(); err2 != nil {
+			return false
+		}
+	}
+
+	if err := copyExecutable(tmpName, targetBin); err != nil {
+		return false
+	}
+	if !quiet {
+		fmt.Printf("✓ Downloaded pre-built binary: %s\n", targetBin)
+	}
+	return true
 }
 
 func cmdUpdate(force, quiet bool) {
 	if !quiet {
 		fmt.Println("== Updating AMUX ==")
 	}
+
+	home, _ := os.UserHomeDir()
+	localBin := filepath.Join(home, ".local", "bin")
+	_ = os.MkdirAll(localBin, 0o755)
+	targetBin := filepath.Join(localBin, "amux")
+
+	// --- Try pre-built binary first (no git/go required) ---
+	if tryUpdatePrebuilt(targetBin, quiet) {
+		// Remove any stale legacy "am" binary
+		_ = os.Remove(filepath.Join(localBin, "am"))
+		_ = os.Remove("/usr/local/bin/am")
+		if !quiet {
+			fmt.Println("✓ Update complete! Identities and config preserved.")
+		}
+		return
+	}
+	if !quiet {
+		fmt.Println("No pre-built binary found, falling back to source build...")
+	}
+
+	// --- Fall back to source build ---
 	if !ensureGitAvailable(quiet) {
 		if !quiet {
-			die("git is required for update")
+			die("git is required for source build update")
 		}
 		return
 	}
 	if !ensureGoAvailable(quiet) {
 		if !quiet {
-			die("go (>= 1.22) is required for update")
+			die("go (>= 1.22) is required for source build update")
 		}
 		return
 	}
@@ -174,11 +258,6 @@ func cmdUpdate(force, quiet bool) {
 	}
 	defer os.Remove(tempBin)
 
-	home, _ := os.UserHomeDir()
-	localBin := filepath.Join(home, ".local", "bin")
-	_ = os.MkdirAll(localBin, 0o755)
-
-	targetBin := filepath.Join(localBin, "amux")
 	if err := copyExecutable(tempBin, targetBin); err != nil {
 		if !quiet {
 			fmt.Printf("Warning: failed to write %s: %v\n", targetBin, err)
@@ -203,6 +282,7 @@ func cmdUpdate(force, quiet bool) {
 		fmt.Println("✓ Update complete! Identities and config preserved.")
 	}
 }
+
 
 func copyExecutable(src, dst string) error {
 	in, err := os.Open(src)
@@ -239,8 +319,7 @@ type versionInfo struct {
 }
 
 func getInstalledCommit() string {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".am", "version.json")
+	p := filepath.Join(types.BaseDir(), "version.json")
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return ""
@@ -253,8 +332,7 @@ func getInstalledCommit() string {
 }
 
 func saveInstalledCommit(commit string) {
-	home, _ := os.UserHomeDir()
-	p := filepath.Join(home, ".am", "version.json")
+	p := filepath.Join(types.BaseDir(), "version.json")
 	vi := versionInfo{
 		Commit:    commit,
 		UpdatedAt: time.Now().Format(time.RFC3339),

@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"amux-accounts/pkg/types"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -362,11 +364,7 @@ func summarizeAuthCookies(cookies []cdpCookie, hostSubstr string) string {
 }
 
 func profileDir(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".am", "browser-profiles", name)
+	dir := filepath.Join(types.BaseDir(), "browser-profiles", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -388,28 +386,32 @@ func findChromiumBinary() (string, error) {
 	}
 
 	var candidates []string
+	if def := detectDefaultChromiumPath(); def != "" {
+		candidates = append(candidates, def)
+	}
+
 	switch runtime.GOOS {
 	case "darwin":
-		candidates = []string{
+		candidates = append(candidates,
 			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 			"/Volumes/Macintosh HD/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
 			"/Applications/Chromium.app/Contents/MacOS/Chromium",
-		}
+		)
 	case "windows":
-		candidates = []string{
+		candidates = append(candidates,
 			`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 			`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
 			`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
-		}
+		)
 	default:
-		candidates = []string{
+		candidates = append(candidates,
 			"/usr/bin/google-chrome",
 			"/usr/bin/chromium",
 			"/usr/bin/chromium-browser",
 			"/usr/bin/microsoft-edge",
-		}
+		)
 	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
@@ -423,6 +425,45 @@ func findChromiumBinary() (string, error) {
 	}
 	return "", fmt.Errorf("no Chrome/Edge/Brave/Chromium found — install one, " +
 		"set AMUX_BROWSER_BINARY=/path/to/browser, or paste --cookie/--token instead")
+}
+
+func detectDefaultChromiumPath() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers").Output()
+	if err != nil {
+		return ""
+	}
+	content := string(out)
+	for _, block := range strings.Split(content, "{") {
+		if strings.Contains(block, "LSHandlerURLScheme = http") || strings.Contains(block, "LSHandlerURLScheme = https") {
+			lower := strings.ToLower(block)
+			switch {
+			case strings.Contains(lower, "microsoft.edgemac") || strings.Contains(lower, "msedge"):
+				p := "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return p
+				}
+			case strings.Contains(lower, "brave.browser"):
+				p := "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return p
+				}
+			case strings.Contains(lower, "google.chrome"):
+				p := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return p
+				}
+			case strings.Contains(lower, "chromium"):
+				p := "/Applications/Chromium.app/Contents/MacOS/Chromium"
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return p
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // pickFreePort reserves an ephemeral port and hands back both the number and

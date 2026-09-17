@@ -3,9 +3,11 @@ package cli
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/proxy"
 )
 
@@ -122,3 +124,117 @@ func TestProxyDown_PublicFlag(t *testing.T) {
 		t.Errorf("expected empty token after proxy down --public, got: %s", tok)
 	}
 }
+
+func TestCmdIDAutoRotate(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-cli-auto-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpDir)
+
+	// Create test identity
+	id := "test-sub-vip"
+	_ = CmdID // ensure imported
+	cfgPath := filepath.Join(tmpDir, ".am", "identities.json")
+	_ = os.MkdirAll(filepath.Dir(cfgPath), 0o700)
+
+	// Add via identity package
+	upsertErr := CmdID
+	_ = upsertErr
+	// Run CmdID with auto
+	// First upsert an identity directly
+	cfg := &identity.Config{
+		ThresholdPct: 95.0,
+		Identities: []identity.Identity{
+			{
+				ID:           id,
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 50.0,
+				Active:       true,
+			},
+		},
+	}
+	if err := identity.SaveConfig("", cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// Toggle to off
+	CmdID([]string{"auto", id, "off"})
+	target, err := identity.Get("", id)
+	if err != nil || target == nil {
+		t.Fatalf("Get identity error: %v", err)
+	}
+	if target.CanAutoRotate() {
+		t.Errorf("expected CanAutoRotate to be false after 'amux id auto %s off'", id)
+	}
+
+	// Toggle back to on
+	CmdID([]string{"auto", id, "on"})
+	targetOn, err := identity.Get("", id)
+	if err != nil || targetOn == nil {
+		t.Fatalf("Get identity error: %v", err)
+	}
+	if !targetOn.CanAutoRotate() {
+		t.Errorf("expected CanAutoRotate to be true after 'amux id auto %s on'", id)
+	}
+}
+
+func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-cli-list-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpDir)
+
+	fFalse := false
+	cfg := &identity.Config{
+		ThresholdPct: 95.0,
+		Identities: []identity.Identity{
+			{
+				ID:           "claude-1",
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 30.0,
+				Active:       true,
+			},
+			{
+				ID:           "claude-vip",
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 10.0,
+				Active:       false,
+				AutoRotate:   &fFalse,
+			},
+		},
+	}
+	if err := identity.SaveConfig("", cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	out := captureStdout(func() {
+		CmdID([]string{"list"})
+	})
+
+	if !strings.Contains(out, "ACTIVE") || !strings.Contains(out, "AUTO-SWITCH") {
+		t.Errorf("expected header with ACTIVE and AUTO-SWITCH, got:\n%s", out)
+	}
+	// claude-1 is Active=true, AutoRotate=default(true)
+	if !strings.Contains(out, "claude-1") || !strings.Contains(out, "YES") || !strings.Contains(out, "ON") {
+		t.Errorf("expected claude-1 to show YES for ACTIVE and ON for AUTO-SWITCH, got:\n%s", out)
+	}
+	// claude-vip is Active=false, AutoRotate=false
+	if !strings.Contains(out, "claude-vip") || !strings.Contains(out, "NO") || !strings.Contains(out, "OFF") {
+		t.Errorf("expected claude-vip to show NO for ACTIVE and OFF for AUTO-SWITCH, got:\n%s", out)
+	}
+}
+
+

@@ -34,8 +34,11 @@ type LegacyAccountDoc struct {
 // It never deletes or alters legacy files.
 func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, error) {
 	if accountsPath == "" {
-		home, _ := os.UserHomeDir()
-		accountsPath = filepath.Join(home, ".am", "accounts.json")
+		accountsPath = filepath.Join(types.BaseDir(), "accounts.json")
+		if _, err := os.Stat(accountsPath); os.IsNotExist(err) {
+			home, _ := os.UserHomeDir()
+			accountsPath = filepath.Join(home, ".am", "accounts.json")
+		}
 	}
 	if identitiesPath == "" {
 		identitiesPath = DefaultIdentitiesPath()
@@ -116,8 +119,11 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	}
 
 	// 2. Read legacy profile store (Claude, Codex, Gemini profiles)
-	home, _ := os.UserHomeDir()
-	profilesDir := filepath.Join(home, ".am", "profiles")
+	profilesDir := filepath.Join(types.BaseDir(), "profiles")
+	if _, err := os.Stat(profilesDir); os.IsNotExist(err) {
+		home, _ := os.UserHomeDir()
+		profilesDir = filepath.Join(home, ".am", "profiles")
+	}
 	tools := []string{"claude", "codex", "gemini"}
 	for _, tool := range tools {
 		dir := filepath.Join(profilesDir, tool)

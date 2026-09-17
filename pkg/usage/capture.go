@@ -75,7 +75,13 @@ func WrapUsageCapture(resp *http.Response, account string) {
 
 	gzipped := strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip")
 	go func() {
-		e := types.UsageEntry{Time: time.Now(), Account: account, Project: project, Session: session}
+		e := types.UsageEntry{
+			Time:     time.Now(),
+			Account:  account,
+			Endpoint: path,
+			Project:  project,
+			Session:  session,
+		}
 		var src io.Reader = pr
 		if gzipped {
 			if gr, err := gzip.NewReader(pr); err == nil {

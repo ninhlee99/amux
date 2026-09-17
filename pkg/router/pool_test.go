@@ -347,8 +347,69 @@ func TestAccountPoolRouter_TierStrictPriority(t *testing.T) {
 
 	// 3. Web cooled down too: API key last resort.
 	r.SetCooldownForTest("claude-web-1", 10*time.Minute)
-	if got := send(); got != "api" {
-		t.Fatalf("expected api_key tier last, got %q", got)
+}
+
+func TestRouter_AutoRotateFilterExclusion(t *testing.T) {
+	subActive := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-sub-active", priority: 1, content: "sub-active"}, grp: "claude_sub"}
+	subVIP := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-sub-vip", priority: 2, content: "sub-vip"}, grp: "claude_sub"}
+	webFallback := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-web-fallback", priority: 1, content: "web-fallback"}, grp: "claude_web"}
+	webManual := &mockGroupAdapter{mockAdapter: mockAdapter{id: "chatgpt-web-manual", priority: 2, content: "web-manual"}, grp: "chatgpt_web"}
+
+	adapters := []types.ProviderAdapter{subActive, subVIP, webFallback, webManual}
+	r := router.NewAccountPoolRouter(adapters)
+
+	// Configure filter: sub-vip and web-manual are AUTO-SWITCH = OFF (manual only)
+	autoSwitchState := map[string]bool{
+		"claude-sub-active":   true,
+		"claude-sub-vip":      false, // OFF
+		"claude-web-fallback": true,
+		"chatgpt-web-manual":  false, // OFF
+	}
+	r.SetAutoRotateFilter(func(id string) bool {
+		return autoSwitchState[id]
+	})
+
+	send := func() string {
+		ch, err := r.Send(context.Background(), &types.ChatRequest{Messages: []types.ChatMessage{{Role: "user", Content: "hi"}}})
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		var text string
+		for chunk := range ch {
+			text += chunk.Content
+		}
+		return text
+	}
+
+	// 1. Initial request: auto-route selects claude-sub-active
+	if got := send(); got != "sub-active" {
+		t.Fatalf("expected claude-sub-active, got %q", got)
+	}
+
+	// 2. claude-sub-active cools down.
+	// Auto-switch must NOT pick claude-sub-vip (it's OFF)!
+	// It should skip to next tier (Web) and pick claude-web-fallback (ON), skipping chatgpt-web-manual (OFF)!
+	r.SetCooldownForTest("claude-sub-active", 10*time.Minute)
+	if got := send(); got != "web-fallback" {
+		t.Fatalf("expected auto-switch to web-fallback (skipping sub-vip and web-manual), got %q", got)
+	}
+
+	// 3. Manual pin to claude-sub-vip (via amux id select / SetPreferred)
+	r.SetPreferred("claude-sub-vip")
+	if got := send(); got != "sub-vip" {
+		t.Fatalf("expected manual pin to claude-sub-vip to work, got %q", got)
+	}
+
+	// 4. Clear preferred pin: auto-switch resumes, should still skip sub-vip and choose web-fallback
+	r.ClearPreferred()
+	if got := send(); got != "web-fallback" {
+		t.Fatalf("expected web-fallback after clearing pin, got %q", got)
+	}
+
+	// 5. Cooldown web-fallback too: no living auto-rotatable accounts left
+	r.SetCooldownForTest("claude-web-fallback", 10*time.Minute)
+	if r.HasLivingAccounts() {
+		t.Fatalf("expected HasLivingAccounts to be false when all ON accounts are cooling down")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/ui"
 )
 
@@ -21,18 +22,20 @@ func CmdID(args []string) {
 	subArgs := args[1:]
 
 	switch sub {
-	case "list", "ls":
+	case "list":
 		cmdIDList()
 	case "add":
 		cmdIDAdd(subArgs)
-	case "remove", "rm", "delete":
+	case "remove":
 		cmdIDRemove(subArgs)
 	case "health":
 		cmdIDHealth()
-	case "select", "switch", "sw":
+	case "select":
 		cmdIDSelect(subArgs)
+	case "auto":
+		cmdIDAutoRotate(subArgs)
 	default:
-		die("unknown id command: %s (valid: add, list, remove, health, select)", sub)
+		die("unknown id command: %s (valid: list, add, remove, select, auto, health)", sub)
 	}
 }
 
@@ -43,17 +46,56 @@ func cmdIDList() {
 		return
 	}
 
-	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s\n", "ID", "PROVIDER", "TIER", "AUTH TYPE", "USAGE", "ACTIVE")
-	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s\n", "--------------------", "------------", "--------------", "--------------", "--------", "--------")
+	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n", "ID", "PROVIDER", "TIER", "AUTH TYPE", "USAGE", "ACTIVE", "AUTO-SWITCH")
+	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n", "--------------------", "------------", "--------------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
-		activeStr := "no"
+		activeStr := "NO"
 		if id.Active {
 			activeStr = "YES"
 		}
+		autoStr := "ON"
+		if !id.CanAutoRotate() {
+			autoStr = "OFF"
+		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s\n",
-			id.ID, id.Provider, id.Tier, id.AuthType, usageStr, activeStr)
+		fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n",
+			id.ID, id.Provider, id.Tier, id.AuthType, usageStr, activeStr, autoStr)
+	}
+}
+
+func cmdIDAutoRotate(args []string) {
+	if len(args) == 0 {
+		die("usage: amux id auto <id> [on|off]")
+	}
+	targetID := args[0]
+	target, err := identity.Get("", targetID)
+	if err != nil || target == nil {
+		die("identity %q not found", targetID)
+	}
+
+	enabled := !target.CanAutoRotate() // default toggle if no argument
+	if len(args) > 1 {
+		val := strings.ToLower(args[1])
+		switch val {
+		case "on", "true", "enable", "1", "yes":
+			enabled = true
+		case "off", "false", "disable", "0", "no":
+			enabled = false
+		default:
+			die("invalid state: %s (use 'on' or 'off')", args[1])
+		}
+	}
+
+	if err := identity.SetAutoRotate("", targetID, enabled); err != nil {
+		die("failed to update identity: %v", err)
+	}
+	proxy.Sync()
+
+	if enabled {
+		fmt.Printf("✓ AUTO-SWITCH set to ON for %q (eligible for automatic rotation/failover).\n", targetID)
+	} else {
+		fmt.Printf("✓ AUTO-SWITCH set to OFF for %q (manual switch only via 'amux id select %s').\n", targetID, targetID)
 	}
 }
 
@@ -144,6 +186,7 @@ func cmdIDSelect(args []string) {
 	if err := identity.SetActive("", targetID); err != nil {
 		die("failed to activate identity: %v", err)
 	}
+	proxy.Sync()
 
 	// Instantly update target IDE native Keychain
 	if err := identity.SyncIdentityToNativeKeychain(target); err != nil {

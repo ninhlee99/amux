@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"amux-accounts/pkg/monitor"
+	"amux-accounts/pkg/ui"
 )
 
 func die(format string, a ...any) {
@@ -29,32 +30,26 @@ func Run(rawArgs []string) {
 		usageHelp()
 	case "setup":
 		CmdSetup(args)
-	case "status", "st":
+	case "status":
 		CmdStatus(args)
+	case "usage":
+		CmdUsage(args)
 	case "doctor":
 		CmdDoctor(args)
-	case "id", "identity":
+	case "id":
 		CmdID(args)
-	case "gateway", "gw", "proxy":
+	case "gateway":
 		CmdGateway(args)
-	case "config", "cfg":
+	case "config":
 		CmdConfig(args)
 	case "migrate":
 		CmdMigrate(args)
-	case "update", "upgrade":
+	case "update":
 		CmdUpdate(args)
 	case "uninstall":
 		CmdUninstall(args)
-	case "ls", "accounts":
-		CmdID(append([]string{"list"}, args...))
-	case "add":
-		CmdID(append([]string{"add"}, args...))
-	case "rm", "remove", "delete":
-		CmdID(append([]string{"remove"}, args...))
-	case "sw", "switch":
-		CmdID(append([]string{"select"}, args...))
-	case "run":
-		die("'amux run' is removed. Run your IDE natively (e.g. 'claude', 'codex', 'cursor'). AMUX operates non-invasively via OS Keychain rotation.")
+	case "statusline":
+		ui.CmdStatusline()
 	default:
 		die("unknown command: %s (run 'amux help' for usage)", cmd)
 	}

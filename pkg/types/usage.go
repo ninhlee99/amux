@@ -7,6 +7,7 @@ type UsageEntry struct {
 	Time          time.Time `json:"t"`
 	Account       string    `json:"account"`
 	Model         string    `json:"model,omitempty"`
+	Endpoint      string    `json:"endpoint,omitempty"`
 	Project       string    `json:"project,omitempty"`
 	Session       string    `json:"session,omitempty"`
 	Input         int       `json:"in"`

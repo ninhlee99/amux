@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# am installer — builds from source, no manual git clone needed.
+# amux installer — downloads pre-built binary or builds from source automatically.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 #
-# Needs: macOS (am uses the `security` keychain CLI), Go 1.22+, git.
+# Supported OS: macOS (Apple Silicon arm64 & Intel amd64)
 set -euo pipefail
 
-REPO_URL="${AM_REPO_URL:-https://github.com/ninhlee99/amux.git}"
+REPO_URL="${AMUX_REPO_URL:-https://github.com/ninhlee99/amux.git}"
 
-if [ -z "${AM_INSTALL_DIR:-}" ]; then
+if [ -z "${AMUX_INSTALL_DIR:-}" ]; then
   if [ -d "$HOME/.local/bin" ] && [ -w "$HOME/.local/bin" ] && [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then
     INSTALL_DIR="$HOME/.local/bin"
   elif [ -w "/usr/local/bin" ]; then
@@ -18,13 +18,13 @@ if [ -z "${AM_INSTALL_DIR:-}" ]; then
     mkdir -p "$INSTALL_DIR"
   fi
 else
-  INSTALL_DIR="$AM_INSTALL_DIR"
+  INSTALL_DIR="$AMUX_INSTALL_DIR"
 fi
 
 say() { printf '%s\n' "$*" >&2; }
 die() { say "install.sh: $*"; exit 1; }
 
-[ "$(uname -s)" = "Darwin" ] || die "am is macOS-only (uses the 'security' keychain CLI)."
+[ "$(uname -s)" = "Darwin" ] || die "amux is macOS-only (uses the 'security' keychain CLI)."
 
 ensure_git() {
   if command -v git >/dev/null 2>&1; then
@@ -83,9 +83,9 @@ ensure_go() {
   arch="$(uname -m)"
   local go_arch
   case "$arch" in
-    arm64)  go_arch="arm64" ;;
-    x86_64) go_arch="amd64" ;;
-    *)      die "unsupported architecture: $arch" ;;
+    arm64|aarch64) go_arch="arm64" ;;
+    x86_64|amd64)  go_arch="amd64" ;;
+    *)             die "unsupported architecture: $arch" ;;
   esac
 
   local go_ver
@@ -141,56 +141,98 @@ ensure_go() {
   fi
 }
 
+try_download_prebuilt() {
+  local arch
+  arch="$(uname -m)"
+  local target_arch=""
+  case "$arch" in
+    arm64|aarch64) target_arch="arm64" ;;
+    x86_64|amd64)  target_arch="amd64" ;;
+    *)             return 1 ;;
+  esac
+
+  local bin_url="https://github.com/ninhlee99/amux/releases/latest/download/amux-darwin-${target_arch}"
+  local dest="$tmp/amux-accounts/amux"
+
+  say "checking for pre-built binary from GitHub Releases (${target_arch})..."
+  # Test if binary URL exists on GitHub
+  if curl -fsSL -I "$bin_url" 2>/dev/null | grep -q -E 'HTTP/.* (200|302)'; then
+    say "downloading pre-built amux binary from GitHub..."
+    if curl -fsSL "$bin_url" -o "$dest" 2>/dev/null && chmod +x "$dest"; then
+      if "$dest" help >/dev/null 2>&1 || "$dest" -h >/dev/null 2>&1; then
+        say "✓ Pre-built binary verified successfully (no Go compiler needed)."
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
+
 tmp="$(mktemp -d)"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 mkdir -p "$tmp/amux-accounts"
 
-ensure_git
-ensure_go
+FORCE_BUILD=0
+AUTO_UPDATE_FLAG=""
+for arg in "$@"; do
+  case "$arg" in
+    --build|-b)
+      FORCE_BUILD=1
+      ;;
+    --auto-update|-u)
+      AUTO_UPDATE_FLAG="--auto-update"
+      ;;
+  esac
+done
+if [ "${AMUX_AUTO_UPDATE:-}" = "1" ]; then
+  AUTO_UPDATE_FLAG="--auto-update"
+fi
 
 if [ -f "./cmd/amux/main.go" ] && [ -f "./go.mod" ]; then
+  ensure_go
   say "building amux from local source..."
   go build -o "$tmp/amux-accounts/amux" ./cmd/amux || die "build failed."
 elif [ -f "./main.go" ] && [ -f "./go.mod" ]; then
+  ensure_go
   say "building amux from local source..."
   go build -o "$tmp/amux-accounts/amux" . || die "build failed."
 else
-  say "cloning $REPO_URL..."
-  git clone --depth 1 "$REPO_URL" "$tmp/amux-accounts/src" >/dev/null 2>&1 \
-    || die "clone failed — check the URL and your network."
+  installed_prebuilt=0
+  if [ "$FORCE_BUILD" -eq 0 ]; then
+    if try_download_prebuilt; then
+      installed_prebuilt=1
+    else
+      say "pre-built binary not found on GitHub Release. Falling back to build from source..."
+    fi
+  fi
 
-  say "building amux..."
-  ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" ./cmd/amux ) \
-    || ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" . ) \
-    || die "build failed."
+  if [ "$installed_prebuilt" -eq 0 ]; then
+    ensure_git
+    ensure_go
+    say "cloning $REPO_URL..."
+    git clone --depth 1 "$REPO_URL" "$tmp/amux-accounts/src" >/dev/null 2>&1 \
+      || die "clone failed — check the URL and your network."
+
+    say "building amux..."
+    ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" ./cmd/amux ) \
+      || ( cd "$tmp/amux-accounts/src" && go build -o "$tmp/amux-accounts/amux" . ) \
+      || die "build failed."
+  fi
 fi
 
 if [ -w "$INSTALL_DIR" ]; then
   mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
-  rm -f "$INSTALL_DIR/am"
 else
   say "need sudo to write to $INSTALL_DIR..."
   sudo mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
-  sudo rm -f "$INSTALL_DIR/am"
 fi
 
 if [ "$INSTALL_DIR" != "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
   cp "$INSTALL_DIR/amux" "/usr/local/bin/amux" 2>/dev/null || true
-  rm -f "/usr/local/bin/am" 2>/dev/null || true
 fi
 
-say "installed amux -> $INSTALL_DIR"
-
-AUTO_UPDATE_FLAG=""
-for arg in "$@"; do
-  if [ "$arg" = "--auto-update" ] || [ "$arg" = "-u" ]; then
-    AUTO_UPDATE_FLAG="--auto-update"
-  fi
-done
-if [ "${AM_AUTO_UPDATE:-}" = "1" ]; then
-  AUTO_UPDATE_FLAG="--auto-update"
-fi
+say "✓ Installed amux -> $INSTALL_DIR/amux"
 
 if command -v amux >/dev/null 2>&1; then
   say "running 'amux setup $AUTO_UPDATE_FLAG'..."
@@ -200,4 +242,4 @@ else
 fi
 
 say ""
-say "done. Next: amux id add [provider] (register your accounts)"
+say "Installation complete. Next: amux id add [provider] (register your accounts)"

@@ -38,6 +38,7 @@ type Identity struct {
 	UsagePercent float64                `json:"usage_percent"` // 0.0 to 100.0
 	ResetAt      int64                  `json:"reset_at,omitempty"`
 	Active       bool                   `json:"active"`
+	AutoRotate   *bool                  `json:"auto_rotate,omitempty"` // true by default; if false, excluded from auto-rotation/switch
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -45,6 +46,23 @@ type Identity struct {
 type Config struct {
 	ThresholdPct float64    `json:"threshold_pct"` // Default 95.0
 	Identities   []Identity `json:"identities"`
+}
+
+// CanAutoRotate reports whether this identity is eligible for automatic rotation/failover.
+// Defaults to true unless explicitly set to false in AutoRotate or Metadata["manual_only"].
+func (id Identity) CanAutoRotate() bool {
+	if id.AutoRotate != nil {
+		return *id.AutoRotate
+	}
+	if id.Metadata != nil {
+		if v, ok := id.Metadata["auto_rotate"].(bool); ok {
+			return v
+		}
+		if v, ok := id.Metadata["manual_only"].(bool); ok {
+			return !v
+		}
+	}
+	return true
 }
 
 // IsSubscription reports whether this identity is billed as a fixed-cost subscription.

@@ -18,12 +18,17 @@ func CmdGateway(args []string) {
 	sub := args[0]
 	subArgs := args[1:]
 
+	if strings.HasPrefix(sub, "-") {
+		cmdGatewayStart(args)
+		return
+	}
+
 	switch sub {
-	case "start", "up":
+	case "start":
 		cmdGatewayStart(subArgs)
-	case "stop", "down":
+	case "stop":
 		cmdGatewayStop(subArgs)
-	case "status", "st":
+	case "status":
 		cmdGatewayStatus()
 	case "hook":
 		cmdGatewayHook(subArgs)
@@ -40,7 +45,7 @@ func CmdGateway(args []string) {
 		}
 		proxy.CmdBtw(strings.Join(subArgs, " "))
 	default:
-		die("unknown gateway command: %s (valid: start, stop, status, hook, unhook)", sub)
+		die("unknown gateway command: %s (valid: start, stop, status, hook, unhook, token)", sub)
 	}
 }
 
@@ -49,14 +54,77 @@ func cmdGatewayStart(args []string) {
 		fmt.Println("Gateway is already running.")
 		return
 	}
+
+	public := false
+	foreground := false
+	for _, a := range args {
+		if a == "--public" || a == "-p" || a == "public" {
+			public = true
+		}
+		if a == "--foreground" || a == "-f" || a == "foreground" {
+			foreground = true
+		}
+		// -d / --daemon is supported (default mode)
+	}
+
+	if foreground {
+		if public {
+			if err := proxy.SaveBindPublic(true); err != nil {
+				die("enable public bind: %v", err)
+			}
+			tok, _ := proxy.LoadAuthToken()
+			if tok == "" {
+				tok, _ = proxy.IssueNewAuthToken()
+			}
+			fmt.Println("Starting AMUX Gateway in foreground (PUBLIC mode 0.0.0.0:8787)...")
+			fmt.Printf("Access Token: %s\n", tok)
+			cmdGatewayRunDaemon()
+			return
+		}
+		fmt.Println("Starting AMUX Gateway in foreground on http://127.0.0.1:8787...")
+		cmdGatewayRunDaemon()
+		return
+	}
+
+	if public {
+		if err := proxy.SaveBindPublic(true); err != nil {
+			die("enable public bind: %v", err)
+		}
+		tok, _ := proxy.LoadAuthToken()
+		if tok == "" {
+			tok, _ = proxy.IssueNewAuthToken()
+		}
+		fmt.Println("Starting detached AMUX Gateway background service (PUBLIC mode 0.0.0.0:8787)...")
+		if err := gateway.Start(); err != nil {
+			die("failed to start gateway: %v", err)
+		}
+		fmt.Printf("✓ Gateway started successfully in PUBLIC mode (0.0.0.0:8787).\n")
+		fmt.Printf("  Access Token: %s\n", tok)
+		fmt.Printf("  Clients connect with header: 'Authorization: Bearer %s'\n", tok)
+		return
+	}
+
 	fmt.Println("Starting detached AMUX Gateway background service...")
 	if err := gateway.Start(); err != nil {
 		die("failed to start gateway: %v", err)
 	}
-	fmt.Println("✓ Gateway started successfully on http://127.0.0.1:8787")
+	fmt.Println("✓ Gateway started successfully on http://127.0.0.1:8787 (local only)")
 }
 
 func cmdGatewayStop(args []string) {
+	publicReset := false
+	for _, a := range args {
+		if a == "--public" || a == "-p" || a == "public" {
+			publicReset = true
+		}
+	}
+
+	if publicReset {
+		_ = proxy.SaveBindPublic(false)
+		_ = proxy.ClearAuthToken()
+		fmt.Println("Public gateway disabled. Reverted bind to 127.0.0.1 and cleared token.")
+	}
+
 	if !gateway.IsRunning() {
 		fmt.Println("Gateway is not running.")
 		return
@@ -82,6 +150,19 @@ func cmdGatewayStatus() {
 	} else {
 		fmt.Printf("Status:       STOPPED (Direct native Keychain execution)\n")
 		fmt.Printf("Default URL:  %s\n", st.URL)
+	}
+
+	// Public gateway status
+	if proxy.IsPublic() {
+		tok, _ := proxy.LoadAuthToken()
+		fmt.Printf("Public Mode:  ENABLED (Listening on 0.0.0.0:8787)\n")
+		if tok != "" {
+			fmt.Printf("Access Token: %s\n", tok)
+		} else {
+			fmt.Printf("Access Token: none configured (run 'amux gateway token new')\n")
+		}
+	} else {
+		fmt.Printf("Public Mode:  DISABLED (127.0.0.1 local only)\n")
 	}
 
 	fmt.Println("\n== IDE Settings Hooks ==")
@@ -150,13 +231,22 @@ func cmdGatewayRunDaemon() {
 }
 
 func cmdGatewayToken(args []string) {
-	if len(args) > 0 && args[0] == "new" {
-		tok, err := proxy.IssueNewAuthToken()
-		if err != nil {
-			die("generate token: %v", err)
+	if len(args) > 0 {
+		switch args[0] {
+		case "new", "generate":
+			tok, err := proxy.IssueNewAuthToken()
+			if err != nil {
+				die("generate token: %v", err)
+			}
+			fmt.Printf("Issued new gateway token: %s\n", tok)
+			return
+		case "clear", "rm", "delete":
+			if err := proxy.ClearAuthToken(); err != nil {
+				die("clear token: %v", err)
+			}
+			fmt.Println("✓ Gateway token cleared.")
+			return
 		}
-		fmt.Printf("Issued new gateway token: %s\n", tok)
-		return
 	}
 	tok, err := proxy.LoadAuthToken()
 	if err != nil || tok == "" {

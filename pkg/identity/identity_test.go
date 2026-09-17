@@ -105,4 +105,60 @@ func TestIdentity_StoreAndMigrate(t *testing.T) {
 	if health.Status != "healthy" {
 		t.Errorf("expected healthy, got %s", health.Status)
 	}
+
+	// Test SetAutoRotate
+	if err := identity.SetAutoRotate(cfgPath, "test-id-1", false); err != nil {
+		t.Fatalf("SetAutoRotate error: %v", err)
+	}
+	updated, _ := identity.Get(cfgPath, "test-id-1")
+	if updated.CanAutoRotate() {
+		t.Errorf("expected CanAutoRotate false after SetAutoRotate(false)")
+	}
+}
+
+func TestIdentity_AutoRotateExclusion(t *testing.T) {
+	noRotate := false
+	pool := []identity.Identity{
+		{
+			ID:           "sub-1",
+			Provider:     "anthropic",
+			Tier:         identity.TierSubscription,
+			UsagePercent: 96.0,
+			Active:       true,
+		},
+		{
+			ID:           "sub-vip-manual",
+			Provider:     "anthropic",
+			Tier:         identity.TierSubscription,
+			UsagePercent: 10.0,
+			Active:       false,
+			AutoRotate:   &noRotate, // Excluded from auto-switch!
+		},
+		{
+			ID:           "sub-3-auto",
+			Provider:     "anthropic",
+			Tier:         identity.TierSubscription,
+			UsagePercent: 20.0,
+			Active:       false,
+		},
+	}
+
+	// When sub-1 exhausts, NextSubscription must SKIP sub-vip-manual and select sub-3-auto!
+	next, ok := identity.NextSubscription("anthropic", "sub-1", pool, 95.0)
+	if !ok || next.ID != "sub-3-auto" {
+		t.Fatalf("expected NextSubscription to skip manual-only account and select sub-3-auto, got %v (ok=%v)", next, ok)
+	}
+
+	// If sub-3-auto also exhausts, sub-vip-manual must STILL NOT be auto-selected!
+	pool[2].UsagePercent = 99.0
+	nextAfter, okAfter := identity.NextSubscription("anthropic", "sub-1", pool, 95.0)
+	if okAfter || nextAfter != nil {
+		t.Fatalf("expected NextSubscription to return nil/false when only manual-only accounts remain under threshold, got: %v", nextAfter)
+	}
+
+	// HasAvailableSubscription must also ignore manual-only accounts for auto-recovery
+	avail, hasAvail := identity.HasAvailableSubscription("anthropic", pool, 95.0)
+	if hasAvail || avail != nil {
+		t.Fatalf("expected HasAvailableSubscription to return false when only manual-only accounts are available, got: %v", avail)
+	}
 }

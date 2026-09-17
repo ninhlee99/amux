@@ -1,348 +1,176 @@
-# Kiến Trúc Dự Án `amux` (STRUCT.md)
+# Kiến Trúc & Thiết Kế Hệ Thống AMUX (STRUCT.md)
 
-> **AI / agent:** Tra cứu nhanh theo mục tiêu → [`docs/AI_CODEBASE_MAP.md`](docs/AI_CODEBASE_MAP.md) + [`docs/ai-locate.yaml`](docs/ai-locate.yaml) + [`AGENTS.md`](AGENTS.md).  
-> File này là tài liệu kiến trúc **đầy đủ**; không cần đọc hết trước khi sửa một chỗ nhỏ.
-
-Dự án `amux` (CLI `am`) được xây dựng theo **Standard Go Project Layout**, kết hợp tư tưởng **Domain-Driven Design (DDD)** và **Plugin/Adapter Architecture**.
-
-Tài liệu này mô tả chi tiết toàn bộ cây thư mục, cấu trúc mã nguồn, phân tầng trách nhiệm các package, cùng các luồng dữ liệu cốt lõi trong hệ thống.
+AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và **Plugin/Adapter Architecture**, đóng vai trò là một **AI Development Runtime & Universal AI Gateway** cho môi trường phát triển hiện đại.
 
 ---
 
-## 1. Sơ Đồ Cây Thư Mục Toàn Diện
+## 1. Sơ Đồ Kiến Trúc Phân Tầng
 
 ```
-amux/
-├── main.go                         # Entrypoint mỏng — cli.Run(os.Args)
-├── accounts.example.json           # Schema mẫu cấu hình providers (ID brand[:method]:NN)
-├── install.sh                      # Script cài đặt tự động từ source (macOS, Go 1.26+)
-├── STRUCT.md                       # Kiến trúc & chi tiết thiết kế hệ thống
-├── AGENTS.md                       # Entry ngắn cho AI agent
-├── docs/
-│   ├── AI_CODEBASE_MAP.md          # Bản đồ tra cứu theo mục tiêu (đọc trước khi grep repo)
-│   ├── ai-locate.yaml              # Index machine-readable: keywords → files → tests
-│   ├── WORKSPACE_MAP.md            # Map per-client: am map + ~/.am/workspaces/
-│   ├── GRAPH.md                    # Neural mesh + hubs (commit — portable amux)
-│   ├── MODULES.md                  # Stub → GRAPH (commit)
-│   └── MAP_GENERATED.txt           # Metadata scan root=. (commit)
-├── README.md                       # Tài liệu hướng dẫn sử dụng và tra cứu CLI
-├── go.mod / go.sum                 # Go modules & dependencies
-│
-├── assets/                         # Tài nguyên thương hiệu & UI
-│   ├── logo.svg                    # Vector logo
-│   └── logo.png                    # Raster logo
-│
-├── bin/                            # Binary đầu ra sau build
-│   └── am                          # Symlink hoặc binary tiện ích CLI
-│
-├── commands/                       # Slash command templates cho Claude Code
-│   └── feedback.md                 # Template lệnh /am:feedback
-└── pkg/
-    ├── cli/                        # [ENTRYPOINT] Bộ phân phối lệnh CLI
-    │   ├── cli.go                  # Dispatcher chính, flags, setup, update, uninstall, run, proxy, logs...
-    │   ├── account.go              # Quản lý toggle account (off/on), pool commands, ID resolver
-    │   └── cli_test.go             # Unit tests cho CLI parsing & actions
-    │
-    ├── types/                      # [DOMAIN CORE] Contracts & Types dùng chung (Zero internal deps)
-    │   ├── chat.go                 # ChatMessage, ChatRequest, StreamChunk, ProviderAdapter, ToolDef, ToolCall
-    │   ├── profile.go              # ProfileMeta, Artifact, Token, Profile snapshot info
-    │   ├── usage.go                # UsageEntry, UsageSummary, lọc theo project/model/thời gian
-    │   ├── config.go               # BaseDir() (~/.am), ToolConfig, đường dẫn tệp tin cấu hình
-    │   ├── id.go                   # ParseID, FormatID (brand[:method]:NN)
-    │   ├── account_id.go           # CanonicalAccountID, chuẩn hóa định danh tài khoản
-    │   ├── id_test.go              # Unit tests định dạng ID
-    │   └── account_id_test.go      # Unit tests chuẩn hóa ID
-    │
-    ├── auth/                       # [AUTH] Quản lý khóa, OAuth & Mã hóa
-    │   ├── keychain.go             # Wrapper đọc/ghi an toàn qua macOS Keychain
-    │   ├── token.go                # Đọc, xác thực và refresh Claude OAuth tokens
-    │   ├── crypto.go               # Mã hóa/giải mã AES-256-GCM (AMENC1:), Scrypt key derivation
-    │   └── crypto_test.go          # Tests mã hóa AES-256-GCM
-    │
-    ├── profile/                    # [PROFILE] Quản lý snapshot hồ sơ tài khoản CLI
-    │   ├── manager.go              # CRUD hồ sơ (.amp archive, .meta.json), enable/disable
-    │   ├── transfer.go             # Đóng gói xuất/nhập hồ sơ mã hóa (.amexp) giữa các máy
-    │   ├── manager_test.go         # Tests quản lý profile và đồng bộ
-    │   └── disabled_test.go        # Tests trạng thái disable profile
-    │
-    ├── provider/                   # [PLUGIN] LLM Adapters & Quản lý accounts.json
-    │   ├── config.go               # Load/Save accounts.json, migrate ID cũ, LoadAccounts, LoadAllAddressable
-    │   ├── pool_slot.go            # Metadata và runtime state cho các slot trong rotation pool
-    │   ├── openai.go               # Adapter OpenAI-compatible chuẩn (GitHub, Groq, OpenRouter, vLLM...)
-    │   ├── gemini.go               # Adapter Google Gemini Native API (hỗ trợ reasoning/thinking escalation)
-    │   ├── gemini_web.go           # Adapter Gemini Web session (cookie xác thực)
-    │   ├── chatgpt_web.go          # Adapter ChatGPT Web session (access token, conversation threading)
-    │   ├── chatgpt_sentinel.go     # Giải mã Proof-of-Work SHA3-512 và lấy token OpenAI Sentinel
-    │   ├── claude_web.go           # Adapter Claude Web session (sessionKey)
-    │   ├── codex_cli.go            # Tái sử dụng session token của Codex CLI thành adapter codex:NN
-    │   ├── match.go                # Tìm kiếm và so khớp linh hoạt ID provider (MatchID, fuzzy match)
-    │   ├── prompt.go               # Nối ghép lịch sử hội thoại (BuildConcatenatedPrompt) cho web adapters
-    │   ├── stream.go               # Trình đọc và phân tích SSE (Server-Sent Events) stream chunks
-    │   ├── uuid.go                 # Sinh UUID nhanh cho phiên web chat
-    │   ├── http_client.go          # HTTP client dùng chung với connection pooling & timeouts
-    │   └── *_test.go               # Kiểm thử cho adapter, sentinel, prompt, matching, escalation
-    │
-    ├── browser/                    # [BROWSER] Trích xuất Cookie & Tự động hóa trình duyệt
-    │   ├── cookies.go              # Giải mã cookie trình duyệt Chromium từ macOS Keychain
-    │   ├── cdp_login.go            # Tự động hóa luồng đăng nhập qua Chrome DevTools Protocol (CDP)
-    │   ├── claude_account.go       # Bóc tách thông tin tài khoản Claude từ session trình duyệt
-    │   └── *_test.go               # Kiểm thử trích xuất cookie và tài khoản
-    │
-    ├── router/                     # [ROUTER] Bộ điều tuyến & Phân loại tác vụ
-    │   ├── pool.go                 # AccountPoolRouter: quản lý pool, ưu tiên priority, 30m 429 cooldown, X-Provider
-    │   ├── classifier.go           # ClassifyTask: phân tích độ phức tạp, tác vụ nặng, bật thinking, escalate Pro
-    │   └── *_test.go               # Tests pool routing, task classification, preferred failover
-    │
-    ├── bridge/                     # [BRIDGE] Cầu nối giao thức & Chuyển đổi định dạng
-    │   ├── openai.go               # Xử lý /v1/chat/completions và /v1/models theo chuẩn OpenAI
-    │   ├── responses.go            # Xử lý /v1/responses cho Codex CLI (OpenAI Responses wire)
-    │   ├── claude.go               # Xử lý /v1/messages cho Claude Code (Anthropic ↔ Canonical)
-    │   ├── gemini.go               # Xử lý /v1beta/models/... cho Antigravity (Google GenAI ↔ Canonical)
-    │   ├── headers.go              # Xử lý routing headers (X-Provider, X-Model) và xác thực
-    │   ├── requestlog.go           # Ghi log I/O chi tiết của request/response phục vụ quan sát
-    │   ├── cross_tool_matrix_test.go # Ma trận kiểm thử tương thích chéo 14/14 test cases tool proxying
-    │   └── *_test.go               # Tests bridge OpenAI, Claude, Gemini, Thinking, Tool execution
-    │
-    ├── ctxshrink/                  # [CONTEXT OPTIMIZATION] Tối ưu hóa & nén token context window
-    │   ├── shrink.go               # Dynamic token budget (20k / 85k runes), head/tail pruning, tool deduplication
-    │   └── shrink_test.go          # Tests nén token, cắt tỉa kết quả tool và bảo toàn turn hội thoại gần nhất
-    │
-    ├── privacy/                    # [PRIVACY] Kiểm duyệt và ẩn danh dữ liệu
-    │   ├── redact.go               # Che email, API key, webhook, token, credit card trên payload outbound
-    │   └── redact_test.go          # Tests cơ chế lọc và ẩn thông tin nhạy cảm
-    │
-    ├── guard/                      # [GUARD] Lớp phòng thủ chống quét & bảo vệ tài khoản (Anti-Ban Engine)
-    │   ├── guard.go                # Facade điều phối các cơ chế bảo vệ, quản lý singleton
-    │   ├── sanitizer.go            # Khử rò rỉ headers nội bộ (X-Provider, Via, X-Forwarded-*)
-    │   ├── pacer.go                # Điều tiết nhịp độ (pacing), trễ giả lập (micro-jitter) & exponential backoff
-    │   ├── health.go               # Chấm điểm Health Score (0-100), Circuit Breaker & Auto-Quarantine cách ly
-    │   ├── affinity.go             # Session & Thread Affinity (ghim tài khoản cố định theo phiên làm việc)
-    │   ├── proxy_egress.go         # Quản lý proxy riêng biệt (HTTP, SOCKS5) cho từng tài khoản/profile
-    │   └── guard_test.go           # Unit tests toàn diện cho bộ guard
-    │
-    ├── tools/                      # [TOOL MID-LAYER] Chuẩn hóa Tool Calling đa nền tảng (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP)
-    │   ├── dialect.go              # Canonical Tool types (ToolDef, ToolCall, ToolResult)
-    │   ├── claude.go               # Chuyển đổi tool schema và tool_use / tool_result của Anthropic
-    │   ├── openai.go               # Chuyển đổi tools.function và tool_calls của OpenAI
-    │   ├── gemini.go               # Chuyển đổi functionDeclarations và functionCall của Gemini
-    │   ├── cursor.go               # Dialect tương thích công cụ Cursor IDE
-    │   ├── codex.go                # Dialect tương thích công cụ Codex CLI
-    │   ├── webloop.go              # Giả lập tool calling (<tool_call>) cho các web session models
-    │   └── *_test.go               # Tests tool conversions, dialect loops, webloop emulation
-    │
-    ├── utils/                      # [UTILS] Tiện ích schema dùng chung
-    │   ├── schema.go               # Chuyển đổi và chuẩn hóa JSON Schema giữa các provider
-    │   └── schema_test.go          # Tests chuẩn hóa schema
-    │
-    ├── proxy/                      # [GATEWAY DAEMON] Máy chủ Proxy :8787
-    │   ├── server.go               # HTTP :8787, routing, /_am/*
-    │   ├── rotator.go              # Xoay vòng tài khoản Claude OAuth, theo dõi giới hạn 5h/7d, auto-switch
-    │   ├── addr.go                 # Chuẩn hóa địa chỉ lắng nghe, phát hiện bind public/local
-    │   ├── authtoken.go            # Cấp phát API key tạm thời amux-<hex>, xác thực khi bind public, rate limit
-    │   ├── tunnel.go               # Xử lý HTTP CONNECT tunneling cho HTTP_PROXY / HTTPS_PROXY
-    │   ├── bind.go                 # Cấu hình socket network listener
-    │   ├── client.go               # Giao tiếp client với proxy daemon (ProxyUp, ProxyBase, CmdProxyDownPublic, Sync)
-    │   ├── lifecycle.go            # Theo dõi vòng đời phiên làm việc (PID của Claude Code/AGY tabs)
-    │   ├── supervisor.go           # Watchdog giám sát và xử lý phục hồi khi dịch vụ suy giảm
-    │   ├── passthrough.go          # Handler reverse-proxy trực tiếp tới Anthropic khi graceful shutdown
-    │   └── *_test.go               # Tests server, rotator, authtoken, lifecycle, supervisor
-    │
-    ├── monitor/                    # [OBSERVABILITY] Giám sát, chẩn đoán lỗi & sự kiện
-    │   ├── store.go                # Lưu trữ nhật ký sự kiện (~/.am/events.log) và request I/O (~/.am/requests.log)
-    │   ├── sink.go                 # Ghi nhật ký vào terminal, ~/.am/events.log, ~/.am/requests.log
-    │   ├── error_diag.go           # Lưu vết lỗi turns (~/.am/errors.log), log_stats.json, 7-day retention cleanup
-    │   └── *_test.go               # Tests query lưu trữ và chẩn đoán lỗi
-    │
-    ├── usage/                      # [METRICS] Đo lường & thống kê tiêu thụ token
-    │   ├── capture.go              # Tee-reader usage, đo lường token streaming theo project
-    │   ├── project.go              # Định danh thư mục dự án dựa trên port kết nối của client
-    │   ├── usage.go                # Thống kê và tổng hợp token theo ngày, tuần, tháng, project, model
-    │   └── *_test.go               # Tests capture và tính toán usage
-    │
-    ├── term/                       # [TERM STYLING] Giao diện dòng lệnh tối giản & Bảng màu Clean ANSI
-    │   ├── style.go                # Định nghĩa màu sắc ANSI, palette thích ứng Dark/Light, format label & header
-    │   ├── log.go                  # Định dạng thông điệp log theo cấp độ với nhãn thời gian thực
-    │   └── style_test.go           # Tests render style & ANSI formatting
-    │
-    ├── hook/                       # [INTEGRATION] Vòng đời Hooks & Tự động cập nhật
-    │   ├── hook.go                 # Quản lý lifecycle hooks cho Claude Code, AGY, Codex, Cursor
-    │   ├── launchctl.go            # Đồng bộ biến môi trường vào macOS GUI session qua launchctl
-    │   ├── feedback.go             # Hỗ trợ mở issue GitHub kèm thông tin hệ thống đã khử thông tin nhạy cảm
-    │   ├── autoupdate.go           # Tự động cập nhật daemon nền qua macOS LaunchAgent
-    │   └── *_test.go               # Tests hook configuration, launchctl sync, autoupdate
-    │
-    ├── env/                        # [SHELL ENV] Xuất & lưu trữ cấu hình môi trường
-    │   ├── env.go                  # eval "$(am env)", đồng bộ biến môi trường, am env set/get/rm/list
-    │   └── env_test.go             # Tests shell environment output và persistence
-    │
-    └── ui/                         # [PRESENTATION] Giao diện CLI tương tác
-        ├── picker.go               # Menu tương tác chọn nhanh profile hoặc provider bằng phím mũi tên
-        ├── status.go               # Báo cáo trạng thái hoạt động am status và am guard
-        └── login.go                # Wizard hướng dẫn đăng nhập tài khoản trình duyệt và cấu hình API
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           HUMAN DEVELOPER                               │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         AI APPLICATIONS                                 │
+│          (Claude Code CLI, Cursor IDE, Codex CLI, Antigravity)          │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+         ┌───────────────────────────┴───────────────────────────┐
+         │                                                       │
+         ▼ [Phase 1: Quota Healthy]                              ▼ [Phase 2: All Subs Exhausted]
+┌─────────────────────────────────────────┐             ┌───────────────────────────────────┐
+│     NATIVE DIRECT MODE (Zero-Touch)     │             │     AMUX UNIVERSAL AI GATEWAY     │
+│   IDE đọc Token từ macOS Keychain       │             │   Proxy Server :8787 (Daemon)     │
+│   Gọi thẳng Upstream (0ms Overhead)     │             │   Tự động Hook ANTHROPIC_BASE_URL │
+│   Xoay tua ngầm Keychain khi chạm 95%   │             │   Auto-Detach khi Quota hồi phục  │
+└────────────────────┬────────────────────┘             └─────────────────┬─────────────────┘
+                     │                                                    │
+                     │                                                    ▼
+                     │                                  ┌───────────────────────────────────┐
+                     │                                  │       UNIVERSAL TOOL ENGINE       │
+                     │                                  │   Canonical UniversalTool IR      │
+                     │                                  │   100% JSON Schema Preserved      │
+                     │                                  │   Bidirectional MCP & Web-Loop    │
+                     │                                  └─────────────────┬─────────────────┘
+                     │                                                    │
+                     ▼                                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                              PROVIDERS & MODEL BACKENDS                                   │
+│  Tầng 1: Subscriptions (OAuth PKCE)  │ Tầng 2: Web Sessions (CDP) │ Tầng 3: Metered API   │
+│  Anthropic Pro/Team, OpenAI Pro/Plus │ Claude Web, ChatGPT Web    │ OpenRouter, DeepSeek, │
+│  Codex CLI Reuse, Google AGY OAuth   │ Gemini Web (Free Quota)    │ Ollama, vLLM, Custom  │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Chi Tiết Trách Nhiệm Các Package
+## 2. Phân Tầng Trách Nhiệm Các Package Cốt Lõi
 
-| Package | Phân Tầng | Trách nhiệm chính |
+| Phân Tầng | Package | Trách Nhiệm Vận Hành |
 | :--- | :--- | :--- |
-| `main.go` & `pkg/cli` | **Entrypoint** | Tiếp nhận lệnh CLI; điều phối tài khoản, pool, proxy, guard, login, logs, update, uninstall, run tool... |
-| `pkg/types` | **Domain Core** | Định nghĩa toàn bộ contracts, interfaces, và chuẩn định dạng ID (`brand[:method]:NN`). Tuyệt đối không import các package nội bộ khác. |
-| `pkg/auth` | **Security / Auth** | Đọc/ghi macOS Keychain, quản lý & refresh OAuth token của Claude, mã hóa AES-256-GCM (`AMENC1:`) bằng master key Scrypt. |
-| `pkg/profile` | **Profile Domain** | Đóng gói snapshot môi trường CLI (`.amp`), chuyển đổi export/import (`.amexp`), quản lý bật/tắt profile trong xoay vòng. |
-| `pkg/provider` | **Adapter Plugin** | Hiện thực các LLM provider (OpenAI API, Gemini Native API, Claude/ChatGPT/Gemini Web session, Codex CLI reuse); tự động giải mã Sentinel PoW challenge (`chatgpt_sentinel.go`); đồng bộ `accounts.json`. |
-| `pkg/browser` | **Infrastructure** | Tự động hóa đăng nhập trình duyệt (CDP) và trích xuất cookie Chromium từ macOS Keychain. |
-| `pkg/router` | **Routing & Intelligence** | Quản lý failover pool theo mức độ ưu tiên (`priority`), tự động phạt cooldown khi gặp 429; phân loại độ phức tạp tác vụ (`classifier.go`) để tự động kích hoạt thinking mode hoặc escalate Pro model. |
-| `pkg/bridge` | **Protocol Bridge** | Cầu nối đa giao thức: OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), Google Gemini (`/v1beta/models/...`); điều hướng bằng `X-Provider`/`X-Model`; ghi log I/O bảo mật. |
-| `pkg/privacy` | **Data Protection** | Quét và làm mờ (redact) các dữ liệu nhạy cảm (email, API key, webhook, token, thẻ ngân hàng) trước khi gửi ra upstream. |
-| `pkg/guard` | **Anti-Ban Engine** | Lớp phòng thủ 5 tầng chống bị phát hiện/gắn cờ tài khoản: Header Sanitizer, Traffic Pacing/Jitter, Health Score & Circuit Breaker, Session Affinity, Egress Proxy riêng biệt. |
-| `pkg/tools` | **Tool Mid-Layer** | Chuẩn hóa schema công cụ hai chiều (Bi-directional) giữa Claude Code, Codex CLI, Cursor, Antigravity (AGY), Subagents, và MCP tools; giả lập vòng lặp gọi tool (`webloop.go`) cho web sessions. |
-| `pkg/ctxshrink` | **Context Optimization** | Tối ưu hóa & nén ngữ cảnh (dynamic token budget 20k, cắt tỉa kết quả tool cũ, deduplication, bảo toàn turn mới nhất) ngăn tràn context Web sessions (ChatGPT/Claude/Gemini Web). |
-| `pkg/utils` | **Shared Utilities** | Tiện ích chuyển đổi và chuẩn hóa JSON Schema dùng chung giữa các adapter. |
-| `pkg/proxy` | **Gateway Daemon** | `:8787`, Rotator Claude, API key tạm thời (`authtoken.go`), CONNECT tunnel, admin `/_am/*`. |
-| `pkg/monitor` | **Observability** | Ghi nhật ký sự kiện (`events.log`), lưu vết I/O (`requests.log`), chẩn đoán lỗi turn (`errors.log`) và tự động dọn dẹp sau 7 ngày (`error_diag.go`). |
-| `pkg/usage` | **Metrics & Analytics** | Token streaming + thống kê tiêu thụ theo project/model/thời gian. |
-| `pkg/term` | **Term Styling** | Bảng màu ANSI thích ứng Dark/Light, định dạng dòng lệnh tối giản, nhãn rõ ràng, log có gắn nhãn thời gian thực. |
-| `pkg/hook` | **Integration / System** | Cài đặt lifecycle hooks chuẩn hóa cho Claude Code, Antigravity, Codex, Cursor; đồng bộ biến môi trường với `launchctl`; tự động cập nhật qua LaunchAgent. |
-| `pkg/env` | **Shell Environment** | Cung cấp lệnh xuất môi trường `eval "$(am env)"`, lưu trữ cấu hình môi trường tùy biến (`am env set/get/rm/list`). |
-| `pkg/ui` | **Presentation** | Giao diện dòng lệnh tương tác: menu chọn nhanh `picker`, báo cáo trạng thái `status` & `guard`, wizard đăng nhập `login`. |
+| **Runtime Entry** | `pkg/cli` | Tiếp nhận và điều phối bộ lệnh CLI tối giản (`setup`, `status`, `usage`, `id`, `gateway`, `config`, `doctor`). |
+| **Domain Contracts** | `pkg/types` | Hạt nhân độc lập: Định nghĩa `ChatRequest`, `ChatMessage`, `StreamChunk`, `ProviderAdapter`, `UniversalTool`, và `BaseDir()` (`~/.amux`). Tuyệt đối không import package nội bộ khác. |
+| **Security & Identity** | `pkg/identity` & `pkg/auth` | Quản lý danh tính phẳng (`identities.json`), đọc/ghi an toàn qua macOS Keychain, mã hóa AES-256-GCM, quản lý vòng đời OAuth PKCE token và tính toán ngưỡng failover. |
+| **Universal Gateway** | `pkg/proxy` | Máy chủ Reverse Proxy HTTP tại cổng `:8787`, cơ chế bảo mật Public Gateway bằng Ephemeral Bearer Token (`amux-<hex>`), bộ đệm chống brute-force (10 lỗi/phút), và chuyển tiếp bitwise 1:1. |
+| **Universal Tool Engine** | `pkg/tools` | Mô hình công cụ chuẩn mực (`UniversalTool` IR), bộ chuyển đổi hai chiều Anthropic ↔ OpenAI ↔ Gemini ↔ MCP, bảo toàn cú pháp (`pkg/tools/protect.go`), và bộ giả lập Web-Loop (`webloop.go`). |
+| **Multi-Tier Router** | `pkg/router` | Điều phối thứ tự ưu tiên 3 tầng (Subscription → Web → API Key), quản lý cooldown tự thích ứng theo header `Retry-After`, phân loại tác vụ (`classifier.go`), và loại trừ tài khoản `AUTO-SWITCH: OFF`. |
+| **Protocol Bridges** | `pkg/bridge` | Cầu nối đa giao thức: OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini `/v1beta/models/...`, bảo toàn CoT Thinking và Gemini Thought Signatures. |
+| **Anti-Ban Defense** | `pkg/guard` | Lớp phòng vệ 5 tầng: Header Sanitizer, Micro-jitter Pacing, Circuit Breaker, Session Affinity, và Egress Proxy riêng biệt. |
+| **Context Optimization** | `pkg/ctxshrink` | Bảo tồn Prompt Cache Prefix cho Subscription accounts; chỉ kích hoạt nén ngữ cảnh có chọn lọc trên Web accounts hẹp. |
+| **Browser CDP Engine** | `pkg/browser` | Tự động phát hiện Chromium mặc định của hệ điều hành (Brave, Edge, Chrome) và tự động trích xuất cookie xác thực qua Chrome DevTools Protocol. |
+| **Token Analytics** | `pkg/usage` | Đo lường token stream thời gian thực và tổng hợp theo 3 chế độ chuẩn: `day`, `week`, `month`. |
+| **Statusline UI** | `pkg/ui` | Render statusline hiển thị thời gian thực cho Claude Code, Cursor và Codex, hiển thị tài khoản, token và thanh đo hạn mức 5h/7d. |
 
 ---
 
-## 3. Các Luồng Dữ Liệu Cốt Lõi
+## 3. Các Luồng Hoạt Động Cốt Lõi
 
-### Luồng 1: OpenAI Gateway (`/v1/chat/completions`) & Task Classifier
+### Luồng 1: Silent Keychain Rotation (Zero-Touch Native Mode)
+
+Khi nhà phát triển sử dụng các công cụ IDE chính thức (Claude Code, Cursor, Codex):
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Client (Cursor / SDK / Continue)
-    participant Proxy as Proxy Gateway (:8787)
-    participant Bridge as bridge.HandleChatCompletions
-    participant Privacy as pkg/privacy (Redact)
-    participant Classifier as router.ClassifyTask
-    participant Router as AccountPoolRouter
-    participant P1 as Provider 1 (Primary)
-    participant P2 as Provider 2 (Failover)
+    actor Dev as Developer / IDE (Claude Code)
+    participant KC as macOS Keychain
+    participant AMUX as AMUX Monitor (Background)
+    participant Upstream as Anthropic Upstream API
 
-    Client->>Proxy: POST /v1/chat/completions<br/>(Optional: X-Provider / X-Model)
-    Proxy->>Bridge: Chuyển tiếp request
-    Bridge->>Privacy: Lọc dữ liệu nhạy cảm (API keys, secrets)
-    Privacy-->>Bridge: Request đã làm mờ
-    Bridge->>Classifier: Phân tích nội dung (Độ phức tạp / Task nặng)
-    Classifier-->>Bridge: TaskClassification (NeedsThinking / Pro Escalation)
+    Dev->>KC: Đọc token Claude Code-credentials
+    KC-->>Dev: Token tài khoản Sub-1
+    Dev->>Upstream: POST /v1/messages (Direct 0ms Latency)
+    Upstream-->>Dev: Phản hồi SSE + Header hạn mức 5h/7d
+    AMUX->>Upstream: Sniffing header hạn mức hoặc bắt lỗi 429
     
-    alt Có chỉ định X-Provider
-        Bridge->>Router: Gửi trực tiếp đến LookupAdapter(id)
-    else Đi qua Rotation Pool
-        Bridge->>Router: router.Send(ChatRequest)
-        Router->>P1: Gửi stream request
-        alt Gặp lỗi 429 hoặc Authentication Failed
-            Note over Router: Đưa P1 vào danh sách cooldown 30 phút
-            Router->>P2: Tự động chuyển mạch sang provider kế tiếp
-        end
+    alt Hạn mức Sub-1 chạm ngưỡng ≥ 95% (Còn Sub-2 khả dụng)
+        Note over AMUX: Kích hoạt Silent Keychain Rotation
+        AMUX->>KC: Ghi đè token của Sub-2 vào Keychain
+        Dev->>KC: Lần gọi tiếp theo: đọc token mới
+        KC-->>Dev: Token tài khoản Sub-2
+        Dev->>Upstream: Tiếp tục gọi Direct Upstream (Không qua Gateway)
     end
-    Router-->>Bridge: StreamChunk (Tokens & ToolCalls)
-    Bridge-->>Client: Server-Sent Events (SSE) theo chuẩn OpenAI
 ```
 
 ---
 
-### Luồng 2: Claude Code (`/v1/messages`) & Tool Execution
+### Luồng 2: Conditional Gateway Injection & Multi-Tier Failover
 
-Claude Code giữ toàn quyền thực thi công cụ cục bộ (Bash, Read, Edit, Write...). amux đóng vai trò làm cổng chuyển ngữ và định tuyến trong suốt:
+Xảy ra khi **100% tài khoản Subscription cạn kiệt**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AMUX as AMUX Auto-Hook Monitor
+    participant IDE as IDE Settings (~/.claude/settings.json)
+    participant Gateway as Universal Gateway (:8787)
+    participant Router as AccountPoolRouter
+    participant Web as Tầng Web Accounts (CDP)
+    participant API as Tầng Metered API Key
+
+    Note over AMUX: Phát hiện AllSubscriptionsExhausted = true
+    AMUX->>IDE: Ghi ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
+    Note over IDE: Mọi request được chuyển tiếp qua Gateway :8787
+    
+    IDE->>Gateway: POST /v1/messages
+    Gateway->>Router: pool.Send(ChatRequest)
+    Note over Router: Subscriptions đang Cooldown -> Failover xuống Tầng Web
+    
+    alt Tầng Web khả dụng (Claude Web / ChatGPT Web)
+        Router->>Web: Thực thi qua Web Session (CDP)
+        Web-->>Gateway: SSE Stream giả lập bởi webloop.go
+    else Tầng Web cũng hết hạn
+        Router->>API: Failover xuống API Key (OpenRouter/DeepSeek/Ollama)
+        API-->>Gateway: Stream chuẩn
+    end
+    Gateway-->>IDE: Stream SSE nguyên bản
+    
+    Note over AMUX: Khi Sub hồi phục (Usage < 95%):
+    AMUX->>IDE: Gỡ ANTHROPIC_BASE_URL (Unhook)
+    AMUX->>IDE: Trả về chế độ Direct Native Mode
+```
+
+---
+
+### Luồng 3: Universal Tool Engine & Web-Loop Emulation
+
+Đảm bảo tài khoản Web Session vẫn có khả năng thực thi công cụ tương đương API trả phí:
 
 ```mermaid
 flowchart TD
-    Claude["Claude Code Client"] -->|"POST /v1/messages + tools[]"| Proxy["Proxy Gateway :8787"]
-    Proxy --> ModeCheck{"Kiểm tra tài khoản & Chế độ"}
+    Client["IDE Client (Claude Code / Cursor)"] -->|"Gửi tools[] & messages"| Gateway["Gateway :8787"]
+    Gateway --> Canonical["Chuyển sang UniversalTool IR"]
+    Canonical --> CheckBackend{"Backend phục vụ"}
 
-    ModeCheck -->|"Tài khoản Claude OAuth khả dụng"| Upstream["Reverse-proxy api.anthropic.com"]
-    Upstream --> Rotator["Rotator theo dõi hạn mức 5h/7d"]
-    Rotator -->|"Chạm ngưỡng (>=95%) hoặc lỗi 429"| AutoSwitch["Tự động chuyển Profile Claude khác"]
-    Upstream --> Usage["Ghi nhận usage.log"]
-    Upstream -->|"SSE tool_use (Native)"| Claude
+    CheckBackend -->|"Native API (Claude/OpenAI/Gemini)"| NativeSend["Gửi tools[] theo Dialect tương ứng"]
+    NativeSend --> ParseNative["Nhận tool_calls / tool_use chuẩn"]
 
-    ModeCheck -->|"Chế độ Provider Pool / Hết quota Claude"| Bridge["bridge.HandleClaudeMessages"]
-    Bridge --> Tools["pkg/tools: Chuyển đổi dialect tools"]
-    Tools --> Privacy["pkg/privacy: Redact secrets"]
-    Privacy --> Router["AccountPoolRouter / X-Provider"]
-    Router --> ProviderType{"Loại Adapter"}
+    CheckBackend -->|"Web Session (Không có Function Calling)"| WebLoop["pkg/tools/webloop.go"]
+    WebLoop --> Inject["Nạp định nghĩa UniversalTool vào System Prompt"]
+    Inject --> WebChat["Gửi tới Web Chat Session (Claude/ChatGPT/Gemini Web)"]
+    WebChat --> BócTách["Bóc tách <tool_call>... hoặc ```tool_call..."]
+    BócTách --> ParseNative
 
-    ProviderType -->|"OpenAI API Compatible"| APIUpstream["Gửi tools[] chuẩn OpenAI"]
-    APIUpstream -->|"tool_calls"| ToolsCollect["Gom tool_calls thành tool_use Anthropic"]
-    
-    ProviderType -->|"Web Session (ChatGPT/Claude/Gemini)"| WebLoop["pkg/tools/webloop: Emulate Tool Loop"]
-    WebLoop -->|"Bóc tách <tool_call> / XML / Bash fences"| ToolsCollect
-
-    ToolsCollect -->|"SSE content_block: tool_use"| Claude
-    Claude -->|"Thực thi tool cục bộ (Bash, Read...)"| Claude
-    Claude -->|"POST /v1/messages + tool_result"| Proxy
+    ParseNative --> FormatSSE["Format thành SSE content_block: tool_use"]
+    FormatSSE --> Client
+    Client -->|"Thực thi Tool cục bộ (Bash, Read, Edit...)"| Client
+    Client -->|"Gửi tool_result"| Gateway
 ```
 
 ---
 
-### Luồng 3: Gemini / Antigravity Gateway (`/v1beta/models/...`)
+## 4. Nguyên Tắc Vận Hành Bất Biến
 
-Antigravity (AGY CLI & IDE) sử dụng giao thức Gemini Native để giao tiếp:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor AGY as Antigravity (AGY CLI / IDE)
-    participant Proxy as Proxy Gateway (:8787)
-    participant Bridge as bridge.HandleGeminiGenerateContent
-    participant Tools as pkg/tools (Gemini Dialect)
-    participant Router as AccountPoolRouter
-    participant Upstream as LLM Provider (Gemini / OpenAI / Web)
-
-    AGY->>Proxy: POST /v1beta/models/...:streamGenerateContent<br/>functionDeclarations[]
-    Proxy->>Bridge: Điều phối request
-    Bridge->>Tools: Chuyển functionDeclarations sang Canonical Tools
-    Bridge->>Router: pool.Send(ChatRequest)
-    Router->>Upstream: Thực thi request
-    Upstream-->>Router: StreamChunk (Content & FunctionCalls)
-    Router-->>Bridge: Chuyển đổi về Gemini format (functionCall)
-    Bridge-->>AGY: SSE chunks với Gemini wire structure
-```
-
----
-
-### Luồng 4: Quản Lý Bật/Tắt Tài Khoản & Cơ Chế Hot-Reload
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Người dùng
-    participant CLI as CLI (am on / off / pool)
-    participant Storage as File lưu trữ (~/.am)
-    participant Proxy as Proxy Daemon
-    participant Router as Router & Rotator
-
-    User->>CLI: am off <id> / am pool remove <id>
-    CLI->>Storage: Cập nhật Enabled=false (hoặc Profile Disabled)
-    CLI->>Proxy: Gửi tín hiệu đồng bộ GET /_am/sync
-    Proxy->>Router: Nạp lại cấu hình tức thì (Hot-Reload)
-    Router-->>Proxy: Đồng bộ thành công không cần khởi động lại
-    CLI-->>User: Xác nhận tài khoản đã ra khỏi vòng xoay (OUT)
-    
-    Note over User,Router: Tài khoản OUT vẫn có thể được gọi đích danh<br/>thông qua header X-Provider: <id>
-```
-
----
-
-## 4. Nguyên Tắc Thiết Kế & Mở Rộng Hệ Thống
-
-1. **Phụ thuộc một chiều (Zero Circular Dependencies):**
-   - `pkg/types` là hạt nhân cốt lõi, định nghĩa contracts và không bao giờ import ngược bất kỳ package nào trong dự án.
-2. **Context & Session Retention:**
-   - Mọi adapter phục vụ failover bắt buộc phải đảm bảo duy trì toàn vẹn lịch sử hội thoại thông qua `BuildConcatenatedPrompt` hoặc cấu trúc message chuẩn.
-3. **Failover tự phục hồi (Graceful Failover):**
-   - Khi gặp mã lỗi HTTP 429 hoặc lỗi xác thực từ nhà cung cấp, adapter kích hoạt lỗi chuẩn (`ErrRateLimitReached`, `ErrAuthentication`), chuyển mạch sang node tiếp theo và áp dụng thời gian chờ (cooldown 30 phút).
-4. **An toàn thông tin tối đa (Privacy-First):**
-   - Tất cả payload gửi ra ngoài hệ thống mạng bắt buộc phải đi qua bộ lọc `pkg/privacy`. Các khóa bí mật, token, chuỗi webhook thật tuyệt đối không được ghi nhận trong mã nguồn hoặc tệp test.
-5. **Định danh nhất quán (Stable Unified ID):**
-   - Mọi tài khoản tuân thủ định dạng chuẩn `brand[:method]:NN` (ví dụ: `claude:web:01`, `github:api:01`, `gemini:api:02`). Cơ chế `MigrateLegacyIDs` tự động chuyển đổi các định danh cũ mà không làm gián đoạn hệ thống.
-6. **Hot-Reload thời gian thực:**
-   - Mọi thay đổi về cấu hình tài khoản, trọng số `priority`, chỉ định `model` thông qua CLI đều được đồng bộ ngay lập tức tới daemon đang chạy qua endpoint `/_am/sync`.
+1. **Thư Mục Lưu Trữ Chuẩn Hóa (`~/.amux`)**:
+   - Mọi tệp cấu hình (`identities.json`, `config.json`, `gateway.pid`, `gateway.log`) được lưu trữ tập trung tại `~/.amux`.
+   - Hệ thống tự động di chuyển dữ liệu từ thư mục cũ sang `~/.amux` trong lần chạy đầu tiên mà không làm mất mát cấu hình.
+2. **Không Khởi Chạy Ứng Dụng (No Launcher Responsibility)**:
+   - AMUX không bao bọc hay can thiệp vào cách khởi chạy IDE (`claude`, `cursor`, `codex`). Developer chạy công cụ trực tiếp.
+3. **Bảo Toàn Prompt Cache Tuyệt Đối**:
+   - Khi chuyển đổi giữa các tài khoản Subscription, AMUX giữ nguyên 100% nội dung và thứ tự tin nhắn lịch sử để tận dụng chiết khấu 90% từ Anthropic Prompt Cache.
+4. **Loại Trừ Nghiêm Ngặt Tài Khoản OFF**:
+   - Tài khoản có `AUTO-SWITCH: OFF` (chế độ Manual Only) tuyệt đối không bao giờ bị auto-switch hoặc tự động chọn từ pool, áp dụng cho cả Subscription, Web và API accounts.
+5. **Real-time Statusline Trực Quan**:
+   - Cung cấp thông tin tài khoản đang phục vụ, dung lượng token và thanh đo hạn mức 5h/7d trực tiếp trên thanh trạng thái của IDE theo thời gian thực.

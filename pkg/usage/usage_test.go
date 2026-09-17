@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -95,3 +96,78 @@ func TestChannelLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestUsage_DayWeekMonthReports(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("AM_HOME")
+	defer os.Setenv("AM_HOME", origHome)
+	os.Setenv("AM_HOME", tmpDir)
+
+	// Populate sample usage entries
+	t1, _ := time.Parse("2006-01-02 15:04:05", "2026-09-15 10:00:00")
+	t2, _ := time.Parse("2006-01-02 15:04:05", "2026-09-15 14:30:00")
+	t3, _ := time.Parse("2006-01-02 15:04:05", "2026-09-16 09:15:00")
+	t4, _ := time.Parse("2006-01-02 15:04:05", "2026-09-22 16:00:00")
+
+	entries := []types.UsageEntry{
+		{
+			Time:          t1,
+			Account:       "claude-sub-1",
+			Endpoint:      "/v1/messages",
+			Input:         1000,
+			Output:        200,
+			CacheRead:     5000,
+			CacheCreation: 300,
+		},
+		{
+			Time:          t2,
+			Account:       "claude-web-1",
+			Endpoint:      "/v1/messages",
+			Input:         500,
+			Output:        100,
+			CacheRead:     0,
+			CacheCreation: 0,
+		},
+		{
+			Time:          t3,
+			Account:       "claude-sub-1",
+			Endpoint:      "/v1/messages",
+			Input:         2000,
+			Output:        400,
+			CacheRead:     10000,
+			CacheCreation: 600,
+		},
+		{
+			Time:          t4,
+			Account:       "claude-sub-vip",
+			Endpoint:      "/v1/messages",
+			Input:         3000,
+			Output:        600,
+			CacheRead:     15000,
+			CacheCreation: 900,
+		},
+	}
+
+	for _, e := range entries {
+		AppendUsageEntry(e)
+	}
+
+	loaded := LoadUsageEntries(time.Time{})
+	if len(loaded) != 4 {
+		t.Fatalf("expected 4 loaded entries, got %d", len(loaded))
+	}
+
+	// Test 1: Day View
+	// Should run without crashing and output expected columns
+	PrintUsageReport([]string{"day", "2026-09-15"})
+	PrintUsageReport([]string{"day", "2026-09-15", "claude-sub-1"})
+
+	// Test 2: Week View
+	// Should cover week containing 2026-09-15
+	PrintUsageReport([]string{"week", "2026-09-15"})
+
+	// Test 3: Month View
+	// Should cover 2026-09
+	PrintUsageReport([]string{"month", "2026-09"})
+}
+

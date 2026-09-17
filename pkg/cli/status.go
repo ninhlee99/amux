@@ -49,7 +49,7 @@ func CmdStatus(args []string) {
 	fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n", "------------------", "----------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
-		activeStr := "no"
+		activeStr := "NO"
 		if id.Active {
 			activeStr = "YES *"
 		}
