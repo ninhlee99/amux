@@ -123,9 +123,9 @@ func TestPickClaudeWebModel(t *testing.T) {
 		want string
 	}{
 		{"free plan, no capabilities", nil, "claude-sonnet-5"},
-		{"claude_pro", []string{"chat", "claude_pro"}, "claude-opus-5"},
-		{"claude_max", []string{"chat", "claude_max"}, "claude-opus-5"},
-		{"claude_team", []string{"claude_team"}, "claude-opus-5"},
+		{"claude_pro", []string{"chat", "claude_pro"}, "claude-sonnet-5"},
+		{"claude_max", []string{"chat", "claude_max"}, "claude-sonnet-5"},
+		{"claude_team", []string{"claude_team"}, "claude-sonnet-5"},
 		{"unrelated capability only", []string{"chat"}, "claude-sonnet-5"},
 	}
 	for _, c := range cases {

@@ -485,12 +485,15 @@ func DetectClaudeWebAccount(sessionKey, cookieHeader string) (model, plan string
 }
 
 // pickClaudeWebModel maps an organization's capabilities (from
-// claude.ai/api/organizations) to the best model that plan can use.
+// claude.ai/api/organizations) to the model for web conversations.
+// We default to Sonnet (claudeWebDefaultModel) even for Pro/Team to prevent
+// extreme rate-limit burn from Opus on large contexts.
 func pickClaudeWebModel(capabilities []string) string {
 	for _, cap := range capabilities {
 		switch cap {
-		case "claude_pro", "claude_max", "claude_team", "claude_enterprise", "raven":
-			return "claude-opus-5"
+		case "claude_max", "raven":
+			// Reserved for max tier if explicit, otherwise Sonnet is safer
+			return claudeWebDefaultModel
 		}
 	}
 	return claudeWebDefaultModel
