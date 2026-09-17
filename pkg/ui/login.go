@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -137,6 +136,15 @@ func CmdLogin(args []string) {
 	case "chatgpt", "chatgpt-web", "chatgptweb":
 		loginChatGPT(flags)
 	case "claude", "claude-web", "claudeweb":
+		if target == "claude" && !flags.isOAuth && !flags.isDevice && !flags.isManual && flags.token == "" && flags.cookie == "" {
+			fmt.Println("Choose login method for Claude:")
+			fmt.Println("  [1] Claude Code OAuth (Auto-login via browser -> Access Token & Refresh Token) [Default]")
+			fmt.Println("  [2] Claude Web (sessionKey cookie for claude.ai web session pool)")
+			ans := term.ReadLine("Select [1/2] (Enter = 1): ")
+			if ans == "" || ans == "1" {
+				flags.isOAuth = true
+			}
+		}
 		if flags.isOAuth || flags.isDevice || flags.isManual {
 			opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
 			if err := oauth.InteractiveOAuthWithOptions("claude", opts); err != nil {
@@ -194,10 +202,7 @@ func openForManualPaste(target browser.WebLoginTarget) {
 }
 
 func readLinePrompt(prompt string) string {
-	fmt.Print(prompt)
-	r := bufio.NewReader(os.Stdin)
-	line, _ := r.ReadString('\n')
-	return strings.TrimSpace(line)
+	return term.ReadLine(prompt)
 }
 
 func nextPoolID(prefix string) (id string, priorityFloor int, hasExisting bool) {
@@ -251,6 +256,12 @@ func loginChatGPT(f loginFlags) {
 		} else {
 			sessionCookie = tok
 			fmt.Println("Captured session cookie from browser.")
+		}
+	}
+	if sessionCookie == "" && access == "" && !wantBrowser {
+		if tok, bName, err := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); err == nil && tok != "" {
+			fmt.Printf("✓ Auto-extracted ChatGPT session token from %s!\n", bName)
+			sessionCookie = tok
 		}
 	}
 
@@ -353,6 +364,12 @@ func loginClaude(f loginFlags) {
 			} else {
 				fmt.Println("Warning: cookie jar empty — Cloudflare cookies missing; re-run login if chat 403s.")
 			}
+		}
+	}
+	if key == "" && !wantBrowser {
+		if tok, bName, err := browser.ExtractCookie("claude.ai", "sessionKey"); err == nil && tok != "" {
+			fmt.Printf("✓ Auto-extracted claude.ai sessionKey from %s!\n", bName)
+			key = tok
 		}
 	}
 

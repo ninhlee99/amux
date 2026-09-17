@@ -280,7 +280,14 @@ func printOnePoolAccount(s *proxyStatus, p map[string]any) {
 	} else if preferred && s.Mode == "provider" && !cooling && !anyLastUsed(s.Pool) {
 		serving = true
 	}
-	if cooling {
+	disabled, _ := p["disabled"].(bool)
+	if d, ok := p["enabled"].(bool); ok && !d {
+		disabled = true
+	}
+	if disabled {
+		badge = term.Badge("off", "off")
+		serving = false
+	} else if cooling {
 		badge = term.Badge("warn", "cool")
 		serving = false
 	}

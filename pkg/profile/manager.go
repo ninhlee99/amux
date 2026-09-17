@@ -620,14 +620,24 @@ func CmdSave(tool, name string) (string, error) {
 		return "", fmt.Errorf("write bundle: %w", err)
 	}
 
+	oldMeta := ReadMeta(tool, name)
 	plan := DetectPlan(spec)
-	meta := types.ProfileMeta{Name: name, Tool: tool, Account: acct, Plan: plan, Saved: time.Now()}
+	meta := types.ProfileMeta{
+		Name:     name,
+		Tool:     tool,
+		Account:  acct,
+		Plan:     plan,
+		Saved:    time.Now(),
+		Disabled: oldMeta.Disabled,
+	}
 	mb, _ := json.MarshalIndent(meta, "", "  ")
 	if err := WriteFileAtomic(MetaPath(tool, name), mb, 0o600); err != nil {
 		return "", fmt.Errorf("write meta: %w", err)
 	}
 
-	WriteActivePointer(tool, name)
+	if !meta.Disabled {
+		WriteActivePointer(tool, name)
+	}
 	acctDisplay := acct
 	if acctDisplay == "" {
 		acctDisplay = "-"
@@ -708,6 +718,9 @@ func SyncActiveFromSystem(tool string) {
 		name = SanitizeName(acct)
 		fmt.Printf("amux: current %s login %q not saved yet — snapshotting it\n", tool, acct)
 		_, _ = CmdSave(tool, name)
+		return
+	}
+	if IsDisabled(tool, name) {
 		return
 	}
 	// Re-save existing profile to ensure any token rotation during active session is captured

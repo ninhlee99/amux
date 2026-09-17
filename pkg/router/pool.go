@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,35 @@ import (
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 )
+
+func adapterModel(a types.ProviderAdapter) string {
+	if a == nil {
+		return ""
+	}
+	type modeler interface{ Model() string }
+	if m, ok := a.(modeler); ok {
+		return m.Model()
+	}
+	type targetModeler interface{ TargetModel() string }
+	if tm, ok := a.(targetModeler); ok {
+		return tm.TargetModel()
+	}
+	v := reflect.ValueOf(a)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.IsValid() && v.Kind() == reflect.Struct {
+		f := v.FieldByName("TargetModel")
+		if f.IsValid() && f.Kind() == reflect.String {
+			return f.String()
+		}
+		f = v.FieldByName("Model")
+		if f.IsValid() && f.Kind() == reflect.String {
+			return f.String()
+		}
+	}
+	return ""
+}
 
 // redactBeforeSend is the universal outbound gate: every adapter path
 // (proxy bridge, gateway, tests) must pass here before network I/O.
@@ -202,6 +232,9 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 		guard.RecordError(id, err)
 		return nil, err
 	}
+	req.ServingAccount = id
+	req.ServingModel = adapterModel(a)
+	req.ServingAPI = DetermineAdapterGroup(a)
 	guard.RecordSuccess(id)
 	r.mu.Lock()
 	r.lastUsed = id
@@ -714,6 +747,12 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			}
 			ch, err := a.SendMessageStream(ctx, callReq)
 			if err == nil {
+				req.ServingAccount = a.ID()
+				req.ServingModel = adapterModel(a)
+				req.ServingAPI = grpKey
+				callReq.ServingAccount = a.ID()
+				callReq.ServingModel = adapterModel(a)
+				callReq.ServingAPI = grpKey
 				guard.RecordSuccess(a.ID())
 				if sessionKey != "" {
 					guard.GlobalAffinity().Pin(sessionKey, a.ID())
@@ -939,6 +978,18 @@ func (r *AccountPoolRouter) Reload(adapters []types.ProviderAdapter) {
 		if !found {
 			r.preferred = ""
 			r.manualPin = false
+		}
+	}
+	if r.lastUsed != "" {
+		found := false
+		for _, a := range sorted {
+			if a.ID() == r.lastUsed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			r.lastUsed = ""
 		}
 	}
 }

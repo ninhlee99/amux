@@ -23,8 +23,14 @@ import (
 // generic marker — the actual adapter that served a given request can
 // change turn to turn as the pool fails over.
 func poolAccountLabel(pool *router.AccountPoolRouter) string {
+	if pool == nil {
+		return "pool"
+	}
 	if p := pool.Preferred(); p != "" {
 		return p
+	}
+	if last := pool.LastUsed(); last != "" {
+		return last
 	}
 	return "provider-pool"
 }
@@ -126,6 +132,23 @@ func ToChatRequest(body []byte) (*types.ChatRequest, error) {
 			continue
 		}
 		req.Messages = append(req.Messages, expandAnthropicMessage(m.Role, m.Content)...)
+	}
+
+	// Link role="tool" messages to their tool name using preceding assistant tool_use calls
+	toolNameMap := make(map[string]string)
+	for _, msg := range req.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" && tc.Name != "" {
+				toolNameMap[tc.ID] = tc.Name
+			}
+		}
+	}
+	for i := range req.Messages {
+		if strings.EqualFold(req.Messages[i].Role, "tool") && req.Messages[i].Name == "" {
+			if name, ok := toolNameMap[req.Messages[i].ToolCallID]; ok {
+				req.Messages[i].Name = name
+			}
+		}
 	}
 
 	return req, nil

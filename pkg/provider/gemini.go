@@ -16,8 +16,8 @@ import (
 const (
 	googleAIStudioBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-	DefaultGeminiFlashModel = "gemini-3.6-flash"
-	DefaultGeminiProModel   = "gemini-3.1-pro-preview"
+	DefaultGeminiFlashModel = "gemini-3.8-flash"
+	DefaultGeminiProModel   = "gemini-3.8-flash"
 )
 
 // googleAIStudioModelsURL is a var (not const) so tests can point it at an
@@ -74,23 +74,17 @@ func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 	}
 
 	selectedModel := a.TargetModel
-	if a.FlashModel != "" {
+	if selectedModel == "" {
 		selectedModel = a.FlashModel
 	}
-
-	// Auto-escalation: If heavy task is detected or thinking is requested, switch to Pro model (e.g. gemini-3.1-pro-preview)
-	if strings.EqualFold(req.TargetTier, "pro") || req.Thinking {
-		pro := a.ProModel
-		if pro == "" {
-			pro = DefaultGeminiProModel
-		}
-		selectedModel = pro
-	} else if req.Model != "" && strings.Contains(req.Model, "pro") {
-		selectedModel = a.ProModel
-		if selectedModel == "" {
-			selectedModel = DefaultGeminiProModel
-		}
+	if selectedModel == "" {
+		selectedModel = DefaultGeminiFlashModel
 	}
+
+	clonedReq := *req
+	clonedReq.Thinking = false
+	clonedReq.ThinkingBudget = 0
+	clonedReq.ReasoningEffort = "none"
 
 	adapter := &OpenAICompatibleAdapter{
 		AdapterID:   a.AdapterID,
@@ -100,7 +94,7 @@ func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 		TargetModel: selectedModel,
 		HTTPClient:  a.HTTPClient,
 	}
-	ch, err := adapter.SendMessageStream(ctx, req)
+	ch, err := adapter.SendMessageStream(ctx, &clonedReq)
 	if err != nil && (errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "thought_signature")) {
 		fallbackModel := a.FlashModel
 		if strings.Contains(err.Error(), "thought_signature") {

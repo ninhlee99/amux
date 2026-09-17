@@ -129,6 +129,12 @@ type ChatRequest struct {
 	TaskKind string `json:"-"`
 	// SystemCacheControl signals whether the system prompt should have an ephemeral cache breakpoint.
 	SystemCacheControl bool `json:"system_cache_control,omitempty"`
+	// ServingAccount tracks the actual account/adapter that served the request.
+	ServingAccount string `json:"-"`
+	// ServingAPI tracks the underlying API used (e.g. anthropic, gemini, openai, web).
+	ServingAPI string `json:"-"`
+	// ServingModel tracks the underlying model invoked.
+	ServingModel string `json:"-"`
 }
 
 // Project returns the project directory / root if present in Metadata.

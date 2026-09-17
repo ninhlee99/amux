@@ -1,25 +1,35 @@
 package bridge
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
+	"amux-accounts/pkg/usage"
 )
 
 func logChatRequest(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRequest, output, stop, errStr string, inTok, outTok int, started time.Time, toolCalls []types.ToolCall) {
 	dialect := "claude"
 	model := ""
 	input := ""
+	servingAPI := ""
 	if req != nil {
 		if req.ClientDialect != "" {
 			dialect = req.ClientDialect
 		}
 		model = req.Model
+		if req.ServingModel != "" && req.ServingModel != model {
+			model = fmt.Sprintf("%s (%s)", req.Model, req.ServingModel)
+		}
+		if req.ServingAPI != "" {
+			servingAPI = req.ServingAPI
+		}
 		input = monitor.LastUserText(req.Messages)
 	}
 	path := ""
@@ -27,6 +37,9 @@ func logChatRequest(r *http.Request, pool *router.AccountPoolRouter, req *types.
 		path = r.URL.Path
 	}
 	account := poolAccountLabel(pool)
+	if req != nil && req.ServingAccount != "" {
+		account = req.ServingAccount
+	}
 	if len(toolCalls) == 0 && strings.TrimSpace(output) != "" {
 		var defs []types.ToolDef
 		if req != nil {
@@ -50,6 +63,34 @@ func logChatRequest(r *http.Request, pool *router.AccountPoolRouter, req *types.
 	}
 	now := time.Now()
 	ms := now.Sub(started).Milliseconds()
+	apiLabel := servingAPI
+	if apiLabel == "" {
+		apiLabel = dialect
+	}
+	if errStr != "" {
+		term.LogWarn("[req] %s · %s · %s · error=%s (%dms)", account, apiLabel, model, errStr, ms)
+	} else {
+		term.LogProxy("[req] %s · %s · %s · in=%d out=%d (%dms)", account, apiLabel, model, inTok, outTok, ms)
+	}
+
+	if inTok > 0 || outTok > 0 {
+		proj := ""
+		sess := ""
+		if req != nil {
+			proj = req.Project()
+			sess = req.SessionID
+		}
+		usage.AppendUsageEntry(types.UsageEntry{
+			Time:    now,
+			Account: account,
+			Model:   model,
+			Project: proj,
+			Session: sess,
+			Input:   inTok,
+			Output:  outTok,
+		})
+	}
+
 	monitor.AppendRequest(types.RequestEntry{
 		Time:       now,
 		Dialect:    dialect,

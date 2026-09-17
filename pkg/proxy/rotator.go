@@ -208,10 +208,19 @@ func (r *Rotator) Names() []string {
 func (r *Rotator) Active() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.order) == 0 {
+	if len(r.order) == 0 || r.idx >= len(r.order) {
 		return ""
 	}
-	return r.order[r.idx]
+	name := r.order[r.idx]
+	if r.disabled[name] {
+		for _, n := range r.order {
+			if !r.disabled[n] {
+				return n
+			}
+		}
+		return ""
+	}
+	return name
 }
 
 func (r *Rotator) SetActive(name string) {
@@ -684,7 +693,7 @@ func (r *Rotator) Status() map[string]any {
 		m := map[string]any{
 			"profile":         n,
 			"account":         r.accounts[n],
-			"active":          len(r.order) > 0 && n == r.order[r.idx],
+			"active":          len(r.order) > 0 && n == r.order[r.idx] && !r.disabled[n],
 			"auto_switches":   r.autoSwitches[n],
 			"manual_switches": r.manualSwitches[n],
 		}

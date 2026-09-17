@@ -306,3 +306,37 @@ func TestReGitDiffAndStatusMatching(t *testing.T) {
 		}
 	}
 }
+
+func TestPlausibleForcedBash_GHAndRTK(t *testing.T) {
+	valid := []string{
+		"gh issue create --repo TOMOSIA-VIETNAM/open-pr --title \"bug\"",
+		"gh search issues --repo TOMOSIA-VIETNAM/open-pr \"query\"",
+		"gh auth status",
+		"gh pr view 123",
+		"rtk find file.go",
+	}
+	for _, cmd := range valid {
+		if !isPlausibleForcedBash(cmd) {
+			t.Errorf("expected %q to be plausible forced bash", cmd)
+		}
+	}
+}
+
+func TestShouldForceWebTools_TitleJSONWithHistory(t *testing.T) {
+	titleText := `{"title": "Open-pr fix loop issue"}`
+	// 1. Without tool history (e.g. initial title prompt): should NOT force tools
+	if shouldForceWebTools(titleText, nil) {
+		t.Errorf("expected false for initial title request without history")
+	}
+
+	// 2. With active tool history (in the middle of session): should force tools
+	histWithTools := []types.ChatMessage{
+		{Role: "user", Content: "create issue with gh"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "call_1", Name: "Bash"}}},
+		{Role: "tool", Content: "github.com logged in"},
+	}
+	if !shouldForceWebTools(titleText, histWithTools) {
+		t.Errorf("expected true when title is emitted mid-session with active tool history")
+	}
+}
+

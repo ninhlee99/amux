@@ -40,7 +40,7 @@ var (
 	reBracketTool  = regexp.MustCompile(`(?s)\[tool_call\s+name="?([^"\s\]]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{.*?\})`)
 	reTrailComma   = regexp.MustCompile(`,\s*([}\]])`)
 	reWebFilePath  = regexp.MustCompile(`(?i)\b(?:[\w.-]+/)*[\w.-]+\.(?:go|md|sh|json|mod|sum|yml|yaml|toml|txt|html|ts|js|py|rs|c|cpp|h|hpp|sql)\b`)
-	reWebBashCmd   = regexp.MustCompile("(?i)(?:`((?:git|ls|find|grep|am)\\s+[^`\\n]+)`|\\b(git\\s+(?:diff|status|log|show|branch|grep|rev-parse)(?:\\s+(?:--?[a-zA-Z0-9_.-]+|[a-zA-Z0-9_./-]+))*|ls(?:\\s+-[a-zA-Z0-9]+)?)\\b)")
+	reWebBashCmd   = regexp.MustCompile("(?i)(?:`((?:git|gh|ls|find|grep|am|rtk)\\s+[^`\\n]+)`|\\b((?:git|gh)\\s+(?:diff|status|log|show|branch|grep|rev-parse|issue|pr|auth|repo|search|run)(?:\\s+(?:--?[a-zA-Z0-9_.-]+|[a-zA-Z0-9_./-]+))*|ls(?:\\s+-[a-zA-Z0-9]+)?)\\b)")
 	// reGitDiffCmd matches git diff in various real-world forms for webloop tool extraction:
 	//   git diff, git --no-pager diff, git -C /path diff, git -C "my path" diff
 	//   /usr/bin/git, /usr/local/bin/git, /opt/homebrew/bin/git, env git, command git
@@ -391,12 +391,20 @@ func isWebFakeExecution(text string, hist []types.ChatMessage) bool {
 }
 
 func shouldForceWebTools(text string, hist ...[]types.ChatMessage) bool {
-	if strings.TrimSpace(text) == "" || isWebTitleJSON(text) {
+	if strings.TrimSpace(text) == "" {
 		return false
 	}
 	var h []types.ChatMessage
 	if len(hist) > 0 {
 		h = hist[0]
+	}
+	if isWebTitleJSON(text) {
+		// Bare {"title": ...} is only a valid terminal answer if no tools have been used yet.
+		// If tools are in active use, a bare title is an incomplete halt/refusal.
+		if !historyHasTools(h) {
+			return false
+		}
+		return true
 	}
 	return isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebFakeExecution(text, h)
 }
@@ -484,7 +492,7 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 	}
 
 	searchText := text
-	if isWebToolRefusal(text) || isWebWorkIncomplete(text) {
+	if isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebTitleJSON(text) {
 		for i := len(hist) - 1; i >= 0; i-- {
 			if strings.EqualFold(hist[i].Role, "user") {
 				searchText = text + "\n" + hist[i].Content
@@ -563,7 +571,7 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		if pathsMentioned > 0 && historyHasTools(hist) {
 			return nil
 		}
-		if isWebToolRefusal(text) || isWebWorkIncomplete(text) {
+		if isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebTitleJSON(text) {
 			return fallbackExploreTools(defs, hist)
 		}
 		return nil
@@ -598,9 +606,13 @@ func isPlausibleForcedBash(cmd string) bool {
 	case strings.HasPrefix(low, "git "):
 		return reGitDiffCmd.MatchString(cmd) || reGitStatusCmd.MatchString(cmd) ||
 			regexp.MustCompile(`(?i)^(?:\S+/)?git(?:\s+--?\S+)*\s+(?:log|show|branch|grep|rev-parse)\b`).MatchString(cmd)
+	case strings.HasPrefix(low, "gh "):
+		return regexp.MustCompile(`(?i)^(?:\S+/)?gh\s+(?:issue|pr|auth|repo|search|run)\b`).MatchString(cmd)
 	case strings.HasPrefix(low, "ls"):
 		return regexp.MustCompile(`(?i)^ls(?:\s+-[a-zA-Z0-9]+)*\s*$`).MatchString(cmd)
 	case strings.HasPrefix(low, "am "):
+		return true
+	case strings.HasPrefix(low, "rtk "):
 		return true
 	default:
 		return regexp.MustCompile(`(?i)^(find|grep)\s+\S+`).MatchString(cmd)
@@ -765,6 +777,10 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		case lower == "agent" || lower == "invoke_subagent" || lower == "subagent" ||
 			lower == "task" || lower == "spawn_agent" || lower == "dispatch_agent":
 			if d, ok := findToolDef(by, "agent", "invoke_subagent", "subagent", "task", "spawn_agent", "dispatch_agent"); ok {
+				return d.Name, true
+			}
+		case lower == "skill" || lower == "load_skill" || lower == "run_skill" || lower == "use_skill":
+			if d, ok := findToolDef(by, "skill", "load_skill", "run_skill", "use_skill"); ok {
 				return d.Name, true
 			}
 		}
@@ -982,6 +998,9 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 
 	wantDir := toolArgKey(def, "dir", "directory", "SearchDirectory", "SearchPath")
 	remap(wantDir, "dir", "directory", "SearchDirectory", "SearchPath", "path", "cwd")
+
+	wantSkill := toolArgKey(def, "skill", "skill_name", "name")
+	remap(wantSkill, "skill", "skill_name", "name", "skillName")
 
 	// Ensure required schema parameters for AGY / strict client tools if missing
 	schemaKeysList := schemaKeys(def.InputSchema, 20)

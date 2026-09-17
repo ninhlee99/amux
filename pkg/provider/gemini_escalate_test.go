@@ -12,7 +12,7 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-func TestGeminiAdapter_AutoEscalateToPro(t *testing.T) {
+func TestGeminiAdapter_RetainsTargetModel(t *testing.T) {
 	var requestedModel string
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +47,7 @@ func TestGeminiAdapter_AutoEscalateToPro(t *testing.T) {
 		t.Errorf("expected fast model gemini-2.5-flash, got %s", requestedModel)
 	}
 
-	// Case 2: Heavy task with TargetTier = pro
+	// Case 2: Heavy task with TargetTier = pro (should retain configured TargetModel)
 	_, err = adapter.SendMessageStream(context.Background(), &types.ChatRequest{
 		TargetTier: "pro",
 		Messages:   []types.ChatMessage{{Role: "user", Content: "Analyze architecture"}},
@@ -55,11 +55,11 @@ func TestGeminiAdapter_AutoEscalateToPro(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessageStream: %v", err)
 	}
-	if requestedModel != provider.DefaultGeminiProModel {
-		t.Errorf("expected escalated model %s, got %s", provider.DefaultGeminiProModel, requestedModel)
+	if requestedModel != "gemini-2.5-flash" {
+		t.Errorf("expected retained model gemini-2.5-flash, got %s", requestedModel)
 	}
 
-	// Case 3: Thinking task
+	// Case 3: Thinking task (should retain configured TargetModel)
 	_, err = adapter.SendMessageStream(context.Background(), &types.ChatRequest{
 		Thinking: true,
 		Messages: []types.ChatMessage{{Role: "user", Content: "Prove math theorem"}},
@@ -67,8 +67,8 @@ func TestGeminiAdapter_AutoEscalateToPro(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessageStream: %v", err)
 	}
-	if requestedModel != provider.DefaultGeminiProModel {
-		t.Errorf("expected escalated model %s, got %s", provider.DefaultGeminiProModel, requestedModel)
+	if requestedModel != "gemini-2.5-flash" {
+		t.Errorf("expected retained model gemini-2.5-flash, got %s", requestedModel)
 	}
 }
 

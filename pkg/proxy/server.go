@@ -3,12 +3,14 @@ package proxy
 import (
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/nav"
+	"bufio"
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -278,19 +280,19 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 			if !shouldObserveUpstream(resp) {
 				return nil
 			}
+			activeBefore := rot.Active()
 			rot.Observe(resp)
-			usage.WrapUsageCapture(resp, rot.Active())
-			active := rot.Active()
-			if active != "" {
+			usage.WrapUsageCapture(resp, activeBefore)
+			if activeBefore != "" {
 				switch resp.StatusCode {
 				case http.StatusOK, http.StatusCreated:
-					guard.RecordSuccess(active)
+					guard.RecordSuccess(activeBefore)
 				case http.StatusTooManyRequests:
 					retryAfter := guard.ParseRetryAfter(resp.Header)
-					guard.GlobalHealth().RecordRateLimit(active, retryAfter)
-					guard.GlobalPacer().RecordRateLimit(active, retryAfter)
+					guard.GlobalHealth().RecordRateLimit(activeBefore, retryAfter)
+					guard.GlobalPacer().RecordRateLimit(activeBefore, retryAfter)
 				case http.StatusUnauthorized, http.StatusForbidden:
-					guard.GlobalHealth().RecordAuthError(active, resp.Status)
+					guard.GlobalHealth().RecordAuthError(activeBefore, resp.Status)
 				}
 			}
 			return nil
@@ -618,27 +620,27 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			}
 
 			claudeUsable := !rot.ShouldFailoverToProviderPool() &&
-				(rot.Token() != "" || rot.ProfileCount() > 0)
+				rot.ProfileCount() > 0 && rot.Token() != ""
 
 			usePool := false
 			pool := toolPool
 			autoFromClaude := false
+
+			var parsedReq *types.ChatRequest
+			if rReq, err := bridge.ToChatRequest(body); err == nil {
+				parsedReq = rReq
+				bridge.EnrichRequestMetadata(r, parsedReq)
+			}
 
 			// Explicit X-Provider: pin that pool account (even out of rotate).
 			// Claude profile names still use ForceSwitch + reverse-proxy below.
 			if xProvider != "" {
 				if err := rot.ForceSwitchExplicit(xProvider); err == nil {
 					mode.Set("claude")
-					rp.ServeHTTP(w, r)
+					serveWithResilience(w, r, rp, rot, toolPool, mode, body, parsedReq)
 					return
 				}
 				usePool = true
-			}
-
-			var parsedReq *types.ChatRequest
-			if rReq, err := bridge.ToChatRequest(body); err == nil {
-				parsedReq = rReq
-				bridge.EnrichRequestMetadata(r, parsedReq)
 			}
 
 			// Model safeguard & default:
@@ -698,6 +700,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			switch {
 			case usePool:
 				// already decided via X-Provider
+			case toolPool != nil && toolPool.ManualPin():
+				usePool = true
 			case isWebTask && toolPool != nil && !toolPool.ManualPin() && toolPool.HasLivingGroup(
 				router.GroupClaudeWeb, router.GroupChatGPTWeb, router.GroupGeminiWeb,
 				router.GroupAGYSub, router.GroupAGYFree,
@@ -720,11 +724,11 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 					autoFromClaude = true
 					log.Printf("amux: all Claude accounts unavailable — failover to provider pool (API→web)")
 				}
-			case rot.Token() != "" || rot.ProfileCount() > 0:
+			case rot.Token() != "" && rot.ProfileCount() > 0:
 				if rot.ProfileCount() > 0 {
 					rot.EnsureUsableActive()
 				}
-				usePool = rot.Token() == "" && !hasAPIKey
+				usePool = false
 			default:
 				usePool = toolPool.Len() > 0
 			}
@@ -739,7 +743,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 					targetAccount = "pool"
 				}
 			}
-			if switched, prevAcct := guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount); switched {
+			switched, prevAcct := guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount)
+			if switched {
 				if parsedReq != nil && len(parsedReq.Messages) > 4 {
 					compacted := ctxshrink.CompactForAccountSwitchProject(parsedReq.Project(), parsedReq.Messages, 6)
 					if len(compacted) < len(parsedReq.Messages) || ctxshrink.EstimateMessagesTokens(compacted) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
@@ -754,18 +759,32 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 						}
 					}
 				}
-			} else {
-				// Regular request within same account: deduplicate repeated historical tool outputs
-				if parsedReq != nil && len(parsedReq.Messages) > 2 {
-					deduped := ctxshrink.GlobalDeduplicator().DeduplicateMessages(parsedReq.Project(), parsedReq.Messages, 2)
-					if ctxshrink.EstimateMessagesTokens(deduped) < ctxshrink.EstimateMessagesTokens(parsedReq.Messages) {
-						parsedReq.Messages = deduped
-						if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
-							body = newBody
-							r.Body = io.NopCloser(bytes.NewReader(body))
-							r.ContentLength = int64(len(body))
-							r.Header.Set("Content-Length", strconv.Itoa(len(body)))
-						}
+			}
+
+			// Task loop detection: warn immediately if stuck in a loop and prune token-wasting redundant loop context
+			if parsedReq != nil {
+				if loopDetected, _ := guard.DetectAndPruneLoop(parsedReq); loopDetected {
+					if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
+						body = newBody
+						r.Body = io.NopCloser(bytes.NewReader(body))
+						r.ContentLength = int64(len(body))
+						r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+					}
+				}
+			}
+
+			// Native auto-compact for Claude Code when transcript exceeds safe budget (>40 turns, >100k tokens)
+			if !usePool && parsedReq != nil && len(parsedReq.Messages) > 40 && ctxshrink.EstimateMessagesTokens(parsedReq.Messages) > 100000 {
+				compacted := ctxshrink.CompactTranscriptWithTail(parsedReq.Messages, 10)
+				if len(compacted) < len(parsedReq.Messages) {
+					term.LogProxy("amux: native auto-compact (%d → %d turns) to protect context budget",
+						len(parsedReq.Messages), len(compacted))
+					parsedReq.Messages = compacted
+					if newBody, err := tools.MarshalClaudeMessagesRequest(parsedReq, parsedReq.Model); err == nil {
+						body = newBody
+						r.Body = io.NopCloser(bytes.NewReader(body))
+						r.ContentLength = int64(len(body))
+						r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 					}
 				}
 			}
@@ -799,12 +818,16 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				return
 			}
 
-			// Optimize native Anthropic request with prompt caching breakpoints (system, tools, penultimate turn)
-			if optBody, ok := ctxshrink.OptimizeAnthropicPromptCaching(body); ok {
-				body = optBody
-				r.Body = io.NopCloser(bytes.NewReader(body))
-				r.ContentLength = int64(len(body))
-				r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			// Only inject cache breakpoints when switching accounts or if the body was re-compacted.
+			// In steady-state within the same account, keep Claude Code's pristine raw JSON byte-for-byte
+			// to preserve 100% native Anthropic prompt caching without invalidation.
+			if switched {
+				if optBody, ok := ctxshrink.OptimizeAnthropicPromptCaching(body); ok {
+					body = optBody
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					r.ContentLength = int64(len(body))
+					r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				}
 			}
 			if beta := r.Header.Get("anthropic-beta"); beta == "" {
 				r.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
@@ -812,7 +835,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				r.Header.Set("anthropic-beta", beta+",prompt-caching-2024-07-31")
 			}
 
-			rp.ServeHTTP(w, r)
+			serveWithResilience(w, r, rp, rot, toolPool, mode, body, parsedReq)
 			return
 		}
 
@@ -856,6 +879,224 @@ func shouldObserveUpstream(resp *http.Response) bool {
 		return false
 	}
 	return true
+}
+
+// retryInterceptWriter buffers retryable HTTP error responses (429 Too Many Requests,
+// 529 Overloaded, 401 Unauthorized) from upstream Anthropic so amux can transparently
+// rotate to the next Claude profile or fail over to the provider pool in-flight without
+// Claude Code failing or aborting with an API Error.
+//
+// For non-retryable responses (200 OK, 400 Bad Request, etc.), headers and body
+// are committed immediately to the underlying ResponseWriter so streaming SSE
+// has zero latency and zero memory overhead.
+type retryInterceptWriter struct {
+	underlying http.ResponseWriter
+	header     http.Header
+	statusCode int
+	buf        bytes.Buffer
+	committed  bool
+}
+
+func newRetryInterceptWriter(w http.ResponseWriter) *retryInterceptWriter {
+	return &retryInterceptWriter{
+		underlying: w,
+		header:     make(http.Header),
+		statusCode: 0,
+	}
+}
+
+func (w *retryInterceptWriter) Header() http.Header {
+	if w.committed {
+		return w.underlying.Header()
+	}
+	return w.header
+}
+
+func (w *retryInterceptWriter) WriteHeader(code int) {
+	if w.committed {
+		return
+	}
+	w.statusCode = code
+	// Only intercept retryable error codes: 429 (Rate limit), 529 (Anthropic Overloaded), 401 (Auth error / revoked token)
+	if code != http.StatusTooManyRequests && code != 529 && code != http.StatusUnauthorized {
+		w.commit()
+	}
+}
+
+func (w *retryInterceptWriter) Write(p []byte) (int, error) {
+	if w.committed {
+		return w.underlying.Write(p)
+	}
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.committed {
+		return w.underlying.Write(p)
+	}
+	// Buffer the error response body
+	return w.buf.Write(p)
+}
+
+func (w *retryInterceptWriter) Flush() {
+	if w.committed {
+		if flusher, ok := w.underlying.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+}
+
+func (w *retryInterceptWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.underlying.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+func (w *retryInterceptWriter) commit() {
+	if w.committed {
+		return
+	}
+	w.committed = true
+	for k, vv := range w.header {
+		for _, v := range vv {
+			w.underlying.Header().Add(k, v)
+		}
+	}
+	if w.statusCode > 0 {
+		w.underlying.WriteHeader(w.statusCode)
+	}
+	if w.buf.Len() > 0 {
+		_, _ = w.underlying.Write(w.buf.Bytes())
+		w.buf.Reset()
+	}
+	if flusher, ok := w.underlying.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// serveWithResilience sends the request to Claude reverse-proxy. If upstream Anthropic
+// responds with 429 (rate limit), 529 (overloaded), or 401 (revoked token), instead of
+// failing the user's Claude Code session, it automatically rotates to the next Claude profile
+// and retries the in-flight request. If all Claude profiles are exhausted or in cooldown,
+// it seamlessly fails over the in-flight request to the provider pool (e.g. AGY, Codex, Gemini API).
+func serveWithResilience(
+	w http.ResponseWriter,
+	r *http.Request,
+	rp http.Handler,
+	rot *Rotator,
+	toolPool *router.AccountPoolRouter,
+	mode *ProxyMode,
+	body []byte,
+	parsedReq *types.ChatRequest,
+) {
+	maxClaudeAttempts := 1
+	if rot != nil && rot.ProfileCount() > 0 {
+		maxClaudeAttempts = rot.ProfileCount()
+	}
+	if maxClaudeAttempts > 5 {
+		maxClaudeAttempts = 5
+	}
+
+	var lastInterceptor *retryInterceptWriter
+	triedProfiles := make(map[string]bool)
+
+	for attempt := 0; attempt < maxClaudeAttempts; attempt++ {
+		if r.Context().Err() != nil {
+			return
+		}
+
+		active := ""
+		if rot != nil {
+			active = rot.Active()
+			if active != "" && triedProfiles[active] {
+				// Current active already tried; switch to next usable profile
+				if !rot.EnsureUsableActive() {
+					break
+				}
+				active = rot.Active()
+				if triedProfiles[active] {
+					break // No other untried profile available
+				}
+			}
+			if active != "" {
+				triedProfiles[active] = true
+			}
+		}
+
+		// Prepare clean request body and headers for this dispatch
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+		r.ContentLength = int64(len(body))
+		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+
+		if rot != nil {
+			if tok := rot.Token(); tok != "" {
+				r.Header.Set("Authorization", "Bearer "+tok)
+				r.Header.Del("X-Api-Key")
+			}
+		}
+
+		interceptor := newRetryInterceptWriter(w)
+		lastInterceptor = interceptor
+
+		rp.ServeHTTP(interceptor, r)
+
+		if interceptor.committed {
+			// Succeeded (e.g. 200 OK) or non-retryable response streamed directly to client
+			model := ""
+			if parsedReq != nil {
+				model = parsedReq.Model
+			}
+			term.LogProxy("[req] claude/%s · anthropic · %s", active, model)
+			return
+		}
+
+		// Intercepted retryable error (429, 529, 401)
+		status := interceptor.statusCode
+		term.LogWarn("amux: Claude profile %q returned %d (%s) — auto-forwarding in-flight request to next profile...",
+			active, status, http.StatusText(status))
+
+		// Check if another Claude profile is usable
+		if rot == nil || rot.AllUnavailable() || rot.ShouldFailoverToProviderPool() {
+			break
+		}
+	}
+
+	// All Claude profiles rate-limited or exhausted: fail over in-flight request to provider pool
+	if toolPool != nil && toolPool.Len() > 0 && r.Context().Err() == nil {
+		poolName := toolPool.Preferred()
+		if poolName == "" {
+			poolName = "provider-pool"
+		}
+		term.LogWarn("amux: all Claude profiles rate-limited (429) — auto-failing over in-flight request to provider pool (%s)...", poolName)
+
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+		r.ContentLength = int64(len(body))
+		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+
+		if parsedReq != nil {
+			guard.CheckSessionAccountSwitch(r, parsedReq, poolName)
+		}
+
+		if err := bridge.HandleClaudeMessages(w, r, toolPool, body); err == nil {
+			if id := toolPool.LastUsed(); id != "" {
+				toolPool.SetPreferred(id)
+				if mode != nil {
+					mode.Set("provider")
+				}
+				log.Printf("amux: auto-switched active provider → %s (status updated)", id)
+			}
+			return
+		} else {
+			log.Printf("amux: failover to provider pool error: %v", err)
+		}
+	}
+
+	// No provider pool available or failover also failed: commit the original error response to client
+	if lastInterceptor != nil {
+		lastInterceptor.commit()
+	}
 }
 
 // anthropicUpstreamReady is true when this proxy can authenticate an

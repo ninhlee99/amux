@@ -23,6 +23,7 @@ import (
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
+	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/ui"
 	"amux-accounts/pkg/usage"
@@ -616,9 +617,7 @@ func cmdAdd(tool, name string) {
 	profile.SyncActiveFromSystem(tool)
 
 	loginHint(tool)
-	fmt.Print("press Enter when you've logged in… ")
-	var ignored string
-	_, _ = fmt.Scanln(&ignored)
+	term.ReadEnterPrompt("press Enter when you've logged in… ")
 	acct := profile.DetectAccount(spec)
 	if acct == "" {
 		die("still can't detect a %s login", tool)
@@ -775,9 +774,7 @@ func confirm(prompt string) bool {
 	if os.Getenv("AM_YES") != "" {
 		return true
 	}
-	fmt.Printf("%s [y/N] ", prompt)
-	var ans string
-	_, _ = fmt.Scanln(&ans)
+	ans := term.ReadLine(fmt.Sprintf("%s [y/N] ", prompt))
 	return strings.EqualFold(strings.TrimSpace(ans), "y")
 }
 
