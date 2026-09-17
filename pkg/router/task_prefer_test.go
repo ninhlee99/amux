@@ -113,6 +113,22 @@ func TestClassifyTaskKind(t *testing.T) {
 			kind: TaskReview,
 		},
 		{
+			name: "review with mutating tools in catalog",
+			req: &types.ChatRequest{
+				Tools:    []types.ToolDef{{Name: "Bash"}, {Name: "Edit"}, {Name: "Write"}},
+				Messages: []types.ChatMessage{{Role: "user", Content: "kiểm tra code giúp tôi và soi xét kỹ logic"}},
+			},
+			kind: TaskReview,
+		},
+		{
+			name: "danh gia lai chat luong pr",
+			req: &types.ChatRequest{
+				Tools:    []types.ToolDef{{Name: "Bash"}, {Name: "Edit"}},
+				Messages: []types.ChatMessage{{Role: "user", Content: "đánh giá lại chất lượng và logic của pull request này"}},
+			},
+			kind: TaskReview,
+		},
+		{
 			name: "coding with mutating tool",
 			req: &types.ChatRequest{
 				Tools:    []types.ToolDef{{Name: "Bash"}, {Name: "Edit"}},

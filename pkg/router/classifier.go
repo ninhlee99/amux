@@ -70,8 +70,8 @@ var (
 		`)\b`)
 
 	reReviewIntent = regexp.MustCompile(`(?i)\b(?:` +
-		`review|code\s*review|kiểm\s*tra\s*(?:pr|code|diff)|pull\s*request|\bpr\b|` +
-		`nhận\s*xét|đánh\s*giá\s*(?:code|pr|diff)` +
+		`review|code\s*review|kiểm\s*tra\s*(?:lại|code|giúp|cho|pr|diff|logic|chất\s*lượng|lỗi)?|pull\s*request|\bpr\b|` +
+		`nhận\s*xét|đánh\s*giá\s*(?:lại|code|chi\s*tiết|pr|diff|chất\s*lượng)?|soi\s*(?:xét|lỗi|kỹ|khắt\s*khe)` +
 		`)\b`)
 
 	reCompactIntent = regexp.MustCompile(`(?i)\b(?:` +
@@ -228,6 +228,8 @@ func detectTaskKind(text string, hasMutating, hasDiff, hasStackTrace bool) strin
 			return TaskPlan
 		case reClarifyIntent.MatchString(text) && !reCodingIntent.MatchString(text):
 			return TaskClarify
+		case reReviewIntent.MatchString(text) && !reCodingIntent.MatchString(text):
+			return TaskReview
 		case reReviewIntent.MatchString(text) && (hasDiff || !hasMutating):
 			return TaskReview
 		case reCompactIntent.MatchString(text):

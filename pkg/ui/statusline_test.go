@@ -200,3 +200,95 @@ func TestFormatGroupAccount(t *testing.T) {
 	}
 }
 
+func TestRenderStatusline_ClaudeAndCodexMatchAGY(t *testing.T) {
+	term.Disable()
+	defer term.Disable()
+	inTok := 160000
+	outTok := 7000
+
+	extra := LimitWindows{
+		Account: "gemini:api:01",
+		ExtraSegs: []limitSeg{
+			{Label: "Gemini 5h", Used: 0.32},
+			{Label: "Gemini 7d", Used: 0.48},
+		},
+	}
+
+	// 1. Claude Code
+	claudeIn := StatuslineInput{
+		Tool:    "claude",
+		Account: "ninhle21199@gmail.com",
+		ContextWindow: &statuslineContext{
+			TotalInputTokens:  &inTok,
+			TotalOutputTokens: &outTok,
+		},
+		RateLimits: &statuslineRates{
+			FiveHour: &struct {
+				UsedPercentage float64 `json:"used_percentage"`
+			}{UsedPercentage: 0},
+			SevenDay: &struct {
+				UsedPercentage float64 `json:"used_percentage"`
+			}{UsedPercentage: 100},
+		},
+	}
+
+	claudeLine := RenderStatusline(claudeIn, extra)
+	wantClaude := "gemini:api:01  ·  167k tok  ·  5h ######## 100%  ·  7d ........ 0%  ·  Gemini 5h #####... 68%  ·  Gemini 7d ####.... 52%"
+	if claudeLine != wantClaude {
+		t.Fatalf("Claude statusline mismatch:\n got:  %q\n want: %q", claudeLine, wantClaude)
+	}
+
+	// 2. Codex
+	codexIn := StatuslineInput{
+		Tool:    "codex",
+		Account: "ninhle21199@gmail.com",
+		ContextWindow: &statuslineContext{
+			TotalInputTokens:  &inTok,
+			TotalOutputTokens: &outTok,
+		},
+		RateLimits: &statuslineRates{
+			FiveHour: &struct {
+				UsedPercentage float64 `json:"used_percentage"`
+			}{UsedPercentage: 0},
+			SevenDay: &struct {
+				UsedPercentage float64 `json:"used_percentage"`
+			}{UsedPercentage: 100},
+		},
+	}
+
+	codexLine := RenderStatusline(codexIn, extra)
+	if codexLine != wantClaude {
+		t.Fatalf("Codex statusline mismatch:\n got:  %q\n want: %q", codexLine, wantClaude)
+	}
+
+	// 3. Test with colors / Unicode enabled (standard terminal / AGY style)
+	term.ForceColor()
+	claudeUnicode := RenderStatusline(claudeIn, extra)
+	codexUnicode := RenderStatusline(codexIn, extra)
+	if claudeUnicode != codexUnicode {
+		t.Fatalf("Claude and Codex unicode statusline must be identical:\n claude: %q\n codex:  %q", claudeUnicode, codexUnicode)
+	}
+	for _, want := range []string{
+		"gemini:api:01",
+		"167k",
+		"tok",
+		"5h",
+		"████████",
+		"100%",
+		"7d",
+		"░░░░░░░░",
+		"0%",
+		"Gemini 5h",
+		"█████░░░",
+		"68%",
+		"Gemini 7d",
+		"████░░░░",
+		"52%",
+	} {
+		if !strings.Contains(claudeUnicode, want) {
+			t.Fatalf("Unicode statusline missing expected component %q:\n got: %q", want, claudeUnicode)
+		}
+	}
+}
+
+

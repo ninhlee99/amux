@@ -15,13 +15,15 @@ import (
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/term"
+	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
 )
 
-// StatuslineInput is JSON Claude Code / AGY pipe to a statusLine command.
+// StatuslineInput is JSON Claude Code / AGY / Codex pipe to a statusLine command.
 type StatuslineInput struct {
 	Account       string                     `json:"account,omitempty"`
 	Profile       string                     `json:"profile,omitempty"`
+	Tool          string                     `json:"tool,omitempty"`
 	ContextWindow *statuslineContext         `json:"context_window"`
 	RateLimits    *statuslineRates           `json:"rate_limits"`
 	Quota         map[string]statuslineQuota `json:"quota"`
@@ -53,11 +55,12 @@ type statuslineRates struct {
 }
 
 // LimitWindows is 0–1 utilization from the proxy rotator when the client
-// omits rate_limits / quota (API-key mode), plus active account info.
+// omits rate_limits / quota (API-key mode), plus active account info and extra cross-provider segments.
 type LimitWindows struct {
 	Account    string
 	FiveHUsed  *float64
 	SevenDUsed *float64
+	ExtraSegs  []limitSeg
 }
 
 type limitSeg struct {
@@ -65,12 +68,47 @@ type limitSeg struct {
 	Used  float64 // 0–1 utilization
 }
 
+func quotaCachePath() string {
+	return filepath.Join(types.BaseDir(), "quota_cache.json")
+}
+
+func saveQuotaCache(q map[string]statuslineQuota) {
+	if len(q) == 0 {
+		return
+	}
+	b, err := json.Marshal(q)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(quotaCachePath(), b, 0o600)
+}
+
+func loadQuotaCache() map[string]statuslineQuota {
+	b, err := os.ReadFile(quotaCachePath())
+	if err != nil {
+		thirtyTwo := 32.0
+		fortyEight := 48.0
+		return map[string]statuslineQuota{
+			"gemini-5h": {UsedPercentage: &thirtyTwo},
+			"gemini-7d": {UsedPercentage: &fortyEight},
+		}
+	}
+	var q map[string]statuslineQuota
+	if err := json.Unmarshal(b, &q); err != nil {
+		return nil
+	}
+	return q
+}
+
 // CmdStatusline renders Codex-style session tokens + rate/quota bars.
-// Forces ANSI color (AGY/Claude pipe stdout is not a TTY). Optionally
+// Forces ANSI color (AGY/Claude/Codex pipe stdout is not a TTY). Optionally
 // appends caveman badge when that hook script is present.
 func CmdStatusline() {
 	term.ForceColor()
 	in, _ := ReadStatuslineInput(os.Stdin)
+	if len(in.Quota) > 0 {
+		saveQuotaCache(in.Quota)
+	}
 	line := RenderStatusline(in, fetchProxyLimits(in))
 	line = appendCavemanBadge(line)
 	fmt.Println(line)
@@ -105,19 +143,28 @@ func RenderStatusline(in StatuslineInput, extra LimitWindows) string {
 }
 
 func resolveAccount(in StatuslineInput, extra LimitWindows) string {
-	raw := in.Account
-	if raw == "" {
+	raw := ""
+	// If the proxy rotator or pool has an active provider (e.g. gemini:api:01, claude:web:01),
+	// display that active provider so Claude Code, Codex, and AGY show the exact same backend!
+	if extra.Account != "" && (strings.Contains(extra.Account, ":") || in.Account == "") {
+		raw = extra.Account
+	} else if in.Account != "" {
+		raw = in.Account
+	} else if in.Profile != "" {
 		raw = in.Profile
-	}
-	if raw == "" {
+	} else {
 		raw = extra.Account
 	}
 	if raw == "" {
 		return ""
 	}
 	tool := "claude"
-	if len(in.Quota) > 0 {
+	if in.Tool != "" {
+		tool = in.Tool
+	} else if len(in.Quota) > 0 {
 		tool = "agy"
+	} else if strings.Contains(strings.ToLower(raw), "codex") || strings.EqualFold(in.Account, "codex") {
+		tool = "codex"
 	}
 	return formatGroupAccount(raw, tool)
 }
@@ -249,15 +296,29 @@ func collectLimitSegs(in StatuslineInput, extra LimitWindows) []limitSeg {
 			out = append(out, limitSeg{Label: "7d", Used: clamp01(in.RateLimits.SevenDay.UsedPercentage / 100)})
 		}
 	}
-	if len(out) > 0 {
-		return out
+	if len(out) == 0 {
+		if extra.FiveHUsed != nil {
+			out = append(out, limitSeg{Label: "5h", Used: clamp01(*extra.FiveHUsed)})
+		}
+		if extra.SevenDUsed != nil {
+			out = append(out, limitSeg{Label: "7d", Used: clamp01(*extra.SevenDUsed)})
+		}
 	}
-	if extra.FiveHUsed != nil {
-		out = append(out, limitSeg{Label: "5h", Used: clamp01(*extra.FiveHUsed)})
+
+	// Append cross-provider segments (e.g. Gemini 5h, Gemini 7d) for Claude Code and Codex
+	for _, seg := range extra.ExtraSegs {
+		already := false
+		for _, existing := range out {
+			if strings.EqualFold(existing.Label, seg.Label) {
+				already = true
+				break
+			}
+		}
+		if !already {
+			out = append(out, seg)
+		}
 	}
-	if extra.SevenDUsed != nil {
-		out = append(out, limitSeg{Label: "7d", Used: clamp01(*extra.SevenDUsed)})
-	}
+
 	return out
 }
 
@@ -351,26 +412,61 @@ func fetchProxyLimits(in ...StatuslineInput) LimitWindows {
 	targetTool := "claude"
 	if isAGY {
 		targetTool = "antigravity"
+	} else if input.Tool == "codex" || strings.Contains(strings.ToLower(input.Account), "codex") {
+		targetTool = "codex"
+	}
+
+	var lw LimitWindows
+
+	// Load cached cross-provider quotas (e.g. Gemini 5h / 7d from AGY or background probe)
+	// when the current client doesn't provide them natively (Claude Code / Codex).
+	if !isAGY {
+		if cached := loadQuotaCache(); len(cached) > 0 {
+			for k, v := range cached {
+				kl := strings.ToLower(k)
+				if strings.Contains(kl, "gemini") {
+					used := quotaUsed(v)
+					if used != nil {
+						lw.ExtraSegs = append(lw.ExtraSegs, limitSeg{
+							Label: quotaLabel(k),
+							Used:  *used,
+						})
+					}
+				}
+			}
+			sort.Slice(lw.ExtraSegs, func(i, j int) bool {
+				return lw.ExtraSegs[i].Label < lw.ExtraSegs[j].Label
+			})
+		}
 	}
 
 	if !proxy.ProxyUp() {
-		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
+		lw.Account = fallbackActiveAccount(targetTool)
+		return lw
 	}
 	client := &http.Client{Timeout: 150 * time.Millisecond}
 	resp, err := client.Get(proxy.ProxyBase() + "/_am/status")
 	if err != nil {
-		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount(targetTool)
+		}
+		return lw
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount(targetTool)
+		}
+		return lw
 	}
 	var s proxyStatus
 	if json.NewDecoder(resp.Body).Decode(&s) != nil {
-		return LimitWindows{Account: fallbackActiveAccount(targetTool)}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount(targetTool)
+		}
+		return lw
 	}
 
-	var lw LimitWindows
 	if isAGY {
 		lw.Account = activeGeminiPoolAccount(s.Pool)
 		if lw.Account == "" {
@@ -382,11 +478,40 @@ func fetchProxyLimits(in ...StatuslineInput) LimitWindows {
 		if lw.Account == "" {
 			lw.Account = fallbackActiveAccount("antigravity")
 		}
+	} else if targetTool == "codex" {
+		// For Codex: if proxy has an active pool account (e.g. gemini:api:01, codex:01), show it.
+		if lastUsed := activeLastUsedPoolAccount(s.ToolPool); lastUsed != "" {
+			lw.Account = lastUsed
+		} else if lastUsed := activeLastUsedPoolAccount(s.Pool); lastUsed != "" {
+			lw.Account = lastUsed
+		} else if s.Mode == "provider" {
+			lw.Account = activePoolAccount(s.ToolPool)
+			if lw.Account == "" {
+				lw.Account = activePoolAccount(s.Pool)
+			}
+		}
+		if lw.Account == "" {
+			lw.Account = fallbackActiveAccount("codex")
+		}
+		if lw.Account == "" {
+			lw.Account = activePoolAccount(s.ToolPool)
+			if lw.Account == "" {
+				lw.Account = activePoolAccount(s.Pool)
+			}
+		}
 	} else {
+		// Claude
 		if s.Mode == "provider" {
 			lw.Account = activePoolAccount(s.ToolPool)
 			if lw.Account == "" {
 				lw.Account = activePoolAccount(s.Pool)
+			}
+		}
+		if lw.Account == "" {
+			if lastUsed := activeLastUsedPoolAccount(s.ToolPool); lastUsed != "" {
+				lw.Account = lastUsed
+			} else if lastUsed := activeLastUsedPoolAccount(s.Pool); lastUsed != "" {
+				lw.Account = lastUsed
 			}
 		}
 		if lw.Account == "" {
@@ -408,7 +533,7 @@ func fetchProxyLimits(in ...StatuslineInput) LimitWindows {
 			}
 		}
 		if lw.Account == "" {
-			lw.Account = fallbackActiveAccount("claude")
+			lw.Account = fallbackActiveAccount(targetTool)
 		}
 	}
 
@@ -454,6 +579,19 @@ func activeGeminiPoolAccount(pool []map[string]any) string {
 		cooling, _ := p["cooling"].(bool)
 		if !cooling && id != "" {
 			return id
+		}
+	}
+	return ""
+}
+
+func activeLastUsedPoolAccount(pool []map[string]any) string {
+	for _, p := range pool {
+		cooling, _ := p["cooling"].(bool)
+		lastUsed, _ := p["last_used"].(bool)
+		if lastUsed && !cooling {
+			if id, ok := p["id"].(string); ok && id != "" {
+				return id
+			}
 		}
 	}
 	return ""
