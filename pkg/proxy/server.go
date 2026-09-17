@@ -286,7 +286,6 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 				case http.StatusTooManyRequests:
 					retryAfter := guard.ParseRetryAfter(resp.Header)
 					guard.GlobalHealth().RecordRateLimit(activeBefore, retryAfter)
-					guard.GlobalPacer().RecordRateLimit(activeBefore, retryAfter)
 				case http.StatusUnauthorized, http.StatusForbidden:
 					guard.GlobalHealth().RecordAuthError(activeBefore, resp.Status)
 				}
@@ -389,7 +388,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			guard.ResetAll()
 		} else {
 			guard.GlobalHealth().Reset(target)
-			guard.GlobalPacer().Reset(target)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "target": target})

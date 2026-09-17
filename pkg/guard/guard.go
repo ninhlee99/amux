@@ -10,18 +10,12 @@ import (
 
 var (
 	globalHealth   = NewHealthTracker()
-	globalPacer    = NewPacer(DefaultPacerConfig())
 	globalAffinity = NewSessionAffinity(45 * time.Minute)
 )
 
 // GlobalHealth returns the singleton health tracker instance.
 func GlobalHealth() *HealthTracker {
 	return globalHealth
-}
-
-// GlobalPacer returns the singleton traffic pacer instance.
-func GlobalPacer() *Pacer {
-	return globalPacer
 }
 
 // GlobalAffinity returns the singleton session affinity instance.
@@ -34,32 +28,27 @@ func Sanitize(req *http.Request) {
 	SanitizeOutboundRequest(req)
 }
 
-// Pace coordinates request cadence and enforces backoff delay.
+// Pace coordinates request cadence (no-op since artificial latency pacer was eliminated).
 func Pace(ctx context.Context, accountID string, isWeb bool) error {
-	return globalPacer.Pace(ctx, accountID, isWeb)
+	return nil
 }
 
-// RecordSuccess marks a successful turn for the account in both health and pacer.
+// RecordSuccess marks a successful turn for the account in health.
 func RecordSuccess(accountID string) {
 	globalHealth.RecordSuccess(accountID)
-	globalPacer.ClearBackoff(accountID)
 }
 
-// RecordError updates health score, applies backoff, and may quarantine the account.
+// RecordError updates health score and may quarantine the account.
 func RecordError(accountID string, err error) {
 	if err == nil {
 		return
 	}
 	globalHealth.RecordError(accountID, err)
-	if classifyError(err) == classRateLimit {
-		globalPacer.RecordRateLimit(accountID, 0)
-	}
 }
 
-// ResetAll resets all tracking state across health, pacer, and affinity.
+// ResetAll resets all tracking state across health and affinity.
 func ResetAll() {
 	globalHealth.ResetAll()
-	globalPacer.ResetAll()
 }
 
 // IsQuarantined checks whether an account is quarantined from active rotation.

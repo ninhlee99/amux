@@ -5,12 +5,40 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"amux-accounts/pkg/types"
 )
+
+// ParseRetryAfter inspects Retry-After headers and parses into duration.
+func ParseRetryAfter(h http.Header) time.Duration {
+	if h == nil {
+		return 0
+	}
+	val := strings.TrimSpace(h.Get("Retry-After"))
+	if val == "" {
+		val = strings.TrimSpace(h.Get("retry-after"))
+	}
+	if val != "" {
+		if sec, err := strconv.Atoi(val); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+		if t, err := http.ParseTime(val); err == nil {
+			if dur := time.Until(t); dur > 0 {
+				return dur
+			}
+		}
+	}
+	if reset := h.Get("x-ratelimit-reset-requests"); reset != "" {
+		if sec, err := strconv.Atoi(reset); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return 0
+}
 
 type errorClass int
 
