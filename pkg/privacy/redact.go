@@ -815,6 +815,35 @@ func isSample(s string) bool {
 	return false
 }
 
+func isProtectedCandidate(s string) bool {
+	// Strict Exclusion Rules:
+	// DO NOT alter strings starting with gid://
+	if strings.HasPrefix(s, "gid://") || strings.Contains(s, "gid://shopify/") {
+		return true
+	}
+	// DO NOT alter git commit hashes or cryptographic hashes
+	if len(s) == 40 || len(s) == 7 {
+		isHex := true
+		for _, c := range s {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				isHex = false
+				break
+			}
+		}
+		if isHex {
+			return true
+		}
+	}
+	if strings.HasPrefix(s, "sha256:") || strings.HasPrefix(s, "md5:") || strings.HasPrefix(s, "sha1:") {
+		return true
+	}
+	// DO NOT alter unified diff headers
+	if strings.HasPrefix(s, "--- a/") || strings.HasPrefix(s, "+++ b/") || strings.HasPrefix(s, "@@ ") {
+		return true
+	}
+	return false
+}
+
 // RedactString replaces sensitive spans with sample placeholders.
 func RedactString(in string) (string, Result) {
 	if in == "" {
@@ -827,7 +856,7 @@ func RedactString(in string) (string, Result) {
 
 	for _, rule := range rules {
 		out = rule.re.ReplaceAllStringFunc(out, func(m string) string {
-			if isSample(m) {
+			if isSample(m) || isProtectedCandidate(m) {
 				return m
 			}
 			rep := rule.sample
@@ -889,9 +918,10 @@ func skipJSONRedactKey(k string) bool {
 	case "tools", "input_schema", "parameters", "function", "functions",
 		"tool_choice", "toolchoice", "tool_calls",
 		"id", "tool_use_id", "tool_call_id",
-		"name", "type", "role",
+		"name", "type", "role", "arguments",
 		"functioncall", "functionresponse", "functiondeclarations",
-		"function_call", "function_response":
+		"function_call", "function_response",
+		"command", "args", "env", "mcpservers", "transport":
 		return true
 	default:
 		return false
