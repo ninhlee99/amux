@@ -1,0 +1,68 @@
+package cli
+
+import (
+	"fmt"
+	"strings"
+
+	"amux-accounts/pkg/gateway"
+	"amux-accounts/pkg/identity"
+)
+
+// CmdStatus displays a real-time dashboard of identities, quotas, and gateway state.
+func CmdStatus(args []string) {
+	fmt.Println("====================== AMUX RUNTIME DASHBOARD ======================")
+
+	// 1. Gateway Status
+	gwStatus := gateway.GetStatus()
+	gwState := "STOPPED (Zero-Touch Native Mode)"
+	if gwStatus.Running {
+		gwState = fmt.Sprintf("RUNNING on %s (PID: %d, Sessions: %d)", gwStatus.URL, gwStatus.PID, gwStatus.Sessions)
+	}
+	fmt.Printf("Gateway Daemon: %s\n", gwState)
+
+	hooks := []string{}
+	if gwStatus.ClaudeHooked {
+		hooks = append(hooks, "Claude Code")
+	}
+	if gwStatus.CursorHooked {
+		hooks = append(hooks, "Cursor")
+	}
+	if gwStatus.CodexHooked {
+		hooks = append(hooks, "Codex")
+	}
+	if len(hooks) == 0 {
+		fmt.Println("Active IDE Hooks: None (Native Direct Keychain Mode)")
+	} else {
+		fmt.Printf("Active IDE Hooks: %s -> Proxy :8787\n", strings.Join(hooks, ", "))
+	}
+
+	// 2. Identities & Quotas
+	fmt.Println("\n--------------------------- IDENTITIES -----------------------------")
+	cfg, err := identity.LoadConfig("")
+	if err != nil || len(cfg.Identities) == 0 {
+		fmt.Println("No identities configured yet. Run 'amux id add' to add an identity.")
+		fmt.Println("====================================================================")
+		return
+	}
+
+	fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n", "ID", "PROVIDER", "TIER", "USAGE", "ACTIVE", "RESETS IN")
+	fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n", "------------------", "----------", "--------------", "--------", "--------", "------------")
+
+	for _, id := range cfg.Identities {
+		activeStr := "no"
+		if id.Active {
+			activeStr = "YES *"
+		}
+		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
+		resetStr := id.FormatResetTime()
+
+		fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n",
+			id.ID, id.Provider, id.Tier, usageStr, activeStr, resetStr)
+	}
+
+	effThresh := identity.GetEffectiveThreshold("anthropic", cfg.Identities, cfg.ThresholdPct)
+	fmt.Println("--------------------------------------------------------------------")
+	fmt.Printf("Failover Rule: Multi-Account Threshold: %.1f%% | Effective Provider Threshold: %.1f%%\n",
+		cfg.ThresholdPct, effThresh)
+	fmt.Println("====================================================================")
+}

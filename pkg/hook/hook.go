@@ -866,3 +866,12 @@ func SyncCursorSettingsEnv(proxyUp bool, proxyBase string) error {
 	return SaveCursorSettings(m)
 }
 
+// UninstallAllHooks removes hooks across Claude, Gemini, Codex, and Cursor.
+func UninstallAllHooks() error {
+	_, _ = HookUninstall()
+	_, _ = GeminiHookUninstall()
+	_, _ = CodexHookUninstall()
+	_, _ = CursorHookUninstall()
+	return nil
+}
+
