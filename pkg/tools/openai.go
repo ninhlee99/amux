@@ -41,7 +41,7 @@ type openAIChatRequest struct {
 	Messages        []map[string]any `json:"messages"`
 	Stream          bool             `json:"stream"`
 	StreamOptions   any              `json:"stream_options,omitempty"`
-	Temperature     float64          `json:"temperature,omitempty"`
+	Temperature     *float64         `json:"temperature,omitempty"`
 	Tools           []openAITool     `json:"tools,omitempty"`
 	ToolChoice      any              `json:"tool_choice,omitempty"`
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
@@ -162,10 +162,17 @@ func isReasoningModel(model string) bool {
 }
 
 func toOpenAIChatRequest(req *types.ChatRequest) *openAIChatRequest {
+	caps := GetModelCapabilities("", req.Model)
+	var tempPtr *float64
+	if caps.SupportsTemperature && (req.ExplicitTemperature || req.Temperature > 0) {
+		t := req.Temperature
+		tempPtr = &t
+	}
+
 	out := &openAIChatRequest{
 		Model:       req.Model,
 		Stream:      req.Stream,
-		Temperature: req.Temperature,
+		Temperature: tempPtr,
 		ToolChoice:  normalizeOpenAIToolChoice(req.ToolChoice),
 	}
 	if req.Stream {

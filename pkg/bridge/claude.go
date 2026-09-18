@@ -478,6 +478,9 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 			toolCalls = parsed
 		}
 	}
+	if len(toolCalls) > 0 {
+		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectClaude)
+	}
 	// Deduplicate tool calls by ID if present
 	if len(toolCalls) > 0 {
 		seen := map[string]bool{}
@@ -833,6 +836,9 @@ loop:
 		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
 		}
+	}
+	if len(toolCalls) > 0 {
+		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectClaude)
 	}
 
 	if len(toolCalls) > 0 {

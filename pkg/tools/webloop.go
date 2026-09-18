@@ -15,9 +15,17 @@ import (
 // Protocol is tiny on purpose: catalog is rebuilt every request from the
 // client's live tools[] (new MCP / plugin / Skill appear with no code change).
 // Keep preamble short — every tools turn pays this cost on cold-start threads.
-const webToolPreamble = `Coding-agent backend. Client runs tools on the real repo. [Tool result] = verified CLI output.
-Rules: need file/cmd → emit <tool_call> now; never claim lack of tools / ask to paste / fake edits.
-Format:
+const webToolPreamble = `Coding-agent backend. Client executes tools locally on real repo. [Tool result] = verified output.
+RULES:
+1. Need command/file/search → emit <tool_call> immediately. Never claim inability / ask user to run or paste.
+2. Must use EXACT tool name and property names from CATALOG below (do NOT rename arguments):
+   - If tool is 'run_command': use {"CommandLine":"...", "Cwd":".", "WaitMsBeforeAsync":10000, "toolAction":"Running command", "toolSummary":"Execute shell"} (DO NOT use 'command').
+   - If tool is 'Bash': use {"command":"..."}.
+   - If tool is 'exec_command': use {"cmd":"..."}.
+   - If tool is 'replace_file_content': use {"TargetFile":"...", "TargetContent":"...", "ReplacementContent":"..."}.
+   - If tool is 'write_to_file': use {"TargetFile":"...", "CodeContent":"..."}.
+   - If tool is 'view_file' or 'read_file': use {"AbsolutePath":"..."}.
+3. Format:
 <tool_call>
 {"name":"TOOL","arguments":{...}}
 </tool_call>
@@ -200,9 +208,13 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				if ch.LogText == "" {
 					ch.LogText = raw
 				}
+				ch.ToolCalls = NormalizeToolCalls(ch.ToolCalls, defs, "")
 				logWebTools(source, ch.ToolCalls, ch.LogText)
 				out <- ch
 				for rest := range inner {
+					if len(rest.ToolCalls) > 0 {
+						rest.ToolCalls = NormalizeToolCalls(rest.ToolCalls, defs, "")
+					}
 					out <- rest
 				}
 				return
@@ -936,16 +948,7 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.Too
 	if len(calls) == 0 || len(defs) == 0 {
 		return calls
 	}
-	by := map[string]types.ToolDef{}
-	for _, d := range defs {
-		by[strings.ToLower(d.Name)] = d
-	}
-	for i := range calls {
-		if d, ok := by[strings.ToLower(calls[i].Name)]; ok {
-			calls[i].Arguments = coerceToolArgs(calls[i].Arguments, d)
-		}
-	}
-	return calls
+	return NormalizeToolCalls(calls, defs, "")
 }
 
 // coerceToolArgs remaps common aliases (path↔file_path, cmd↔command, content↔CodeContent,
@@ -1236,7 +1239,7 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 				// inner quote and truncate the command; greedy `.*`
 				// backtracks from the end of the string to find the real
 				// closing quote right before the trailing `}`s instead.
-				reCmd := regexp.MustCompile(`(?s)"command"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
+				reCmd := regexp.MustCompile(`(?s)"(?:command|CommandLine|cmd|script)"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
 				if mcmd := reCmd.FindStringSubmatch(raw); len(mcmd) > 1 {
 					cmd := mcmd[1]
 					b, _ := json.Marshal(map[string]string{"command": cmd})
