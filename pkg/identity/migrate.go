@@ -183,11 +183,18 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 			activeName := profile.ReadActivePointer(tool)
 			isActive := activeName == pm.Name && !pm.Disabled
 
+			bundleTier := TierSubscription
+			bundleAuth := string(AuthOAuth)
+			if strings.Contains(id, ":web:") || strings.EqualFold(fmt.Sprint(pm.Plan), "free") {
+				bundleTier = TierWeb
+				bundleAuth = string(AuthCDP)
+			}
+
 			idRecord := Identity{
 				ID:           id,
 				Provider:     CanonicalProvider(tool),
-				Tier:         TierSubscription,
-				AuthType:     string(AuthOAuth),
+				Tier:         bundleTier,
+				AuthType:     bundleAuth,
 				Credentials:  creds,
 				UsagePercent: 0.0,
 				Active:       isActive,

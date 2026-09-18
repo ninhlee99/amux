@@ -2,6 +2,8 @@ package gateway_test
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"amux-accounts/pkg/gateway"
@@ -103,6 +105,14 @@ func TestGateway_HookCodexLifecycle(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 	_ = os.Setenv("HOME", tmpDir)
 
+	origEnv, _ := exec.Command("launchctl", "getenv", "OPENAI_BASE_URL").Output()
+	_ = exec.Command("launchctl", "unsetenv", "OPENAI_BASE_URL").Run()
+	defer func() {
+		if strings.TrimSpace(string(origEnv)) != "" {
+			_ = exec.Command("launchctl", "setenv", "OPENAI_BASE_URL", strings.TrimSpace(string(origEnv))).Run()
+		}
+	}()
+
 	hooked, _ := gateway.IsCodexHooked()
 	if hooked {
 		t.Fatalf("expected Codex not hooked initially")
@@ -138,6 +148,14 @@ func TestGateway_HookAgyLifecycle(t *testing.T) {
 	origHome := os.Getenv("HOME")
 	defer os.Setenv("HOME", origHome)
 	_ = os.Setenv("HOME", tmpDir)
+
+	origEnv, _ := exec.Command("launchctl", "getenv", "GOOGLE_GEMINI_BASE_URL").Output()
+	_ = exec.Command("launchctl", "unsetenv", "GOOGLE_GEMINI_BASE_URL").Run()
+	defer func() {
+		if strings.TrimSpace(string(origEnv)) != "" {
+			_ = exec.Command("launchctl", "setenv", "GOOGLE_GEMINI_BASE_URL", strings.TrimSpace(string(origEnv))).Run()
+		}
+	}()
 
 	hooked, _ := gateway.IsAgyHooked()
 	if hooked {

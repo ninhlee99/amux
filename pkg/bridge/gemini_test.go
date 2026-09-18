@@ -168,6 +168,15 @@ func TestHandleGeminiGenerateContent_Streaming(t *testing.T) {
 	if !strings.Contains(bodyStr, "data:") || !strings.Contains(bodyStr, "Stream") {
 		t.Fatalf("streaming output mismatch: %s", bodyStr)
 	}
+	if strings.Contains(bodyStr, ": amux") {
+		t.Fatalf("Gemini stream must not contain SSE comments like ': amux ...': %s", bodyStr)
+	}
+	for _, line := range strings.Split(bodyStr, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && strings.HasPrefix(line, ":") {
+			t.Fatalf("found illegal SSE comment for Gemini client: %s", line)
+		}
+	}
 }
 
 func TestHandleGeminiGenerateContent_StreamErrorUsesGeminiShape(t *testing.T) {
