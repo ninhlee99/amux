@@ -379,9 +379,12 @@ func isWebToolRefusal(text string) bool {
 		"lgtm 🌟 (based on the available", "lgtm (based on the available",
 		"could not verify the full", "could not verify", "cannot verify the full",
 		"truncated diff output", "available diff excerpts", "diff excerpts",
-		"no additional findings are raised", "without evidence from the changed lines",
 		"no actionable correctness", "no actionable security", "actionable correctness or security",
 		"based on the available reviewed", "based on the available diff",
+		"unable to continue", "not present in this", "no review findings are produced",
+		"no review findings", "requires access to", "from the available runtime",
+		"cannot inspect the target", "cannot inspect the worktree", "checked-out repository path",
+		"only contains system directories", "no review findings are produced from incomplete data",
 	}
 	for _, n := range needles {
 		if strings.Contains(low, n) {
@@ -771,7 +774,7 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 				} else if !alreadyRanStat {
 					addBash("git diff main...HEAD --stat")
 				} else if !alreadyRanTargeted {
-					addBash("git diff main...HEAD -- pkg/runtime/ pkg/tools/")
+					addBash("git diff main...HEAD -- pkg/gateway/hook.go pkg/gateway/gateway_test.go")
 				} else if len(candidateFiles) > 0 {
 					for _, f := range candidateFiles {
 						if !already[f] {

@@ -74,8 +74,20 @@ func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) stri
 		return content
 	}
 
+	isFix := false
+	for _, msg := range allMessages {
+		low := strings.ToLower(msg.Content)
+		if strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
+			strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") {
+			isFix = true
+			break
+		}
+	}
+
 	task := ""
-	if url := rePRURL.FindString(content); url != "" {
+	if isFix {
+		task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
+	} else if url := rePRURL.FindString(content); url != "" {
 		task = fmt.Sprintf("Review Pull Request: %s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", url)
 	} else if m := rePRRef.FindStringSubmatch(content); len(m) > 1 {
 		task = fmt.Sprintf("Review Pull Request #%s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", m[1])
