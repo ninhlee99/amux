@@ -18,6 +18,8 @@ Identity Management:
   id add [provider]          Add an identity (claude, agy, gemini, codex, api, cursor...)
   id remove <id|name>        Delete an identity and profile bundle (e.g. amux id remove solo)
   id select [id]             Manual account switch / OS Keychain rotation
+  id off <id>                Hard-disable identity — never used until 'amux id on <id>'
+  id on <id>                 Re-enable a hard-disabled identity
   id auto <id> [on|off]      Toggle auto-rotation (off = manual only, excluded from auto-switch)
   id threshold [id] [val]    Get or set account threshold (or global threshold if no id)
   id health                  Probe token validity and remaining quotas

@@ -398,7 +398,6 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 		inTokens := estimateInputTokens(req)
 		outTokens := estimateStringTokens(fullContent.String())
-		recordChatUsage(r, pool, req.Model, inTokens, outTokens, 0)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inTokens, outTokens, started, toolCalls)
 		return
 	}
@@ -498,7 +497,6 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(respObj)
-	recordChatUsage(r, pool, req.Model, inTokens, outTokens, 0)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inTokens, outTokens, started, toolCalls)
 }
 

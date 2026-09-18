@@ -788,8 +788,8 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			// (`am proxy down`) should let clients reach Anthropic directly.
 			if rot.Token() == "" && !hasAPIKey {
 				http.Error(w, "amux proxy: no usable account in pool (all Claude accounts off/expired/rate-limited, "+
-					"no provider pool configured) — fix the pool with `am ls` / `am add`, or stop the proxy to fall "+
-					"back to the real Anthropic API (`am proxy down`)", http.StatusServiceUnavailable)
+					"no provider pool configured) — fix the pool with `amux ls` / `amux add`, or stop the proxy to fall "+
+					"back to the real Anthropic API (`amux proxy down`)", http.StatusServiceUnavailable)
 				return
 			}
 

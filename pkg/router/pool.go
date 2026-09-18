@@ -227,7 +227,8 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	if a == nil {
 		return nil, fmt.Errorf("provider %q not addressable (see: am accounts)", id)
 	}
-	if err := guard.Pace(ctx, id, AdapterAccountType(a) == types.AccountTypeWeb); err != nil {
+	isPaced := AdapterAccountType(a) == types.AccountTypeWeb || AdapterAccountType(a) == types.AccountTypeAPIKey
+	if err := guard.Pace(ctx, id, isPaced); err != nil {
 		return nil, err
 	}
 	ch, err := a.SendMessageStream(ctx, req)
@@ -451,8 +452,8 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				errs = append(errs, fmt.Errorf("%s: cooling down", a.ID()))
 				break
 			}
-			isWeb := AdapterAccountType(a) == types.AccountTypeWeb
-			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
+			isPaced := AdapterAccountType(a) == types.AccountTypeWeb || AdapterAccountType(a) == types.AccountTypeAPIKey
+			if err := guard.Pace(ctx, a.ID(), isPaced); err != nil {
 				skippedPreferred = true
 				errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 				break
@@ -536,9 +537,9 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if r.cooling(a.ID()) {
 				continue
 			}
-			isWeb := tier == types.AccountTypeWeb
+			isPaced := tier == types.AccountTypeWeb || tier == types.AccountTypeAPIKey
 			isSub := tier == types.AccountTypeSubscription
-			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
+			if err := guard.Pace(ctx, a.ID(), isPaced); err != nil {
 				continue
 			}
 			callReq := req

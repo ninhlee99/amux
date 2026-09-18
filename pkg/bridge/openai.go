@@ -15,7 +15,6 @@ import (
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
-	"amux-accounts/pkg/usage"
 )
 
 // HandleChatCompletions handles standard OpenAI /v1/chat/completions requests
@@ -64,8 +63,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {
 		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
-			recordChatUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens)
-			logChatRequest(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, time.Now(), nil)
+			logChatRequestWithCache(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, cached.InputTokens, 0, time.Now(), nil)
 			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
 				replayKey[:8], req.Project(), cached.InputTokens)
 			_ = cached.Serve(w, req.Stream)
@@ -262,7 +260,6 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 			}
 			cachedTokens = finalUsage.CacheReadInputTokens
 		}
-		recordChatUsage(r, pool, req.Model, inputTokens, outTok, cachedTokens)
 		if canReplay && len(rec.Events()) > 0 {
 			ctxshrink.GlobalReplayCache().PutForProject(req.Project(), replayKey, &ctxshrink.CachedReplay{
 				ContentType:  "text/event-stream",
@@ -271,7 +268,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 				OutputTokens: outTok,
 			})
 		}
-		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outTok, started, toolCalls)
+		logChatRequestWithCache(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outTok, cachedTokens, 0, started, toolCalls)
 		return
 	}
 
@@ -368,8 +365,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 			OutputTokens: completionTokens,
 		})
 	}
-	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, cachedTokens)
-	logChatRequest(r, pool, req, pickLogOutput(full.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
+	logChatRequestWithCache(r, pool, req, pickLogOutput(full.String(), logText), finishReason, "", inputTokens, completionTokens, cachedTokens, 0, started, toolCalls)
 }
 
 // openaiClientDialect maps OpenAI-shaped clients onto pool IDE order.
@@ -480,21 +476,6 @@ func openAIContentString(raw json.RawMessage) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func recordChatUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output, cacheRead int) {
-	if input == 0 && output == 0 && cacheRead == 0 {
-		return
-	}
-	usage.AppendUsageEntry(types.UsageEntry{
-		Time:      time.Now(),
-		Account:   poolAccountLabel(pool),
-		Model:     model,
-		Project:   usage.ProjectForRemoteAddr(r.RemoteAddr),
-		Session:   r.Header.Get("X-Claude-Code-Session-Id"),
-		Input:     input,
-		Output:    output,
-		CacheRead: cacheRead,
-	})
-}
 
 // HandleModels returns standard models list (Anthropic format if anthropic-version header present, else OpenAI format).
 func HandleModels(w http.ResponseWriter, r *http.Request) {

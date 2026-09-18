@@ -53,9 +53,15 @@ func CmdStatus(args []string) {
 		if id.Active {
 			activeStr = "YES *"
 		}
+		if !identity.IsEnabled(id) {
+			activeStr = "DISABLED"
+		}
 		autoStr := "ON"
 		if !id.CanAutoRotate() {
 			autoStr = "OFF"
+		}
+		if !identity.IsEnabled(id) {
+			autoStr = "-"
 		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
 		resetStr := id.FormatResetTime()

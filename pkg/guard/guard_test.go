@@ -41,16 +41,53 @@ func TestSanitizer(t *testing.T) {
 	}
 }
 
-func TestPace_ZeroLatency(t *testing.T) {
+func TestPace_ZeroLatencyForSubscriptions(t *testing.T) {
+	ResetAll()
+	t.Cleanup(ResetAll)
+
 	ctx := context.Background()
 	start := time.Now()
 	for i := 0; i < 100; i++ {
-		if err := Pace(ctx, "acc1", false); err != nil {
+		if err := Pace(ctx, "sub-acc", false); err != nil {
 			t.Fatalf("unexpected pace err: %v", err)
 		}
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Millisecond {
-		t.Errorf("Pace must not add artificial delay, took %v", elapsed)
+		t.Errorf("Subscription Pace must not add delay, took %v", elapsed)
+	}
+}
+
+func TestPace_WebAndAPIInterval(t *testing.T) {
+	ResetAll()
+	t.Cleanup(ResetAll)
+
+	// First request on an account should proceed immediately
+	ctx := context.Background()
+	start := time.Now()
+	if err := Pace(ctx, "chatgpt:test", true); err != nil {
+		t.Fatalf("first pace should succeed: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("first pace should be immediate, took %v", elapsed)
+	}
+
+	// Immediate second request with short context timeout should be canceled / wait
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	err := Pace(cancelCtx, "chatgpt:test", true)
+	if err == nil {
+		t.Fatalf("expected context timeout due to 10-15s spacing, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+
+	// Different account ID should not be blocked by the first account's pacing
+	otherCtx, otherCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer otherCancel()
+	if err := Pace(otherCtx, "gemini:test", true); err != nil {
+		t.Fatalf("different account should not be blocked: %v", err)
 	}
 }
 

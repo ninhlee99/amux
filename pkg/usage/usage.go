@@ -158,14 +158,14 @@ func printDayUsage(targetDate time.Time, accountFilter string) {
 		if accountEndpoints[acct] == nil {
 			accountEndpoints[acct] = make(map[string]bool)
 		}
-		ep := e.Endpoint
-		if ep == "" {
-			ep = e.Model
+		modelName := e.Model
+		if modelName == "" && e.Endpoint != "" {
+			modelName = e.Endpoint
 		}
-		if ep == "" {
-			ep = "/v1/messages"
+		if modelName == "" {
+			modelName = "claude-sonnet"
 		}
-		accountEndpoints[acct][ep] = true
+		accountEndpoints[acct][modelName] = true
 
 		totalIn += e.Input
 		totalOut += e.Output
@@ -186,7 +186,7 @@ func printDayUsage(targetDate time.Time, accountFilter string) {
 	}
 
 	fmt.Printf("%-20s %-18s %6s %10s %10s %10s %11s %11s\n",
-		"ACCOUNT", "ENDPOINT", "REQS", "INPUT", "OUTPUT", "CACHE READ", "CACHE WRITE", "TOTAL")
+		"ACCOUNT", "MODEL", "REQS", "INPUT", "OUTPUT", "CACHE READ", "CACHE WRITE", "TOTAL")
 	fmt.Printf("%-20s %-18s %6s %10s %10s %10s %11s %11s\n",
 		"--------------------", "------------------", "------", "----------", "----------", "----------", "-----------", "-----------")
 

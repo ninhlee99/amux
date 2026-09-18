@@ -685,7 +685,7 @@ func SaveActiveProfile(tool, name string) (string, error) {
 
 func CmdUse(tool, name string) error {
 	if _, err := os.Stat(BundlePath(tool, name)); err != nil {
-		return fmt.Errorf("no profile %s/%s (see: am ls %s)", tool, name, tool)
+		return fmt.Errorf("no profile %s/%s (see: amux ls %s)", tool, name, tool)
 	}
 	// Always resave whatever is logged in now into its own profile first, so
 	// a token Claude Code rotated while that account was active (refresh

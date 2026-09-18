@@ -327,15 +327,15 @@ func CmdSwitchProvider(name string) {
 }
 
 // CmdBtw sends a "by-the-way" message to be injected into the next LLM request
-// while an agent is running. Usage: am btw <message text>
+// while an agent is running. Usage: amux gateway btw <message text>
 func CmdBtw(text string) {
 	if !ProxyUp() {
-		fmt.Fprintln(os.Stderr, "amux: proxy not running — start a Claude Code session first (am proxy up)")
+		fmt.Fprintln(os.Stderr, "amux: proxy not running — start a Claude Code session first (amux proxy up)")
 		return
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		fmt.Fprintln(os.Stderr, "amux: usage: am btw <message>")
+		fmt.Fprintln(os.Stderr, "amux: usage: amux btw <message>")
 		return
 	}
 

@@ -610,7 +610,7 @@ func isPlausibleForcedBash(cmd string) bool {
 		return regexp.MustCompile(`(?i)^(?:\S+/)?gh\s+(?:issue|pr|auth|repo|search|run)\b`).MatchString(cmd)
 	case strings.HasPrefix(low, "ls"):
 		return regexp.MustCompile(`(?i)^ls(?:\s+-[a-zA-Z0-9]+)*\s*$`).MatchString(cmd)
-	case strings.HasPrefix(low, "am "):
+	case strings.HasPrefix(low, "am "), strings.HasPrefix(low, "amux "):
 		return true
 	case strings.HasPrefix(low, "rtk "):
 		return true

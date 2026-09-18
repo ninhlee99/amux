@@ -14,7 +14,6 @@ import (
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
-	"amux-accounts/pkg/usage"
 )
 
 // poolAccountLabel returns a label for `am usage`'s account column when a
@@ -390,8 +389,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {
 		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
-			recordPoolUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens, 0)
-			logChatRequest(r, pool, req, "[cached replay]", "end_turn", "", 0, cached.OutputTokens, time.Now(), nil)
+			logChatRequestWithCache(r, pool, req, "[cached replay]", "end_turn", "", 0, cached.OutputTokens, cached.InputTokens, 0, time.Now(), nil)
 			term.LogProxy("⚡ Deterministic Replay Cache HIT [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
 				replayKey[:8], req.Project(), cached.InputTokens)
 			return cached.Serve(w, req.Stream)
@@ -562,8 +560,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 			OutputTokens: outputTokens,
 		})
 	}
-	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, started, toolCalls)
+	logChatRequestWithCache(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, started, toolCalls)
 	return err
 }
 
@@ -930,8 +927,7 @@ loop:
 	fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	flusher.Flush()
 
-	recordPoolUsage(r, pool, req.Model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, started, toolCalls)
+	logChatRequestWithCache(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, started, toolCalls)
 	return nil
 }
 
@@ -944,23 +940,6 @@ func mapFinishReasonAnthropic(fr string) string {
 	default:
 		return "end_turn"
 	}
-}
-
-func recordPoolUsage(r *http.Request, pool *router.AccountPoolRouter, model string, input, output, cacheRead, cacheCreation int) {
-	if input == 0 && output == 0 && cacheRead == 0 {
-		return
-	}
-	usage.AppendUsageEntry(types.UsageEntry{
-		Time:          time.Now(),
-		Account:       poolAccountLabel(pool),
-		Model:         model,
-		Project:       usage.ProjectForRemoteAddr(r.RemoteAddr),
-		Session:       r.Header.Get("X-Claude-Code-Session-Id"),
-		Input:         input,
-		Output:        output,
-		CacheRead:     cacheRead,
-		CacheCreation: cacheCreation,
-	})
 }
 
 // HandleClaudeCountTokens handles Anthropic /v1/messages/count_tokens requests.

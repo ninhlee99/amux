@@ -264,10 +264,67 @@ func CanAutoRotateByID(path string, id string) bool {
 	return true
 }
 
+// SetEnabled hard-enables or hard-disables an identity by ID.
+// disabled=true  → identity is completely blocked from routing (rotator + pool skip it).
+// disabled=false → identity is restored to its prior auto-rotate state.
+// Unlike SetAutoRotate (soft exclusion for manual-only), this is a hard off/on switch.
+func SetEnabled(path string, id string, enabled bool) error {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+
+	id = strings.TrimSpace(id)
+	found := false
+	for i := range cfg.Identities {
+		item := &cfg.Identities[i]
+		if item.ID != id {
+			continue
+		}
+		if item.Metadata == nil {
+			item.Metadata = map[string]interface{}{}
+		}
+		if enabled {
+			delete(item.Metadata, "disabled")
+		} else {
+			item.Metadata["disabled"] = true
+		}
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("identity %q not found", id)
+	}
+	return SaveConfig(path, cfg)
+}
+
+// IsEnabled reports whether the identity is enabled (not hard-disabled).
+// Defaults to true (enabled) when the field is absent.
+func IsEnabled(id Identity) bool {
+	if id.Metadata == nil {
+		return true
+	}
+	if v, ok := id.Metadata["disabled"].(bool); ok {
+		return !v
+	}
+	return true
+}
+
 // AutoRotateFilter returns a predicate function for auto-rotation eligibility.
+// Returns false for identities that are hard-disabled (metadata.disabled=true)
+// or have auto-rotate turned off.
 func AutoRotateFilter(path string) func(id string) bool {
 	return func(id string) bool {
-		return CanAutoRotateByID(path, id)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			return true
+		}
+		for _, ident := range cfg.Identities {
+			if ident.ID == id {
+				return IsEnabled(ident) && ident.CanAutoRotate()
+			}
+		}
+		return true
 	}
 }
 
