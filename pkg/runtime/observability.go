@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/types"
@@ -32,4 +33,18 @@ func LogToolValidation(source string, calls []types.ToolCall, errs []*Validation
 			monitor.AppendEvent("RUNTIME", fmt.Sprintf("%s tool validation error: %s", source, e.Error()))
 		}
 	}
+}
+
+// LogExecution records a structured execution event for telemetry and debugging.
+func LogExecution(reqID, client, runtimeName, toolName, args string, duration time.Duration, exitCode int, err error) {
+	status := "OK"
+	if err != nil || exitCode != 0 {
+		status = fmt.Sprintf("FAIL (exit=%d)", exitCode)
+	}
+	// Truncate args for compact log
+	argsSummary := args
+	if len(argsSummary) > 60 {
+		argsSummary = argsSummary[:60] + "..."
+	}
+	monitor.AppendEvent("EXEC", fmt.Sprintf("[%s] %s/%s → %s(%s) %s (%s)", reqID, client, runtimeName, toolName, argsSummary, status, duration.Round(time.Millisecond)))
 }

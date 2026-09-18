@@ -135,6 +135,16 @@ func parseSchemaParameters(raw json.RawMessage) []ToolParameter {
 		return nil
 	}
 
+	// If properties are empty, check if wrapped under "parameters" (MCP / OpenAI convention)
+	if len(s.Properties) == 0 {
+		var wrapped struct {
+			Parameters rawJSONSchema `json:"parameters"`
+		}
+		if json.Unmarshal(raw, &wrapped) == nil && len(wrapped.Parameters.Properties) > 0 {
+			s = wrapped.Parameters
+		}
+	}
+
 	reqMap := make(map[string]bool, len(s.Required))
 	for _, r := range s.Required {
 		reqMap[r] = true
