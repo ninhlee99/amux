@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,21 +15,27 @@ import (
 )
 
 // LegacyAccountDoc represents ~/.am/accounts.json legacy structure.
+// LegacyProvider represents a provider entry in ~/.am/accounts.json.
+type LegacyProvider struct {
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	Account      string  `json:"account"`
+	Plan         string  `json:"plan"`
+	Model        string  `json:"model"`
+	BaseURL      string  `json:"baseUrl,omitempty"`
+	Priority     int     `json:"priority"`
+	Disabled     bool    `json:"disabled"`
+	UsagePercent float64 `json:"usage_percent,omitempty"`
+	ResetAt      int64   `json:"reset_at,omitempty"`
+	ApiKey       string  `json:"apiKey,omitempty"`
+	ApiKeySnake  string  `json:"api_key,omitempty"`
+	RefreshToken string  `json:"refresh_token,omitempty"`
+	SessionKey   string  `json:"session_key,omitempty"`
+}
+
+// LegacyAccountDoc represents ~/.am/accounts.json legacy structure.
 type LegacyAccountDoc struct {
-	Providers []struct {
-		ID           string  `json:"id"`
-		Type         string  `json:"type"`
-		Account      string  `json:"account"`
-		Plan         string  `json:"plan"`
-		Model        string  `json:"model"`
-		Priority     int     `json:"priority"`
-		Disabled     bool    `json:"disabled"`
-		UsagePercent float64 `json:"usage_percent,omitempty"`
-		ResetAt      int64   `json:"reset_at,omitempty"`
-		ApiKey       string  `json:"api_key,omitempty"`
-		RefreshToken string  `json:"refresh_token,omitempty"`
-		SessionKey   string  `json:"session_key,omitempty"`
-	} `json:"providers"`
+	Providers []LegacyProvider `json:"providers"`
 }
 
 // MigrateLegacyAccounts reads legacy accounts.json and profile bundles and returns migrated identities.
@@ -59,6 +67,14 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	// 1. Read accounts.json
 	data, err := os.ReadFile(accountsPath)
 	if err == nil {
+		if bytes.HasPrefix(data, []byte("AMENC1:")) {
+			enc := data[len("AMENC1:"):]
+			if dec, derr := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(enc))); derr == nil {
+				if plain, perr := auth.Decrypt(dec); perr == nil {
+					data = plain
+				}
+			}
+		}
 		var doc LegacyAccountDoc
 		if json.Unmarshal(data, &doc) == nil {
 			for _, p := range doc.Providers {
@@ -83,8 +99,15 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 					authType = string(AuthAPIKey)
 				}
 
-				if p.ApiKey != "" {
-					creds["api_key"] = p.ApiKey
+				apiKey := p.ApiKey
+				if apiKey == "" {
+					apiKey = p.ApiKeySnake
+				}
+				if apiKey != "" {
+					creds["api_key"] = apiKey
+				}
+				if p.BaseURL != "" {
+					creds["base_url"] = p.BaseURL
 				}
 				if p.RefreshToken != "" {
 					creds["refresh_token"] = p.RefreshToken
@@ -96,6 +119,15 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 					creds["account"] = p.Account
 				}
 
+				meta := map[string]interface{}{
+					"migrated_from": "accounts.json",
+					"plan":          p.Plan,
+					"model":         p.Model,
+				}
+				if p.BaseURL != "" {
+					meta["endpoint"] = p.BaseURL
+				}
+
 				id := Identity{
 					ID:           p.ID,
 					Provider:     CanonicalProvider(p.Type),
@@ -105,11 +137,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 					UsagePercent: p.UsagePercent,
 					ResetAt:      p.ResetAt,
 					Active:       !p.Disabled,
-					Metadata: map[string]interface{}{
-						"migrated_from": "accounts.json",
-						"plan":          p.Plan,
-						"model":         p.Model,
-					},
+					Metadata:     meta,
 				}
 				cfg.Identities = append(cfg.Identities, id)
 				existingMap[id.ID] = true
@@ -118,31 +146,22 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 		}
 	}
 
-	// 2. Read legacy profile store (Claude, Codex, Gemini profiles)
-	profilesDir := filepath.Join(types.BaseDir(), "profiles")
-	if _, err := os.Stat(profilesDir); os.IsNotExist(err) {
-		home, _ := os.UserHomeDir()
-		profilesDir = filepath.Join(home, ".am", "profiles")
-	}
-	tools := []string{"claude", "codex", "gemini"}
+	// 2. Read profile store (Claude, Codex, Gemini profiles).
+	// Uses profile.ListProfiles which reads .meta.json files — profiles are stored
+	// as .amp bundles (not .amux). IDs are generated consistently with profile.IDPrefixForTool.
+	tools := []string{"claude", "codex", "gemini", "antigravity"}
 	for _, tool := range tools {
-		dir := filepath.Join(profilesDir, tool)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, de := range entries {
-			if de.IsDir() || !strings.HasSuffix(de.Name(), ".amux") {
-				continue
-			}
-			name := strings.TrimSuffix(de.Name(), ".amux")
-			id := fmt.Sprintf("%s-%s", tool, name)
+		profiles := profile.ListProfiles(tool)
+		for _, pm := range profiles {
+			// pm.ID is set by ListProfiles using types.FormatID(prefix, i+1)
+			// e.g. "claude:code:01", "codex:01"
+			id := pm.ID
 			if existingMap[id] {
 				continue
 			}
 
-			// Extract profile entries
-			pe := profile.LoadProfileEntries(tool, name)
+			// Extract credentials from the profile bundle
+			pe := profile.LoadProfileEntries(tool, pm.Name)
 			creds := make(map[string]string)
 			for _, entry := range pe {
 				if len(entry.Data) > 0 {
@@ -160,7 +179,10 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 				}
 			}
 
-			meta := profile.ReadMeta(tool, name)
+			// Determine active status from the profile's .active pointer
+			activeName := profile.ReadActivePointer(tool)
+			isActive := activeName == pm.Name && !pm.Disabled
+
 			idRecord := Identity{
 				ID:           id,
 				Provider:     CanonicalProvider(tool),
@@ -168,11 +190,12 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 				AuthType:     string(AuthOAuth),
 				Credentials:  creds,
 				UsagePercent: 0.0,
-				Active:       false,
+				Active:       isActive,
 				Metadata: map[string]interface{}{
 					"migrated_from": "profile_bundle",
-					"profile_name":  name,
-					"email":         meta.Account,
+					"profile_name":  pm.Name,
+					"email":         pm.Account,
+					"plan":          pm.Plan,
 				},
 			}
 			cfg.Identities = append(cfg.Identities, idRecord)

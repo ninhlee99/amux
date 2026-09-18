@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Artifact is one file or keychain entry that belongs to a tool's login state.
 type Artifact struct {
@@ -53,8 +56,13 @@ func (p ProfileMeta) ToAccount() Account {
 	if !isSub {
 		typ = AccountTypeWeb
 	}
+	email := p.Account
+	if strings.TrimSpace(email) == "" {
+		email = "-"
+	}
 	return Account{
 		ID:           id,
+		Email:        email,
 		Provider:     p.Tool,
 		Type:         typ,
 		AuthType:     "oauth",

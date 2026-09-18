@@ -133,6 +133,31 @@ func (a *ClaudeWebAdapter) refreshCookiesFromProfile() error {
 	return nil
 }
 
+// refreshSessionFromBrowser pulls fresh sessionKey and Cloudflare cookies directly from installed browsers.
+func (a *ClaudeWebAdapter) refreshSessionFromBrowser() error {
+	tok, _, err := browser.ExtractCookie("claude.ai", "sessionKey")
+	if err != nil || tok == "" {
+		return fmt.Errorf("extract claude sessionKey: %w", err)
+	}
+	cf, _, _ := browser.ExtractCookie("claude.ai", "cf_clearance")
+	jar := "sessionKey=" + tok
+	if cf != "" {
+		jar += "; cf_clearance=" + cf
+	}
+
+	a.mu.Lock()
+	a.SessionKey = tok
+	a.Cookies = jar
+	a.cookieRefreshed = true
+	a.orgID = ""
+	a.mu.Unlock()
+
+	_ = UpdateProviderCookies(DefaultAccountsPath(), a.AdapterID, tok, jar)
+	log.Printf("%s: auto-refreshed sessionKey from browser", a.AdapterID)
+	a.refreshPlanAndModel()
+	return nil
+}
+
 // refreshPlanAndModel re-detects tier/model so skipFreeWebHardTask doesn't
 // treat a Max account as free after a stale accounts.json plan field.
 func (a *ClaudeWebAdapter) refreshPlanAndModel() {
@@ -181,6 +206,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	cm := a.convs()
 	var resp *http.Response
 	refreshedFor429 := false
+	refreshedAuth := false
 	rotatedConv := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		activeConv, hasActive := cm.GetActive(project)
@@ -229,6 +255,16 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				continue
 			}
 			return nil, fmt.Errorf("%s: conversation not found after rotate", a.AdapterID)
+		}
+
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && !refreshedAuth {
+			refreshedAuth = true
+			resp.Body.Close()
+			if a.refreshSessionFromBrowser() == nil {
+				log.Printf("%s: 401/403 unauthorized — auto-refreshed sessionKey from browser, retrying", a.AdapterID)
+				continue
+			}
+			return nil, types.ErrAuthentication
 		}
 
 		if resp.StatusCode != http.StatusTooManyRequests {

@@ -14,12 +14,12 @@ Core Commands:
   doctor                     Diagnostics for network, keychain, tools & daemon
 
 Identity Management:
-  id add [provider]          Add identity (OAuth, API key, CLI session, or CDP)
-  id list                    Display flat accounts, credentials, usage % & auto-switch
-  id remove <id>             Delete identity from persistence
-  id health                  Probe token validity and remaining quotas
+  id list                    Display flat accounts, emails, usage % & auto-switch state
+  id add [provider]          Add an identity (claude, agy, gemini, codex, api, cursor...)
+  id remove <id|name>        Delete an identity and profile bundle (e.g. amux id remove solo)
   id select [id]             Manual account switch / OS Keychain rotation
   id auto <id> [on|off]      Toggle auto-rotation (off = manual only, excluded from auto-switch)
+  id health                  Probe token validity and remaining quotas
 
 Gateway:
   gateway start [--public]   Start detached gateway background service (optional public 0.0.0.0 bind)

@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"amux-accounts/pkg/browser"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -116,6 +117,15 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				return nil, fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrRateLimitReached, err)
 			}
 			if isGeminiAuthErr(err) {
+				if attempt == 0 {
+					a.mu.Lock()
+					rerr := a.refreshCookiesFromBrowserLocked()
+					a.mu.Unlock()
+					if rerr == nil && a.ensureInit(ctx) == nil {
+						log.Printf("%s: auth expired — auto-refreshed cookies from browser, retrying", a.AdapterID)
+						continue
+					}
+				}
 				return nil, fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrAuthentication, err)
 			}
 			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
@@ -134,9 +144,32 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	return nil, types.ErrRateLimitReached
 }
 
+func (a *GeminiWebAdapter) refreshCookiesFromBrowserLocked() error {
+	tok, _, err := browser.ExtractCookie("google.com", "__Secure-1PSID")
+	if err != nil || tok == "" {
+		return fmt.Errorf("extract google __Secure-1PSID: %w", err)
+	}
+	jar := "__Secure-1PSID=" + tok
+	if ts, _, _ := browser.ExtractCookie("google.com", "__Secure-1PSIDTS"); ts != "" {
+		jar += "; __Secure-1PSIDTS=" + ts
+	}
+
+	a.Cookies = jar
+	a.inited = false
+	a.accessToken = ""
+
+	_ = UpdateProviderCookies(DefaultAccountsPath(), a.AdapterID, tok, jar)
+	log.Printf("%s: auto-refreshed __Secure-1PSID from browser", a.AdapterID)
+	return nil
+}
+
 func (a *GeminiWebAdapter) ensureInit(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.initLocked(ctx, false)
+}
+
+func (a *GeminiWebAdapter) initLocked(ctx context.Context, retried bool) error {
 	if a.inited && a.accessToken != "" {
 		return nil
 	}
@@ -167,6 +200,11 @@ func (a *GeminiWebAdapter) ensureInit(ctx context.Context) error {
 		a.sessionID = m[1]
 	}
 	if a.accessToken == "" {
+		if !retried {
+			if rerr := a.refreshCookiesFromBrowserLocked(); rerr == nil {
+				return a.initLocked(ctx, true)
+			}
+		}
 		if strings.Contains(text, "accounts.google.com") || resp.StatusCode == http.StatusUnauthorized {
 			return types.ErrAuthentication
 		}

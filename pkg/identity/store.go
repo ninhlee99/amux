@@ -143,7 +143,13 @@ func Remove(path string, id string) (bool, error) {
 	var updated []Identity
 	removed := false
 	for _, item := range cfg.Identities {
-		if item.ID == id {
+		match := item.ID == id
+		if !match && item.Metadata != nil {
+			if prof, ok := item.Metadata["profile_name"].(string); ok && prof == id {
+				match = true
+			}
+		}
+		if match {
 			removed = true
 			continue
 		}

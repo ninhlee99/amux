@@ -571,6 +571,38 @@ func IsDisabled(tool, name string) bool {
 	return ReadMeta(tool, name).Disabled
 }
 
+// DeleteProfile removes the bundle and metadata files for a named profile.
+func DeleteProfile(tool, name string) error {
+	name = SanitizeName(name)
+	_ = os.Remove(BundlePath(tool, name))
+	_ = os.Remove(MetaPath(tool, name))
+	if ReadActivePointer(tool) == name {
+		_ = os.Remove(ActivePath(tool))
+	}
+	return nil
+}
+
+// DeleteProfileAnyTool searches across all configured tools and deletes any matching profile.
+func DeleteProfileAnyTool(name string) (bool, string) {
+	name = SanitizeName(name)
+	found := false
+	var foundTool string
+	for _, tool := range ToolNames(LoadConfig()) {
+		bPath := BundlePath(tool, name)
+		mPath := MetaPath(tool, name)
+		if _, err := os.Stat(bPath); err == nil {
+			_ = DeleteProfile(tool, name)
+			found = true
+			foundTool = tool
+		} else if _, err := os.Stat(mPath); err == nil {
+			_ = DeleteProfile(tool, name)
+			found = true
+			foundTool = tool
+		}
+	}
+	return found, foundTool
+}
+
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -592,7 +624,7 @@ func CmdSave(tool, name string) (string, error) {
 	if name == "" {
 		name = SanitizeName(acct)
 		if name == "" {
-			return "", fmt.Errorf("could not detect the %s account; pass a name: am add %s <name>", tool, tool)
+			return "", fmt.Errorf("could not detect the %s account; pass a name: amux id add %s <name>", tool, tool)
 		}
 	} else {
 		name = SanitizeName(name)

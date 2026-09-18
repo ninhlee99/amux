@@ -40,7 +40,7 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
 │                              PROVIDERS & MODEL BACKENDS                                   │
 │  Tầng 1: Subscriptions (OAuth PKCE)  │ Tầng 2: Web Sessions (CDP) │ Tầng 3: Metered API   │
 │  Anthropic Pro/Team, OpenAI Pro/Plus │ Claude Web, ChatGPT Web    │ OpenRouter, DeepSeek, │
-│  Codex CLI Reuse, Google AGY OAuth   │ Gemini Web (Free Quota)    │ Ollama, vLLM, Custom  │
+│  Codex CLI Reuse, Google AGY OAuth   │ Gemini Web (Free Quota)    │ Ollama, vLLM, API Endpoints │
 └───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

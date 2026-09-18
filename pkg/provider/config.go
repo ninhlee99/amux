@@ -107,8 +107,28 @@ func (p ProviderConfig) ToAccount() types.Account {
 	if provider == "" || provider == "web" || provider == "api" {
 		provider = p.Type
 	}
+	email := "-"
+	if authType != "api_key" && typ != types.AccountTypeAPIKey {
+		if strings.TrimSpace(p.Account) != "" {
+			email = strings.TrimSpace(p.Account)
+		} else if p.Type == "codex_cli" {
+			if spec, ok := profile.LookupToolSpec("codex"); ok {
+				if detected := profile.DetectAccount(spec); detected != "" {
+					email = detected
+				}
+			}
+		} else if p.Type == "antigravity" || p.Type == "agy" {
+			if spec, ok := profile.LookupToolSpec("antigravity"); ok {
+				if detected := profile.DetectAccount(spec); detected != "" {
+					email = detected
+				}
+			}
+		}
+	}
+
 	return types.Account{
 		ID:           p.ID,
+		Email:        email,
 		Provider:     provider,
 		Type:         typ,
 		AuthType:     authType,
@@ -578,6 +598,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			AdapterID:    p.ID,
 			PriorityLvl:  p.Priority,
 			SessionToken: ResolveSecret(p.SessionToken),
+			RefreshToken: ResolveSecret(p.RefreshToken),
 			TargetModel:  p.Model,
 			PlanTier:     p.Plan,
 			HTTPClient:   proxyClient,
@@ -1203,6 +1224,27 @@ func UpdateProviderCookies(path, id, sessionKey, cookies string) error {
 			f.Providers[i].SessionKey = sessionKey
 		}
 		f.Providers[i].Cookies = cookies
+		return SaveConfigFile(path, f)
+	}
+	return fmt.Errorf("provider %s not found", id)
+}
+
+// UpdateProviderSessionToken persists refreshed accessToken and refreshToken for a provider.
+func UpdateProviderSessionToken(path, id, sessionToken, refreshToken string) error {
+	f, err := LoadConfigFile(path)
+	if err != nil {
+		return err
+	}
+	for i, p := range f.Providers {
+		if p.ID != id {
+			continue
+		}
+		if sessionToken != "" {
+			f.Providers[i].SessionToken = sessionToken
+		}
+		if refreshToken != "" {
+			f.Providers[i].RefreshToken = refreshToken
+		}
 		return SaveConfigFile(path, f)
 	}
 	return fmt.Errorf("provider %s not found", id)

@@ -87,6 +87,25 @@ func CanonicalProvider(p string) string {
 	}
 }
 
+// Email returns the associated account email or "-" if it is an API key or missing.
+func (id Identity) Email() string {
+	if id.Tier == TierAPIKey || id.AuthType == string(AuthAPIKey) {
+		return "-"
+	}
+	if id.Metadata != nil {
+		if em, ok := id.Metadata["email"].(string); ok && strings.TrimSpace(em) != "" {
+			return strings.TrimSpace(em)
+		}
+	}
+	if em, ok := id.Credentials["account"]; ok && strings.TrimSpace(em) != "" {
+		return strings.TrimSpace(em)
+	}
+	if em, ok := id.Credentials["email"]; ok && strings.TrimSpace(em) != "" {
+		return strings.TrimSpace(em)
+	}
+	return "-"
+}
+
 // FormatResetTime returns human-readable duration until reset.
 func (id Identity) FormatResetTime() string {
 	if id.ResetAt <= 0 {
@@ -100,3 +119,4 @@ func (id Identity) FormatResetTime() string {
 	rem = rem.Round(time.Minute)
 	return strings.TrimSpace(strings.ReplaceAll(rem.String(), "0s", ""))
 }
+

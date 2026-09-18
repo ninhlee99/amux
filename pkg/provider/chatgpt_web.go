@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"amux-accounts/pkg/browser"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -24,6 +25,7 @@ type ChatGPTWebAdapter struct {
 	AdapterID    string
 	PriorityLvl  int
 	SessionToken string
+	RefreshToken string
 	TargetModel  string
 	PlanTier     string // "plus" | "pro" | "team" | "free" | …
 	HTTPClient   *http.Client
@@ -156,7 +158,51 @@ func isChatGPTRateLimit(statusCode int, body string) bool {
 		strings.Contains(lower, "try again later")
 }
 
+func (a *ChatGPTWebAdapter) refreshSession() error {
+	a.mu.Lock()
+	cookie := a.RefreshToken
+	if cookie == "" {
+		cookie = a.SessionToken
+	}
+	a.mu.Unlock()
+
+	if cookie == "" {
+		return fmt.Errorf("no session cookie available to refresh")
+	}
+
+	sess, err := browser.FetchChatGPTSession(cookie)
+	if err != nil {
+		// Fallback: try extracting fresh cookie directly from browser
+		if tok, _, bErr := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); bErr == nil && tok != "" {
+			cf, _, _ := browser.ExtractCookie("chatgpt.com", "cf_clearance")
+			freshCookie := "__Secure-next-auth.session-token=" + tok
+			if cf != "" {
+				freshCookie += "; cf_clearance=" + cf
+			}
+			sess, err = browser.FetchChatGPTSession(freshCookie)
+			if err == nil {
+				cookie = freshCookie
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("refresh chatgpt session: %w", err)
+	}
+
+	a.mu.Lock()
+	a.SessionToken = sess.AccessToken
+	a.RefreshToken = cookie
+	a.mu.Unlock()
+
+	_ = UpdateProviderSessionToken(DefaultAccountsPath(), a.AdapterID, sess.AccessToken, cookie)
+	log.Printf("%s: auto-refreshed access token via next-auth session cookie (user: %s, expires: %s)", a.AdapterID, sess.Email, sess.Expires)
+	return nil
+}
+
 func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	if a.SessionToken == "" && a.RefreshToken != "" {
+		_ = a.refreshSession()
+	}
 	if a.SessionToken == "" {
 		return nil, fmt.Errorf("%s: %w: no session token configured", a.AdapterID, types.ErrAuthentication)
 	}
@@ -176,6 +222,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	project := req.Project()
 	cm := a.convs()
 	rotatedConv := false
+	authRetried := false
 	for {
 		activeConv, hasActive := cm.GetActive(project)
 		var convID, parentID string
@@ -244,6 +291,12 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 
 		if resp.StatusCode == http.StatusUnauthorized {
 			resp.Body.Close()
+			if !authRetried && a.refreshSession() == nil {
+				authRetried = true
+				accountID = chatgptAccountIDFromJWT(a.SessionToken)
+				sentinel, _ = fetchChatGPTSentinel(ctx, a.client(), a.SessionToken, accountID, deviceID)
+				continue
+			}
 			return nil, types.ErrAuthentication
 		}
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/profile"
+	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/ui"
 )
@@ -42,12 +44,17 @@ func CmdID(args []string) {
 func cmdIDList() {
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
+		if n, _ := identity.MigrateLegacyAccounts("", ""); n > 0 {
+			cfg, _ = identity.LoadConfig("")
+		}
+	}
+	if err != nil || len(cfg.Identities) == 0 {
 		fmt.Println("No identities configured. Run 'amux id add [provider]' to register an identity.")
 		return
 	}
 
-	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n", "ID", "PROVIDER", "TIER", "AUTH TYPE", "USAGE", "ACTIVE", "AUTO-SWITCH")
-	fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n", "--------------------", "------------", "--------------", "--------------", "--------", "--------", "------------")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "TIER", "USAGE", "ACTIVE", "AUTO-SWITCH")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
 		activeStr := "NO"
@@ -59,8 +66,8 @@ func cmdIDList() {
 			autoStr = "OFF"
 		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		fmt.Printf("%-20s %-12s %-14s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Provider, id.Tier, id.AuthType, usageStr, activeStr, autoStr)
+		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n",
+			id.ID, id.Email(), id.Tier, usageStr, activeStr, autoStr)
 	}
 }
 
@@ -100,16 +107,15 @@ func cmdIDAutoRotate(args []string) {
 }
 
 func cmdIDAdd(args []string) {
-	providerName := "claude"
-	if len(args) > 0 {
-		providerName = args[0]
+	if len(args) == 0 {
+		ui.CmdLogin(nil)
+		_, _ = identity.MigrateLegacyAccounts("", "")
+		return
 	}
 
+	providerName := args[0]
 	fmt.Printf("Adding identity for provider: %s\n", providerName)
-	// Delegate to interactive login / auth picker which supports OAuth, CDP, API key
-	ui.CmdLogin([]string{providerName})
-
-	// Trigger non-destructive sync to identities.json
+	ui.CmdLogin(args)
 	_, _ = identity.MigrateLegacyAccounts("", "")
 }
 
@@ -118,15 +124,18 @@ func cmdIDRemove(args []string) {
 		die("usage: amux id remove <id>")
 	}
 	id := args[0]
+	profDeleted, _ := profile.DeleteProfileAnyTool(id)
+	provDeleted := provider.RemoveProvider(provider.DefaultAccountsPath(), id) == nil
 	removed, err := identity.Remove("", id)
 	if err != nil {
 		die("failed to remove identity %s: %v", id, err)
 	}
-	if !removed {
+	if !removed && !profDeleted && !provDeleted {
 		fmt.Printf("Identity %q not found.\n", id)
 		return
 	}
-	fmt.Printf("Identity %q removed from storage.\n", id)
+	proxy.Sync()
+	fmt.Printf("✓ Identity %q removed from storage.\n", id)
 }
 
 func cmdIDHealth() {
@@ -164,7 +173,11 @@ func cmdIDSelect(args []string) {
 			if item.Active {
 				activeTag = " (current active)"
 			}
-			fmt.Printf("  [%d] %s (%s, %s)%s\n", i+1, item.ID, item.Provider, item.Tier, activeTag)
+			emailTag := ""
+			if em := item.Email(); em != "-" && em != "" {
+				emailTag = fmt.Sprintf(" <%s>", em)
+			}
+			fmt.Printf("  [%d] %s%s (%s, %s)%s\n", i+1, item.ID, emailTag, item.Provider, item.Tier, activeTag)
 		}
 		fmt.Print("Enter choice: ")
 		reader := bufio.NewReader(os.Stdin)
