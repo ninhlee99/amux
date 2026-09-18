@@ -29,7 +29,7 @@ func CmdSetup(args []string) {
 		fmt.Printf("⚠ %s\n", msg)
 	}
 
-	fmt.Println("\n== Installing /am:feedback Slash Command ==")
+	fmt.Println("\n== Installing /amux:feedback Slash Command ==")
 	if err := hook.InstallSlashCommand("feedback.md", []byte(hook.FeedbackSlashCommandContent)); err != nil {
 		fmt.Printf("Notice: %v\n", err)
 	} else {

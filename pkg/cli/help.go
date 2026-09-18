@@ -34,6 +34,7 @@ Configuration & Migration:
   migrate                    Non-destructive migration to flat Identity model
 
 System:
+  feedback [-b|-i] [title]   File a GitHub issue (bug or feature request)
   update [--force]           Update amux to latest version
   uninstall [--purge]        Uninstall amux and remove hooks
 `)
