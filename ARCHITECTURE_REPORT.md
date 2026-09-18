@@ -8,7 +8,7 @@ AI Applications (Claude Code, Codex CLI, Cursor, Gemini/AGY, Autonomous Agents)
       ↓
 AMUX Runtime Layer (Identity Layer, Context Layer, Universal AI Gateway, Universal Tool Engine)
       ↓
-Providers & Models (Anthropic, OpenAI, Gemini, Local, Custom Endpoints)
+Providers & Models (Anthropic, OpenAI, Gemini, Local, API Endpoints)
 ```
 
 ---

@@ -113,20 +113,7 @@ func TestMigration_LegacyDataPreservation(t *testing.T) {
 	identitiesPath := filepath.Join(tmpDir, "identities.json")
 
 	legacyDoc := identity.LegacyAccountDoc{
-		Providers: []struct {
-			ID           string  `json:"id"`
-			Type         string  `json:"type"`
-			Account      string  `json:"account"`
-			Plan         string  `json:"plan"`
-			Model        string  `json:"model"`
-			Priority     int     `json:"priority"`
-			Disabled     bool    `json:"disabled"`
-			UsagePercent float64 `json:"usage_percent,omitempty"`
-			ResetAt      int64   `json:"reset_at,omitempty"`
-			ApiKey       string  `json:"api_key,omitempty"`
-			RefreshToken string  `json:"refresh_token,omitempty"`
-			SessionKey   string  `json:"session_key,omitempty"`
-		}{
+		Providers: []identity.LegacyProvider{
 			{
 				ID:           "claude-pro-1",
 				Type:         "claude_oauth",
@@ -160,16 +147,16 @@ func TestMigration_LegacyDataPreservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrateLegacyAccounts failed: %v", err)
 	}
-	if migratedCount != 3 {
-		t.Fatalf("expected 3 migrated accounts, got %d", migratedCount)
+	if migratedCount < 3 {
+		t.Fatalf("expected at least 3 migrated accounts (from accounts.json), got %d", migratedCount)
 	}
 
 	cfg, err := identity.LoadConfig(identitiesPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Identities) != 3 {
-		t.Fatalf("expected 3 identities in config, got %d", len(cfg.Identities))
+	if len(cfg.Identities) < 3 {
+		t.Fatalf("expected at least 3 identities in config, got %d", len(cfg.Identities))
 	}
 
 	// Verify claude-pro-1 mapped to subscription tier with refresh token

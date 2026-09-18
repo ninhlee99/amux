@@ -1,6 +1,11 @@
 package browser
 
-import "testing"
+import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"testing"
+)
 
 func TestParseCookieHeader(t *testing.T) {
 	tests := []struct {
@@ -51,3 +56,36 @@ func TestParseCookieHeaderStillPrefersNamedPair(t *testing.T) {
 		t.Errorf("header = %q, want wanted", got)
 	}
 }
+
+func TestDecryptCookie_Strips32ByteHeader(t *testing.T) {
+	key := []byte("0123456789abcdef") // 16-byte key
+	header32 := make([]byte, 32)
+	for i := range header32 {
+		header32[i] = byte(i + 1)
+	}
+	expected := "hello-chatgpt-session-token"
+	plaintext := append(header32, []byte(expected)...)
+
+	// PKCS#7 pad to block size 16
+	padLen := 16 - (len(plaintext) % 16)
+	for i := 0; i < padLen; i++ {
+		plaintext = append(plaintext, byte(padLen))
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iv := bytes.Repeat([]byte(" "), aes.BlockSize)
+	mode := cipher.NewCBCEncrypter(block, iv)
+	ciphertext := make([]byte, len(plaintext))
+	mode.CryptBlocks(ciphertext, plaintext)
+
+	encVal := append([]byte("v10"), ciphertext...)
+	got := decryptCookie(key, encVal)
+	if got != expected {
+		t.Errorf("decryptCookie got %q, want %q", got, expected)
+	}
+}
+
+

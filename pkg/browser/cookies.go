@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -200,7 +201,10 @@ func readChromiumCookie(b BrowserInfo, domainFilter, cookieName string) (string,
 		return "", fmt.Errorf("sqlite3 query: %w", err)
 	}
 
-	var combined strings.Builder
+	var chunks []struct {
+		idx int
+		val string
+	}
 	for _, line := range strings.Split(strings.TrimSpace(string(sqlOut)), "\n") {
 		if line == "" {
 			continue
@@ -220,11 +224,35 @@ func readChromiumCookie(b BrowserInfo, domainFilter, cookieName string) (string,
 		if parts[0] == cookieName {
 			return dec, nil
 		}
-		if strings.HasPrefix(parts[0], cookieName) {
-			combined.WriteString(dec)
+		if strings.HasPrefix(parts[0], cookieName+".") {
+			idxStr := strings.TrimPrefix(parts[0], cookieName+".")
+			var idx int
+			if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil {
+				chunks = append(chunks, struct {
+					idx int
+					val string
+				}{idx: idx, val: dec})
+			} else {
+				chunks = append(chunks, struct {
+					idx int
+					val string
+				}{idx: len(chunks), val: dec})
+			}
+		} else if strings.HasPrefix(parts[0], cookieName) {
+			chunks = append(chunks, struct {
+				idx int
+				val string
+			}{idx: len(chunks), val: dec})
 		}
 	}
-	if combined.Len() > 0 {
+	if len(chunks) > 0 {
+		sort.SliceStable(chunks, func(i, j int) bool {
+			return chunks[i].idx < chunks[j].idx
+		})
+		var combined strings.Builder
+		for _, c := range chunks {
+			combined.WriteString(c.val)
+		}
 		return combined.String(), nil
 	}
 	return "", fmt.Errorf("cookie %s not found", cookieName)
@@ -258,6 +286,11 @@ func decryptCookie(key, encVal []byte) string {
 	if pad > 0 && pad <= aes.BlockSize && len(dec) >= pad {
 		dec = dec[:len(dec)-pad]
 	}
+	// macOS Chromium OSCrypt prepends a 32-byte signature/digest to the
+	// plaintext before AES-128-CBC encryption. Strip these 32 prefix bytes.
+	if len(dec) > 32 {
+		dec = dec[32:]
+	}
 	return string(dec)
 }
 
@@ -273,9 +306,9 @@ type ChatGPTSession struct {
 // Cookie header that authenticates chatgpt.com) for access/refresh tokens
 // from the web session endpoint — no keychain involved.
 func FetchChatGPTSession(sessionTokenOrCookie string) (*ChatGPTSession, error) {
-	cookie := sessionTokenOrCookie
-	if !strings.Contains(cookie, "=") {
-		cookie = "__Secure-next-auth.session-token=" + sessionTokenOrCookie
+	cookie := strings.TrimSpace(sessionTokenOrCookie)
+	if !looksLikeNamedCookie(cookie) {
+		cookie = "__Secure-next-auth.session-token=" + cookie
 	}
 
 	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/api/auth/session", nil)

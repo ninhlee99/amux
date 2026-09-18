@@ -45,8 +45,8 @@ func CmdStatus(args []string) {
 		return
 	}
 
-	fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n", "ID", "PROVIDER", "TIER", "USAGE", "ACTIVE", "RESETS IN")
-	fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n", "------------------", "----------", "--------------", "--------", "--------", "------------")
+	fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "PROVIDER", "TIER", "USAGE", "ACTIVE", "RESETS IN")
+	fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n", "------------------", "--------------------------", "----------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
 		activeStr := "NO"
@@ -56,8 +56,8 @@ func CmdStatus(args []string) {
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
 		resetStr := id.FormatResetTime()
 
-		fmt.Printf("%-18s %-10s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Provider, id.Tier, usageStr, activeStr, resetStr)
+		fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n",
+			id.ID, id.Email(), id.Provider, id.Tier, usageStr, activeStr, resetStr)
 	}
 
 	effThresh := identity.GetEffectiveThreshold("anthropic", cfg.Identities, cfg.ThresholdPct)

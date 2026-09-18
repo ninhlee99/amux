@@ -62,7 +62,7 @@ amux setup
 ```bash
 amux id add claude    # OAuth, CLI snapshot, or CDP browser login
 amux id add codex     # OpenAI Codex CLI or standalone OAuth
-amux id add custom    # Any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, Together)
+amux id add api       # Any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, Together, etc.)
 ```
 
 ### 4. Inspect Runtime & Quotas
@@ -87,7 +87,7 @@ amux doctor                         # Probes OS Keychain access, upstream networ
 ### 2. Identity Management (`amux id`)
 ```bash
 amux id list                        # Display flat accounts, tier, credentials status, usage % & auto-switch
-amux id add [provider]              # Add identity: claude, codex, antigravity, or custom
+amux id add [provider]              # Add identity: claude, agy, gemini, codex, api, cursor
 amux id select [id]                 # Manual account switch (interactive picker; updates OS Keychain)
 amux id auto <id> [on|off]          # Toggle auto-rotation (off = MANUAL ONLY; excluded from auto-switch)
 amux id health                      # Probe token lifetimes and quota limits

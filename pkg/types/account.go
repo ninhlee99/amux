@@ -16,6 +16,7 @@ const (
 // Account is a flat account record — no nested group hierarchy.
 type Account struct {
 	ID           string      `json:"id"`
+	Email        string      `json:"email,omitempty"`
 	Provider     string      `json:"provider"`      // "claude", "codex", "gemini", "cursor"
 	Type         AccountType `json:"type"`           // subscription, web, api_key
 	AuthType     string      `json:"auth_type"`      // oauth, cdp, api_key
