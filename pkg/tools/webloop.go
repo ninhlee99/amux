@@ -17,8 +17,9 @@ import (
 // Keep preamble short — every tools turn pays this cost on cold-start threads.
 const webToolPreamble = `Coding-agent backend. Client executes tools locally on real repo. [Tool result] = verified output.
 RULES:
-1. Need command/file/search → emit <tool_call> immediately. Never claim inability / ask user to run or paste.
-2. Must use EXACT tool name and property names from CATALOG below (do NOT rename arguments):
+1. Need command/file/search/PR context → emit <tool_call> immediately. Never claim inability, lack of runtime, or ask user to paste diffs.
+2. For skills/plugins like /open-pr:review, /open-pr:fix: run shell commands ('gh pr diff', 'gh pr view', 'git diff') via <tool_call> to fetch PR context. You HAVE full terminal execution.
+3. Must use EXACT tool name and property names from CATALOG below (do NOT rename arguments):
    - If tool is 'run_command': use {"CommandLine":"...", "Cwd":".", "WaitMsBeforeAsync":10000, "toolAction":"Running command", "toolSummary":"Execute shell"} (DO NOT use 'command').
    - If tool is 'Bash': use {"command":"..."}.
    - If tool is 'exec_command': use {"cmd":"..."}.
@@ -334,6 +335,13 @@ func isWebToolRefusal(text string) bool {
 		"không có bằng chứng", "sẽ review đối chiếu", "không có tool",
 		"không khả dụng", "trong phiên này", "khả dụng trong", "không có write",
 		"không có bash", "không hỗ trợ tool", "chưa hỗ trợ tool",
+		// Plugin / Skill / PR runtime refusals (e.g. ChatGPT claims open-pr runtime or plugin files not available)
+		"not available to me", "not available in this", "is not available", "not available here",
+		"could not access", "couldn't access", "can’t complete", "can't complete", "cannot complete",
+		"don’t have the execution context", "don't have the execution context", "do not have the execution context",
+		"in this chat", "in this environment", "plugin is installed", "required plugin files",
+		"provide the pr diff", "provide the diff", "provide the context", "alternatively, provide",
+		"without posting to github", "safely perform the review", "open-pr runtime",
 	}
 	for _, n := range needles {
 		if strings.Contains(low, n) {
@@ -560,6 +568,17 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 			}
 			if reGitStatusCmd.MatchString(searchText) && !hasBashCommand(out, "git status") {
 				addBash("git status -sb")
+			}
+			// Special handling for PR / open-pr refusal
+			lowSearch := strings.ToLower(searchText)
+			if strings.Contains(lowSearch, "open-pr") || strings.Contains(lowSearch, "pr review") ||
+				strings.Contains(lowSearch, "pr diff") || strings.Contains(lowSearch, "/open-pr") {
+				if !hasBashCommand(out, "gh pr diff") && !hasBashCommand(out, "git diff") {
+					addBash("gh pr diff 2>/dev/null || git diff HEAD~1 2>/dev/null || git diff")
+				}
+				if !hasBashCommand(out, "gh pr view") && !hasBashCommand(out, "git status") {
+					addBash("gh pr view 2>/dev/null || git status -sb")
+				}
 			}
 		}
 	}
