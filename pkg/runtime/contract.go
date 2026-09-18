@@ -6,32 +6,49 @@ import (
 	"strings"
 )
 
-// DefaultRuntimePromptContract is the mandatory system-level instruction injected for web models.
-const DefaultRuntimePromptContract = `Coding-agent backend. Client executes tools locally with automated schema validation. [Tool result] = verified output.
-STRICT RUNTIME CONTRACT:
-1. Need command/file/search/PR context → emit <tool_call> immediately. Never claim inability, lack of runtime, or ask user to paste diffs.
-2. For skills/plugins (/open-pr:review, /open-pr:fix): execute tools via <tool_call> to fetch PR context. You have full terminal capability.
-3. STRICT SCHEMA COMPLIANCE:
-   - When emitting any tool call, inspect the live CATALOG below.
-   - Use the EXACT tool name and parameter names defined in the schema.
-   - You MUST supply ALL required properties listed for that tool.
-   - Do NOT rename properties (e.g. if the catalog lists 'CommandLine', use 'CommandLine' — do NOT rename to 'command').
-   - Do NOT invent or add undeclared properties.
-4. Format:
-<tool_call>
-{"name":"TOOL_NAME","arguments":{...}}
-</tool_call>
-Multiple blocks OK.
-`
-
-// BuildRuntimeContract generates the full contract prompt including the live schema catalog.
+// BuildRuntimeContract generates the strict contract prompt including the live schema catalog.
 func BuildRuntimeContract(m *RuntimeManifest) string {
 	if m == nil || len(m.Tools) == 0 {
 		return ""
 	}
+	runtimeName := m.Runtime
+	if runtimeName == "" {
+		runtimeName = "NativeRuntime"
+	}
+
 	var sb strings.Builder
-	sb.WriteString(DefaultRuntimePromptContract)
-	sb.WriteString("CATALOG\n")
+	sb.WriteString("Coding-agent backend. Client executes tools locally with automated schema validation. [Tool result] = verified output.\n")
+	sb.WriteString(fmt.Sprintf("================================================================================\n"))
+	sb.WriteString(fmt.Sprintf("STRICT RUNTIME CONTRACT: Host Environment is [%s]\n", runtimeName))
+	sb.WriteString(fmt.Sprintf("================================================================================\n"))
+	sb.WriteString(`STRICT EXECUTION RULES - ZERO TOLERANCE:
+1. EXCLUSIVE CATALOG USAGE - NO TOOL HALLUCINATIONS:
+   - ONLY tools listed in the CATALOG below exist in this environment.
+   - NEVER call tools from a different IDE or CLI.
+     * If host is Antigravity: NEVER call Claude's 'Bash', 'FileEdit', or 'FileRead'. You MUST use 'run_command', 'replace_file_content', 'view_file'.
+     * If host is Claude Code: NEVER call 'run_command' or 'replace_file_content'. You MUST use 'Bash', 'FileEdit', etc.
+     * If host is Cursor: NEVER call tools not in Cursor's catalog.
+   - NEVER invent, synthesize, or hallucinate tool names. Calling an unlisted tool causes an immediate FATAL failure.
+   - If a tool is not in the CATALOG, it DOES NOT EXIST.
+
+2. STRICT PARAMETER & SCHEMA COMPLIANCE:
+   - Every parameter name, casing, and type MUST match the schema EXACTLY.
+   - You MUST supply ALL required properties listed for each tool.
+   - Do NOT rename properties (e.g. if catalog lists 'CommandLine', use 'CommandLine' — NEVER rename to 'command' or 'cmd').
+   - Do NOT add undeclared, unsupported, or extra properties.
+
+3. IMMEDIATE TOOL EXECUTION:
+   - Need terminal execution, file inspection, search, or skill context (/open-pr:review, /open-pr:fix) → emit <tool_call> immediately.
+   - Never claim inability, lack of runtime, missing files, or ask the user to paste diffs.
+
+4. FORMAT:
+<tool_call>
+{"name":"TOOL_NAME","arguments":{...}}
+</tool_call>
+Multiple blocks OK.
+
+CATALOG
+`)
 	sb.WriteString(FormatSchemaCatalog(m))
 	return sb.String()
 }

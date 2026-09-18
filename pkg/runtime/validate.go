@@ -58,3 +58,32 @@ func ValidateToolCall(call types.ToolCall, def NativeToolDefinition) *Validation
 
 	return nil
 }
+
+// ValidateCallsAgainstManifest validates all tool calls against the active host manifest.
+// Catches unlisted/hallucinated tools, missing required parameters, and malformed JSON.
+func ValidateCallsAgainstManifest(calls []types.ToolCall, m *RuntimeManifest) []*ValidationError {
+	if len(calls) == 0 || m == nil {
+		return nil
+	}
+
+	byName := make(map[string]NativeToolDefinition, len(m.Tools))
+	for _, t := range m.Tools {
+		byName[strings.ToLower(t.Name)] = t
+	}
+
+	var errs []*ValidationError
+	for _, c := range calls {
+		def, exists := byName[strings.ToLower(c.Name)]
+		if !exists {
+			errs = append(errs, &ValidationError{
+				ToolName: c.Name,
+				Message:  fmt.Sprintf("tool '%s' is not supported in %s (unlisted/hallucinated tool)", c.Name, m.Runtime),
+			})
+			continue
+		}
+		if vErr := ValidateToolCall(c, def); vErr != nil {
+			errs = append(errs, vErr)
+		}
+	}
+	return errs
+}

@@ -158,3 +158,80 @@ func TestScenario_NewMCPToolWithoutCoreChanges(t *testing.T) {
 		t.Fatalf("bad MCP tool call should fail validation")
 	}
 }
+
+func TestAntiHallucination_RejectCrossIDETools(t *testing.T) {
+	// 1. Antigravity environment
+	agyReq := &types.ChatRequest{
+		ClientDialect: "gemini",
+		Tools: []types.ToolDef{
+			{
+				Name:        "run_command",
+				InputSchema: []byte(`{"type":"object","required":["CommandLine","Cwd","WaitMsBeforeAsync","toolAction","toolSummary"],"properties":{"CommandLine":{"type":"string"},"Cwd":{"type":"string"},"WaitMsBeforeAsync":{"type":"integer"},"toolAction":{"type":"string"},"toolSummary":{"type":"string"}}}`),
+			},
+			{
+				Name:        "view_file",
+				InputSchema: []byte(`{"type":"object","required":["AbsolutePath","toolAction","toolSummary"],"properties":{"AbsolutePath":{"type":"string"},"toolAction":{"type":"string"},"toolSummary":{"type":"string"}}}`),
+			},
+		},
+	}
+	agyManifest := runtime.DiscoverManifest(agyReq)
+	if agyManifest.Runtime != "Antigravity" {
+		t.Fatalf("expected Antigravity runtime, got %s", agyManifest.Runtime)
+	}
+
+	// Model erroneously hallucinates Claude's Bash tool in Antigravity environment
+	hallucinatedBash := []types.ToolCall{
+		{Name: "Bash", Arguments: `{"command":"git status"}`},
+	}
+	errs := runtime.ValidateCallsAgainstManifest(hallucinatedBash, agyManifest)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error rejecting hallucinated Bash in Antigravity, got %d", len(errs))
+	}
+	if !strings.Contains(errs[0].Message, "not supported in Antigravity") {
+		t.Fatalf("expected rejection message, got %s", errs[0].Message)
+	}
+
+	// Valid AGY tool call
+	validAgyCall := []types.ToolCall{
+		{
+			Name: "run_command",
+			Arguments: `{
+				"CommandLine": "git status",
+				"Cwd": ".",
+				"WaitMsBeforeAsync": 1000,
+				"toolAction": "Checking git status",
+				"toolSummary": "Git status check"
+			}`,
+		},
+	}
+	if errs := runtime.ValidateCallsAgainstManifest(validAgyCall, agyManifest); len(errs) > 0 {
+		t.Fatalf("valid AGY call failed validation: %v", errs[0])
+	}
+
+	// 2. Claude Code environment
+	claudeReq := &types.ChatRequest{
+		ClientDialect: "claude",
+		Tools: []types.ToolDef{
+			{
+				Name:        "Bash",
+				InputSchema: []byte(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
+			},
+		},
+	}
+	claudeManifest := runtime.DiscoverManifest(claudeReq)
+	if claudeManifest.Runtime != "ClaudeCode" {
+		t.Fatalf("expected ClaudeCode runtime, got %s", claudeManifest.Runtime)
+	}
+
+	// Model erroneously hallucinates AGY's run_command in Claude Code environment
+	hallucinatedRunCmd := []types.ToolCall{
+		{Name: "run_command", Arguments: `{"CommandLine":"git status"}`},
+	}
+	errsClaude := runtime.ValidateCallsAgainstManifest(hallucinatedRunCmd, claudeManifest)
+	if len(errsClaude) != 1 {
+		t.Fatalf("expected 1 error rejecting hallucinated run_command in ClaudeCode, got %d", len(errsClaude))
+	}
+	if !strings.Contains(errsClaude[0].Message, "not supported in ClaudeCode") {
+		t.Fatalf("expected rejection message, got %s", errsClaude[0].Message)
+	}
+}

@@ -78,10 +78,10 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
-	preamble := tools.WebPreamble(req.Tools)
+	preamble := tools.WebPreambleForRequest(req)
 	if continuingThread {
 		// Thread already saw full protocol; catalog-only saves ~2k tokens/turn.
-		preamble = tools.WebCatalogOnly(req.Tools)
+		preamble = tools.WebCatalogOnlyForRequest(req)
 	}
 	trimmedBody := strings.TrimSpace(body)
 	var finalPrompt string

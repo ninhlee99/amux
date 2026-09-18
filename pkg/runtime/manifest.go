@@ -33,18 +33,44 @@ type RuntimeManifest struct {
 	Metadata    map[string]any         `json:"metadata,omitempty"`
 }
 
+// DetectRuntimeName accurately detects the host runtime environment from dialect and tools.
+func DetectRuntimeName(dialect string, tools []types.ToolDef) string {
+	d := strings.ToLower(dialect)
+	switch {
+	case d == "claude":
+		return "ClaudeCode"
+	case d == "gemini" || d == "antigravity":
+		return "Antigravity"
+	case d == "cursor":
+		return "Cursor"
+	case d == "codex":
+		return "Codex"
+	}
+	// Fingerprint tool names if dialect is generic or empty
+	for _, t := range tools {
+		name := strings.ToLower(t.Name)
+		if name == "run_command" || name == "replace_file_content" || name == "call_mcp_tool" || name == "view_file" {
+			return "Antigravity"
+		}
+		if name == "bash" || name == "fileedit" || name == "fileread" || name == "filewrite" {
+			return "ClaudeCode"
+		}
+		if name == "run_terminal_command" || name == "read_file" {
+			return "Cursor"
+		}
+	}
+	if dialect != "" {
+		return strings.ToUpper(dialect[:1]) + dialect[1:]
+	}
+	return "NativeRuntime"
+}
+
 // DiscoverManifest dynamically builds a RuntimeManifest from a client request.
 func DiscoverManifest(req *types.ChatRequest) *RuntimeManifest {
 	if req == nil {
 		return &RuntimeManifest{Runtime: "Generic"}
 	}
-	runtimeName := req.ClientDialect
-	if runtimeName == "" {
-		runtimeName = "NativeRuntime"
-	} else {
-		// Capitalize first letter for display
-		runtimeName = strings.ToUpper(runtimeName[:1]) + runtimeName[1:]
-	}
+	runtimeName := DetectRuntimeName(req.ClientDialect, req.Tools)
 	return FromToolDefs(runtimeName, req.Tools)
 }
 

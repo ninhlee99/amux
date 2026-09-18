@@ -12,25 +12,6 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-// Protocol is tiny on purpose: catalog is rebuilt every request from the
-// client's live tools[] (new MCP / plugin / Skill appear with no code change).
-// Keep preamble short — every tools turn pays this cost on cold-start threads.
-const webToolPreamble = `Coding-agent backend. Client executes tools locally with automated schema validation. [Tool result] = verified output.
-STRICT MANDATORY TOOL CONTRACT:
-1. Need command/file/search/PR context → emit <tool_call> immediately. Never claim inability, lack of runtime, or ask user to paste diffs.
-2. For skills/plugins (/open-pr:review, /open-pr:fix): execute tools via <tool_call> to fetch PR context. You have full terminal capability.
-3. STRICT SCHEMA COMPLIANCE:
-   - When emitting any tool call, inspect the CATALOG below and emit arguments matching the EXACT tool name and property names defined for that tool.
-   - Do NOT rename properties (e.g. if the catalog lists 'CommandLine', use 'CommandLine' — do NOT rename to 'command').
-   - You MUST supply ALL required properties listed for that tool.
-   - Do NOT add undeclared properties.
-4. Format:
-<tool_call>
-{"name":"TOOL","arguments":{...}}
-</tool_call>
-Multiple blocks OK. CATALOG
-`
-
 const webToolCloser = `
 [end] Need data → <tool_call> now. Have tool results → answer fully. No checklist / paste / "no tools".
 `
@@ -62,46 +43,42 @@ var (
 	reWebTitleJSON = regexp.MustCompile(`(?s)^\s*\{\s*"title"\s*:`)
 )
 
-// WebPreamble is appended to a web-backend prompt when the client sent tools[].
+// WebPreambleForRequest generates the strict host runtime contract for a specific ChatRequest.
+func WebPreambleForRequest(req *types.ChatRequest) string {
+	if req == nil || len(req.Tools) == 0 {
+		return ""
+	}
+	manifest := runtime.DiscoverManifest(req)
+	return runtime.BuildRuntimeContract(manifest)
+}
+
+// WebCatalogOnlyForRequest generates continuing-thread catalog for a specific ChatRequest.
+func WebCatalogOnlyForRequest(req *types.ChatRequest) string {
+	if req == nil || len(req.Tools) == 0 {
+		return ""
+	}
+	manifest := runtime.DiscoverManifest(req)
+	return "CATALOG\n" + runtime.FormatSchemaCatalog(manifest)
+}
+
+// WebPreamble is backward-compatible preamble from tools slice alone.
 func WebPreamble(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	manifest := runtime.FromToolDefs("NativeRuntime", defs)
+	runtimeName := runtime.DetectRuntimeName("", defs)
+	manifest := runtime.FromToolDefs(runtimeName, defs)
 	return runtime.BuildRuntimeContract(manifest)
 }
 
-// WebCatalogOnly is the continuing-thread preamble: live catalog, no rules essay.
+// WebCatalogOnly is backward-compatible continuing-thread catalog from tools slice alone.
 func WebCatalogOnly(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	manifest := runtime.FromToolDefs("NativeRuntime", defs)
+	runtimeName := runtime.DetectRuntimeName("", defs)
+	manifest := runtime.FromToolDefs(runtimeName, defs)
 	return "CATALOG\n" + runtime.FormatSchemaCatalog(manifest)
-}
-
-func catalogBlock(defs []types.ToolDef) string {
-	sorted := make([]types.ToolDef, len(defs))
-	copy(sorted, defs)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Name < sorted[j].Name
-	})
-	var b strings.Builder
-	for _, d := range sorted {
-		b.WriteString(catalogLine(d))
-		b.WriteByte('\n')
-	}
-	b.WriteByte('\n')
-	return b.String()
-}
-
-// catalogLine is "Name" or "Name:key:type,..." — live tools[], typed required args.
-func catalogLine(d types.ToolDef) string {
-	keys := schemaKeyTypes(d.InputSchema, 6)
-	if len(keys) == 0 {
-		return d.Name
-	}
-	return d.Name + ":" + strings.Join(keys, ",")
 }
 
 func schemaKeys(raw json.RawMessage, max int) []string {
@@ -777,65 +754,6 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		if c, ok := allow[strings.ToLower(name)]; ok {
 			return c, true
 		}
-		lower := strings.ToLower(name)
-		switch {
-		case lower == "bash" || lower == "shell" || lower == "run_terminal_command" ||
-			lower == "run_command" || lower == "exec_command":
-			if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok {
-				return d.Name, true
-			}
-		case lower == "read" || lower == "read_file" || lower == "view_file":
-			if d, ok := findToolDef(by, "read", "read_file", "view_file"); ok {
-				return d.Name, true
-			}
-		case lower == "write" || lower == "write_file" || lower == "write_to_file":
-			if d, ok := findToolDef(by, "write", "write_file", "write_to_file"); ok {
-				return d.Name, true
-			}
-		case lower == "edit" || lower == "edit_file" || lower == "replace_file_content" ||
-			lower == "patch" || lower == "str_replace_editor":
-			if d, ok := findToolDef(by, "edit", "edit_file", "replace_file_content", "patch", "str_replace_editor"); ok {
-				return d.Name, true
-			}
-		case lower == "grep" || lower == "grep_search" || lower == "search_code" || lower == "search":
-			if d, ok := findToolDef(by, "grep", "grep_search", "search_code", "search"); ok {
-				return d.Name, true
-			}
-		case lower == "find" || lower == "find_by_name" || lower == "glob" || lower == "file_search":
-			if d, ok := findToolDef(by, "find", "find_by_name", "glob", "file_search"); ok {
-				return d.Name, true
-			}
-		case lower == "agent" || lower == "invoke_subagent" || lower == "subagent" ||
-			lower == "task" || lower == "spawn_agent" || lower == "dispatch_agent":
-			if d, ok := findToolDef(by, "agent", "invoke_subagent", "subagent", "task", "spawn_agent", "dispatch_agent"); ok {
-				return d.Name, true
-			}
-		case lower == "skill" || lower == "load_skill" || lower == "run_skill" || lower == "use_skill":
-			if d, ok := findToolDef(by, "skill", "load_skill", "run_skill", "use_skill"); ok {
-				return d.Name, true
-			}
-		}
-
-		// MCP tool matching: e.g. "mcp__server__tool" <-> "server_tool" or "mcp_server_tool"
-		cleanName := strings.TrimPrefix(lower, "mcp__")
-		cleanName = strings.TrimPrefix(cleanName, "mcp_")
-		cleanNameNorm := strings.ReplaceAll(strings.ReplaceAll(cleanName, "__", "_"), "-", "_")
-		for k, canon := range allow {
-			kClean := strings.TrimPrefix(k, "mcp__")
-			kClean = strings.TrimPrefix(kClean, "mcp_")
-			kCleanNorm := strings.ReplaceAll(strings.ReplaceAll(kClean, "__", "_"), "-", "_")
-			if kCleanNorm == cleanNameNorm || strings.HasSuffix(kCleanNorm, "_"+cleanNameNorm) {
-				return canon, true
-			}
-		}
-
-		// AGY call_mcp_tool fallback: if client has call_mcp_tool and incoming is an MCP tool
-		if strings.HasPrefix(lower, "mcp__") || strings.HasPrefix(lower, "mcp_") {
-			if d, ok := findToolDef(by, "call_mcp_tool"); ok {
-				return d.Name, true
-			}
-		}
-
 		return "", false
 	}
 
@@ -844,52 +762,8 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 	add := func(name, id, args string) {
 		canon, ok := canonical(name)
 		if !ok {
-			// If incoming is call_mcp_tool, inspect args to map to client's mcp__server__tool
-			if strings.EqualFold(name, "call_mcp_tool") {
-				var mcpArgs struct {
-					ServerName string          `json:"ServerName"`
-					ToolName   string          `json:"ToolName"`
-					Arguments  json.RawMessage `json:"Arguments"`
-				}
-				if json.Unmarshal([]byte(args), &mcpArgs) == nil && mcpArgs.ServerName != "" && mcpArgs.ToolName != "" {
-					candidate := "mcp__" + mcpArgs.ServerName + "__" + mcpArgs.ToolName
-					if c, found := canonical(candidate); found {
-						canon = c
-						ok = true
-						if len(mcpArgs.Arguments) > 0 && string(mcpArgs.Arguments) != "null" {
-							args = string(mcpArgs.Arguments)
-						}
-					}
-				}
-			}
-			if !ok {
-				return
-			}
-		}
-
-		// If client expects call_mcp_tool and incoming is an mcp__server__tool name:
-		if strings.EqualFold(canon, "call_mcp_tool") && (strings.HasPrefix(strings.ToLower(name), "mcp__") || strings.HasPrefix(strings.ToLower(name), "mcp_")) {
-			clean := strings.TrimPrefix(strings.ToLower(name), "mcp__")
-			clean = strings.TrimPrefix(clean, "mcp_")
-			parts := strings.SplitN(clean, "__", 2)
-			if len(parts) < 2 {
-				parts = strings.SplitN(clean, "_", 2)
-			}
-			if len(parts) == 2 {
-				var innerArgs any
-				if json.Unmarshal([]byte(args), &innerArgs) == nil {
-					wrapped := map[string]any{
-						"ServerName":  parts[0],
-						"ToolName":    parts[1],
-						"Arguments":   innerArgs,
-						"toolAction":  "Calling MCP tool",
-						"toolSummary": "MCP tool call",
-					}
-					if b, err := json.Marshal(wrapped); err == nil {
-						args = string(b)
-					}
-				}
-			}
+			monitor.AppendEvent("RUNTIME", fmt.Sprintf("rejected unlisted/hallucinated tool: %s", name))
+			return
 		}
 
 		args = strings.TrimSpace(args)
@@ -897,8 +771,7 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			args = "{}"
 		}
 		if !json.Valid([]byte(args)) {
-			b, _ := json.Marshal(map[string]string{"command": args})
-			args = string(b)
+			return
 		}
 		if id == "" {
 			id = fmt.Sprintf("toolu_web_%d", len(out)+1)
