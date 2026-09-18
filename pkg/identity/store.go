@@ -270,3 +270,46 @@ func AutoRotateFilter(path string) func(id string) bool {
 		return CanAutoRotateByID(path, id)
 	}
 }
+
+// SetThreshold updates the threshold percentage for an identity by ID, email, or profile name.
+// If threshold is nil or <= 0, the custom threshold override is cleared.
+func SetThreshold(path string, id string, threshold *float64) error {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+
+	id = strings.TrimSpace(id)
+	targetIdx := -1
+	for i, item := range cfg.Identities {
+		if item.ID == id {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx == -1 {
+		for i, item := range cfg.Identities {
+			if strings.EqualFold(item.Email(), id) {
+				targetIdx = i
+				break
+			}
+			if item.Metadata != nil {
+				if prof, ok := item.Metadata["profile_name"].(string); ok && strings.EqualFold(prof, id) {
+					targetIdx = i
+					break
+				}
+			}
+		}
+	}
+
+	if targetIdx == -1 {
+		return fmt.Errorf("identity %q not found", id)
+	}
+
+	if threshold != nil && *threshold <= 0 {
+		threshold = nil
+	}
+	cfg.Identities[targetIdx].ThresholdPct = threshold
+
+	return SaveConfig(path, cfg)
+}

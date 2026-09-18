@@ -39,6 +39,7 @@ type Identity struct {
 	ResetAt      int64                  `json:"reset_at,omitempty"`
 	Active       bool                   `json:"active"`
 	AutoRotate   *bool                  `json:"auto_rotate,omitempty"` // true by default; if false, excluded from auto-rotation/switch
+	ThresholdPct *float64               `json:"threshold_pct,omitempty"` // Per-account threshold override (0.0 to 100.0); nil uses default
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -118,5 +119,10 @@ func (id Identity) FormatResetTime() string {
 	}
 	rem = rem.Round(time.Minute)
 	return strings.TrimSpace(strings.ReplaceAll(rem.String(), "0s", ""))
+}
+
+// GetThreshold returns the effective failover threshold percentage for this identity.
+func (id Identity) GetThreshold(identities []Identity, baseThreshold float64) float64 {
+	return GetAccountThreshold(id, identities, baseThreshold)
 }
 

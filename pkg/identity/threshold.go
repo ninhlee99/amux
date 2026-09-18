@@ -23,12 +23,30 @@ func GetEffectiveThreshold(provider string, identities []Identity, baseThreshold
 	return baseThreshold
 }
 
+// GetAccountThreshold returns the failover threshold percentage for an identity.
+// If the identity has an explicit ThresholdPct configured (> 0), that is returned.
+// Otherwise, it falls back to the effective threshold for the provider.
+func GetAccountThreshold(id Identity, identities []Identity, baseThreshold float64) float64 {
+	if id.ThresholdPct != nil && *id.ThresholdPct > 0 {
+		return *id.ThresholdPct
+	}
+	if id.Metadata != nil {
+		if v, ok := id.Metadata["threshold_pct"].(float64); ok && v > 0 {
+			return v
+		}
+		if v, ok := id.Metadata["threshold"].(float64); ok && v > 0 {
+			return v
+		}
+	}
+	if !id.IsSubscription() {
+		return 100.0
+	}
+	return GetEffectiveThreshold(id.Provider, identities, baseThreshold)
+}
+
 // ShouldFailover reports whether an identity has reached or exceeded its effective threshold.
 func ShouldFailover(id Identity, identities []Identity, baseThreshold float64) bool {
-	if !id.IsSubscription() {
-		return id.UsagePercent >= 100.0
-	}
-	threshold := GetEffectiveThreshold(id.Provider, identities, baseThreshold)
+	threshold := GetAccountThreshold(id, identities, baseThreshold)
 	return id.UsagePercent >= threshold
 }
 

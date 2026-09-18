@@ -23,6 +23,7 @@ type Account struct {
 	UsagePercent float64     `json:"usage_percent"`  // 0.0 to 100.0
 	ResetAt      int64       `json:"reset_at,omitempty"`
 	Active       bool        `json:"active"`
+	ThresholdPct *float64    `json:"threshold_pct,omitempty"`
 }
 
 // IsSubscription reports whether this account is billed as a fixed-cost subscription.

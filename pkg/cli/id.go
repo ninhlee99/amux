@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"amux-accounts/pkg/identity"
@@ -37,7 +38,7 @@ func CmdID(args []string) {
 	case "auto":
 		cmdIDAutoRotate(subArgs)
 	case "threshold":
-		CmdConfig(append([]string{"threshold"}, subArgs...))
+		cmdIDThreshold(subArgs)
 	default:
 		die("unknown id command: %s (valid: list, add, remove, select, auto, threshold, health)", sub)
 	}
@@ -55,7 +56,7 @@ func cmdIDList() {
 		return
 	}
 
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "TIER", "USAGE", "ACTIVE", "AUTO-SWITCH")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH")
 	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
@@ -68,8 +69,10 @@ func cmdIDList() {
 			autoStr = "OFF"
 		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
+		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+		threshStr := fmt.Sprintf("%.1f%%", thresh)
 		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Email(), id.Tier, usageStr, activeStr, autoStr)
+			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr)
 	}
 }
 
@@ -250,3 +253,104 @@ func cmdIDSelect(args []string) {
 
 	fmt.Printf("✓ Identity %q is now ACTIVE.\n", target.ID)
 }
+
+func cmdIDThreshold(args []string) {
+	cfg, err := identity.LoadConfig("")
+	if err != nil {
+		die("load config: %v", err)
+	}
+
+	if len(args) == 0 {
+		fmt.Printf("Global multi-account threshold: %.1f%%\n\n", cfg.ThresholdPct)
+		if len(cfg.Identities) == 0 {
+			fmt.Println("No identities configured.")
+			return
+		}
+		fmt.Printf("%-20s %-12s %-14s %s\n", "ID", "PROVIDER", "THRESHOLD", "TYPE")
+		fmt.Printf("%-20s %-12s %-14s %s\n", "--------------------", "------------", "--------------", "------")
+		for _, id := range cfg.Identities {
+			thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+			source := "(default)"
+			if id.ThresholdPct != nil {
+				source = "(custom)"
+			}
+			fmt.Printf("%-20s %-12s %-14s %s\n", id.ID, id.Provider, fmt.Sprintf("%.1f%%", thresh), source)
+		}
+		return
+	}
+
+	// 1 argument: can be a global threshold value (number) or identity ID to inspect
+	if len(args) == 1 {
+		valStr := strings.TrimSuffix(args[0], "%")
+		// Check if it's a number (global threshold update, e.g. 'amux id threshold 80')
+		if val, err := strconv.ParseFloat(valStr, 64); err == nil && val > 0 && val <= 100 {
+			cfg.ThresholdPct = val
+			if err := identity.SaveConfig("", cfg); err != nil {
+				die("save config: %v", err)
+			}
+			proxy.Sync()
+			fmt.Printf("✓ Updated global threshold_pct to %.1f%%\n", val)
+			return
+		}
+
+		// Otherwise inspect identity threshold
+		targetID := args[0]
+		target, err := identity.Get("", targetID)
+		if err != nil || target == nil {
+			die("identity %q not found (or invalid threshold number 0-100)", targetID)
+		}
+		thresh := identity.GetAccountThreshold(*target, cfg.Identities, cfg.ThresholdPct)
+		customStr := "(effective default)"
+		if target.ThresholdPct != nil {
+			customStr = "(custom override)"
+		}
+		fmt.Printf("Threshold for %q (%s): %.1f%% %s\n", target.ID, target.Provider, thresh, customStr)
+		return
+	}
+
+	// 2+ arguments:
+	// 'amux id threshold global <val>' OR 'amux id threshold <id> <val>'
+	first := args[0]
+	second := strings.TrimSuffix(args[1], "%")
+
+	if strings.EqualFold(first, "global") || strings.EqualFold(first, "--global") {
+		val, err := strconv.ParseFloat(second, 64)
+		if err != nil || val <= 0 || val > 100 {
+			die("invalid threshold value (must be 0-100)")
+		}
+		cfg.ThresholdPct = val
+		if err := identity.SaveConfig("", cfg); err != nil {
+			die("save config: %v", err)
+		}
+		proxy.Sync()
+		fmt.Printf("✓ Updated global threshold_pct to %.1f%%\n", val)
+		return
+	}
+
+	targetID := first
+	target, err := identity.Get("", targetID)
+	if err != nil || target == nil {
+		die("identity %q not found", targetID)
+	}
+
+	if strings.EqualFold(second, "reset") || strings.EqualFold(second, "default") || strings.EqualFold(second, "clear") || second == "0" {
+		if err := identity.SetThreshold("", target.ID, nil); err != nil {
+			die("failed to update threshold: %v", err)
+		}
+		proxy.Sync()
+		fmt.Printf("✓ Reset threshold for %q to default/effective\n", target.ID)
+		return
+	}
+
+	val, err := strconv.ParseFloat(second, 64)
+	if err != nil || val <= 0 || val > 100 {
+		die("invalid threshold value %q (must be between 0 and 100)", args[1])
+	}
+
+	if err := identity.SetThreshold("", target.ID, &val); err != nil {
+		die("failed to update threshold: %v", err)
+	}
+	proxy.Sync()
+	fmt.Printf("✓ Updated threshold for %q to %.1f%%\n", target.ID, val)
+}
+

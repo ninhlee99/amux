@@ -235,6 +235,142 @@ func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
 	if !strings.Contains(out, "claude-vip") || !strings.Contains(out, "NO") || !strings.Contains(out, "OFF") {
 		t.Errorf("expected claude-vip to show NO for ACTIVE and OFF for AUTO-SWITCH, got:\n%s", out)
 	}
+	if !strings.Contains(out, "THRESHOLD") {
+		t.Errorf("expected THRESHOLD in header, got:\n%s", out)
+	}
+	if strings.Contains(out, "TIER") {
+		t.Errorf("expected TIER to be removed, got:\n%s", out)
+	}
 }
+
+func TestCmdStatus_ThresholdColumn(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-cli-status-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpDir)
+
+	customThresh := 80.0
+	cfg := &identity.Config{
+		ThresholdPct: 90.0,
+		Identities: []identity.Identity{
+			{
+				ID:           "claude-1",
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 30.0,
+				Active:       true,
+				ThresholdPct: &customThresh,
+			},
+			{
+				ID:           "claude-2",
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 10.0,
+				Active:       false,
+			},
+		},
+	}
+	if err := identity.SaveConfig("", cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	out := captureStdout(func() {
+		CmdStatus(nil)
+	})
+
+	if !strings.Contains(out, "THRESHOLD") {
+		t.Errorf("expected THRESHOLD in CmdStatus output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "AUTO-SWITCH") {
+		t.Errorf("expected AUTO-SWITCH in CmdStatus output, got:\n%s", out)
+	}
+	if strings.Contains(out, "TIER") {
+		t.Errorf("expected TIER to be removed from CmdStatus output, got:\n%s", out)
+	}
+	// Check table header row does not have PROVIDER column
+	lines := strings.Split(out, "\n")
+	for _, l := range lines {
+		if strings.Contains(l, "ID") && strings.Contains(l, "EMAIL") {
+			if strings.Contains(l, "PROVIDER") {
+				t.Errorf("expected PROVIDER to be removed from header line, got: %s", l)
+			}
+			if !strings.Contains(l, "AUTO-SWITCH") {
+				t.Errorf("expected AUTO-SWITCH in header line, got: %s", l)
+			}
+		}
+	}
+	if !strings.Contains(out, "80.0%") {
+		t.Errorf("expected custom threshold 80.0%% in CmdStatus output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "90.0%") {
+		t.Errorf("expected default threshold 90.0%% in CmdStatus output, got:\n%s", out)
+	}
+}
+
+func TestCmdIDThreshold_PerAccount(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-cli-id-thresh-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	os.Setenv("HOME", tmpDir)
+
+	cfg := &identity.Config{
+		ThresholdPct: 95.0,
+		Identities: []identity.Identity{
+			{
+				ID:           "claude-acc",
+				Provider:     "anthropic",
+				Tier:         identity.TierSubscription,
+				UsagePercent: 20.0,
+				Active:       true,
+			},
+		},
+	}
+	if err := identity.SaveConfig("", cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	// 1. Set per-account threshold
+	CmdID([]string{"threshold", "claude-acc", "85"})
+	target, err := identity.Get("", "claude-acc")
+	if err != nil || target == nil {
+		t.Fatalf("Get identity error: %v", err)
+	}
+	if target.ThresholdPct == nil || *target.ThresholdPct != 85.0 {
+		t.Fatalf("expected ThresholdPct to be 85.0, got %v", target.ThresholdPct)
+	}
+
+	// 2. View per-account threshold
+	out := captureStdout(func() {
+		CmdID([]string{"threshold", "claude-acc"})
+	})
+	if !strings.Contains(out, "85.0%") || !strings.Contains(out, "custom override") {
+		t.Errorf("expected output to show 85.0%% (custom override), got:\n%s", out)
+	}
+
+	// 3. Reset per-account threshold
+	CmdID([]string{"threshold", "claude-acc", "reset"})
+	targetReset, _ := identity.Get("", "claude-acc")
+	if targetReset.ThresholdPct != nil {
+		t.Fatalf("expected ThresholdPct to be nil after reset, got %v", targetReset.ThresholdPct)
+	}
+
+	// 4. Test amux config threshold <id> <val>
+	CmdConfig([]string{"threshold", "claude-acc", "75%"})
+	targetConfig, _ := identity.Get("", "claude-acc")
+	if targetConfig.ThresholdPct == nil || *targetConfig.ThresholdPct != 75.0 {
+		t.Fatalf("expected ThresholdPct to be 75.0 via config threshold, got %v", targetConfig.ThresholdPct)
+	}
+}
+
 
 
