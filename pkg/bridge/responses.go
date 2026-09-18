@@ -207,9 +207,6 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 				toolCalls = parsed
 			}
 		}
-		if len(toolCalls) > 0 {
-			toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectCodex)
-		}
 
 		outputIndex := 0
 		if textPartStarted {
@@ -354,9 +351,6 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
 		}
-	}
-	if len(toolCalls) > 0 {
-		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectCodex)
 	}
 
 	var outputItems []map[string]any

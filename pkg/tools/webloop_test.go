@@ -41,29 +41,29 @@ I'll list files.
 	}
 }
 
-func TestParseWebTools_DialectAliases(t *testing.T) {
-	// Cursor-style catalog: model emits Bash/Read → map to client names.
+func TestParseWebTools_NativeToolCalls(t *testing.T) {
+	// Client catalog: model emits tools matching the native schema.
 	defs := []types.ToolDef{
 		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
 		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
 	}
 	xml := ParseWebTools(`<tool_call>
-{"name": "Bash", "arguments": {"command": "ls"}}
+{"name": "run_terminal_command", "arguments": {"command": "ls"}}
 </tool_call>
 <tool_call>
-{"name": "Read", "arguments": {"path": "a.go"}}
+{"name": "read_file", "arguments": {"file_path": "a.go"}}
 </tool_call>`, defs)
 	if len(xml) != 2 {
 		t.Fatalf("want 2 calls, got %+v", xml)
 	}
 	if xml[0].Name != "run_terminal_command" {
-		t.Fatalf("bash alias → %q", xml[0].Name)
+		t.Fatalf("tool 0 name: %q", xml[0].Name)
 	}
 	if xml[1].Name != "read_file" {
-		t.Fatalf("read alias → %q", xml[1].Name)
+		t.Fatalf("tool 1 name: %q", xml[1].Name)
 	}
 	if !strings.Contains(xml[1].Arguments, "file_path") {
-		t.Fatalf("path coerced to file_path: %s", xml[1].Arguments)
+		t.Fatalf("expected file_path: %s", xml[1].Arguments)
 	}
 	fence := ParseWebTools("```bash\necho hi\n```", defs)
 	if len(fence) != 1 || fence[0].Name != "run_terminal_command" {

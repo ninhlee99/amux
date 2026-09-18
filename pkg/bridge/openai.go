@@ -184,7 +184,6 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 					}
 				}
 				if len(toolCalls) > 0 {
-					toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectCursor)
 					finishReason = "tool_calls"
 					oaCalls := tools.ToOpenAIToolCalls(toolCalls)
 					for i, oc := range oaCalls {
@@ -312,7 +311,6 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 	}
 	if len(toolCalls) > 0 {
-		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectCursor)
 		finishReason = "tool_calls"
 	}
 

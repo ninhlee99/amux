@@ -5,28 +5,26 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"amux-accounts/pkg/monitor"
+	"amux-accounts/pkg/runtime"
 	"amux-accounts/pkg/types"
 )
 
 // Protocol is tiny on purpose: catalog is rebuilt every request from the
 // client's live tools[] (new MCP / plugin / Skill appear with no code change).
 // Keep preamble short — every tools turn pays this cost on cold-start threads.
-const webToolPreamble = `Coding-agent backend. Client executes tools locally on real repo. [Tool result] = verified output.
-RULES:
+const webToolPreamble = `Coding-agent backend. Client executes tools locally with automated schema validation. [Tool result] = verified output.
+STRICT MANDATORY TOOL CONTRACT:
 1. Need command/file/search/PR context → emit <tool_call> immediately. Never claim inability, lack of runtime, or ask user to paste diffs.
-2. For skills/plugins like /open-pr:review, /open-pr:fix: run shell commands ('gh pr diff', 'gh pr view', 'git diff') via <tool_call> to fetch PR context. You HAVE full terminal execution.
-3. Must use EXACT tool name and property names from CATALOG below (do NOT rename arguments):
-   - If tool is 'run_command': use {"CommandLine":"...", "Cwd":".", "WaitMsBeforeAsync":10000, "toolAction":"Running command", "toolSummary":"Execute shell"} (DO NOT use 'command').
-   - If tool is 'Bash': use {"command":"..."}.
-   - If tool is 'exec_command': use {"cmd":"..."}.
-   - If tool is 'replace_file_content': use {"TargetFile":"...", "TargetContent":"...", "ReplacementContent":"..."}.
-   - If tool is 'write_to_file': use {"TargetFile":"...", "CodeContent":"..."}.
-   - If tool is 'view_file' or 'read_file': use {"AbsolutePath":"..."}.
-3. Format:
+2. For skills/plugins (/open-pr:review, /open-pr:fix): execute tools via <tool_call> to fetch PR context. You have full terminal capability.
+3. STRICT SCHEMA COMPLIANCE:
+   - When emitting any tool call, inspect the CATALOG below and emit arguments matching the EXACT tool name and property names defined for that tool.
+   - Do NOT rename properties (e.g. if the catalog lists 'CommandLine', use 'CommandLine' — do NOT rename to 'command').
+   - You MUST supply ALL required properties listed for that tool.
+   - Do NOT add undeclared properties.
+4. Format:
 <tool_call>
 {"name":"TOOL","arguments":{...}}
 </tool_call>
@@ -69,7 +67,8 @@ func WebPreamble(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	return webToolPreamble + catalogBlock(defs)
+	manifest := runtime.FromToolDefs("NativeRuntime", defs)
+	return runtime.BuildRuntimeContract(manifest)
 }
 
 // WebCatalogOnly is the continuing-thread preamble: live catalog, no rules essay.
@@ -77,7 +76,8 @@ func WebCatalogOnly(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	return "CATALOG\n" + catalogBlock(defs)
+	manifest := runtime.FromToolDefs("NativeRuntime", defs)
+	return "CATALOG\n" + runtime.FormatSchemaCatalog(manifest)
 }
 
 func catalogBlock(defs []types.ToolDef) string {
@@ -209,12 +209,12 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				if ch.LogText == "" {
 					ch.LogText = raw
 				}
-				ch.ToolCalls = NormalizeToolCalls(ch.ToolCalls, defs, "")
+				ch.ToolCalls = coerceAllToolArgs(ch.ToolCalls, defs)
 				logWebTools(source, ch.ToolCalls, ch.LogText)
 				out <- ch
 				for rest := range inner {
 					if len(rest.ToolCalls) > 0 {
-						rest.ToolCalls = NormalizeToolCalls(rest.ToolCalls, defs, "")
+						rest.ToolCalls = coerceAllToolArgs(rest.ToolCalls, defs)
 					}
 					out <- rest
 				}
@@ -967,226 +967,22 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.Too
 	if len(calls) == 0 || len(defs) == 0 {
 		return calls
 	}
-	return NormalizeToolCalls(calls, defs, "")
+	manifest := runtime.FromToolDefs("NativeRuntime", defs)
+	var valErrs []*runtime.ValidationError
+	for _, c := range calls {
+		for _, nd := range manifest.Tools {
+			if strings.EqualFold(nd.Name, c.Name) {
+				if vErr := runtime.ValidateToolCall(c, nd); vErr != nil {
+					valErrs = append(valErrs, vErr)
+				}
+				break
+			}
+		}
+	}
+	runtime.LogToolValidation("webloop", calls, valErrs)
+	return calls
 }
 
-// coerceToolArgs remaps common aliases (path↔file_path, cmd↔command, content↔CodeContent,
-// old↔new strings, grep/find queries) to the keys the client dialect schema expects.
-func coerceToolArgs(argsJSON string, def types.ToolDef) string {
-	var m map[string]any
-	if json.Unmarshal([]byte(argsJSON), &m) != nil || len(m) == 0 {
-		return argsJSON
-	}
-	changed := false
-	remap := func(want string, alts ...string) {
-		if want == "" {
-			return
-		}
-		if _, has := m[want]; has {
-			return
-		}
-		for _, alt := range alts {
-			if v, ok := m[alt]; ok {
-				m[want] = v
-				delete(m, alt)
-				changed = true
-				return
-			}
-		}
-	}
-
-	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory")
-	remap(wantPath, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory", "file", "filename", "filepath")
-
-	wantCmd := toolArgKey(def, "command", "CommandLine", "cmd")
-	remap(wantCmd, "command", "CommandLine", "cmd", "script", "code")
-
-	wantContent := toolArgKey(def, "content", "CodeContent", "contents", "text")
-	remap(wantContent, "content", "CodeContent", "contents", "text", "body", "code")
-
-	wantOld := toolArgKey(def, "old_string", "TargetContent", "old_str", "old")
-	remap(wantOld, "old_string", "TargetContent", "old_str", "old", "orig", "original")
-
-	wantNew := toolArgKey(def, "new_string", "ReplacementContent", "new_str", "new")
-	remap(wantNew, "new_string", "ReplacementContent", "new_str", "new", "replacement")
-
-	wantQuery := toolArgKey(def, "query", "pattern", "Query", "Pattern")
-	remap(wantQuery, "query", "pattern", "Query", "Pattern", "regex", "search_term")
-
-	wantDir := toolArgKey(def, "dir", "directory", "SearchDirectory", "SearchPath")
-	remap(wantDir, "dir", "directory", "SearchDirectory", "SearchPath", "path", "cwd")
-
-	wantSkill := toolArgKey(def, "skill", "skill_name", "name")
-	remap(wantSkill, "skill", "skill_name", "name", "skillName")
-
-	// Ensure required schema parameters for AGY / strict client tools if missing
-	schemaKeysList := schemaKeys(def.InputSchema, 20)
-	hasKey := func(k string) bool {
-		for _, sk := range schemaKeysList {
-			if sk == k {
-				return true
-			}
-		}
-		return false
-	}
-
-	// Unwrap single-item array strings for path/cmd if web model generated an array
-	for _, k := range []string{"file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "command", "CommandLine"} {
-		if arr, ok := m[k].([]any); ok && len(arr) > 0 {
-			if firstStr, isStr := arr[0].(string); isStr {
-				m[k] = firstStr
-				changed = true
-			}
-		}
-	}
-
-	if hasKey("Overwrite") {
-		if v, ok := m["Overwrite"]; !ok || v == nil {
-			m["Overwrite"] = true
-			changed = true
-		} else if s, isStr := v.(string); isStr {
-			m["Overwrite"] = strings.EqualFold(s, "true") || s == "1"
-			changed = true
-		}
-	}
-	if hasKey("AllowMultiple") {
-		if v, ok := m["AllowMultiple"]; !ok || v == nil {
-			m["AllowMultiple"] = false
-			changed = true
-		} else if s, isStr := v.(string); isStr {
-			m["AllowMultiple"] = strings.EqualFold(s, "true") || s == "1"
-			changed = true
-		}
-	}
-	if hasKey("Cwd") {
-		if _, ok := m["Cwd"]; !ok {
-			m["Cwd"] = "."
-			changed = true
-		}
-	}
-	if hasKey("WaitMsBeforeAsync") {
-		if v, ok := m["WaitMsBeforeAsync"]; !ok || v == nil {
-			m["WaitMsBeforeAsync"] = 10000
-			changed = true
-		} else if s, isStr := v.(string); isStr {
-			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-				m["WaitMsBeforeAsync"] = n
-				changed = true
-			}
-		}
-	}
-	if hasKey("toolAction") {
-		if _, ok := m["toolAction"]; !ok {
-			m["toolAction"] = "Running tool"
-			changed = true
-		}
-	}
-	if hasKey("toolSummary") {
-		if _, ok := m["toolSummary"]; !ok {
-			m["toolSummary"] = "Tool execution"
-			changed = true
-		}
-	}
-	if hasKey("Instruction") {
-		if _, ok := m["Instruction"]; !ok {
-			m["Instruction"] = "Apply modification"
-			changed = true
-		}
-	}
-	if hasKey("Description") {
-		if _, ok := m["Description"]; !ok {
-			m["Description"] = "Code change"
-			changed = true
-		}
-	}
-	if hasKey("StartLine") {
-		if v, ok := m["StartLine"]; !ok || v == nil {
-			m["StartLine"] = 1
-			changed = true
-		} else if s, isStr := v.(string); isStr {
-			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-				m["StartLine"] = n
-				changed = true
-			}
-		}
-	}
-	if hasKey("EndLine") {
-		if v, ok := m["EndLine"]; !ok || v == nil {
-			m["EndLine"] = 1000000
-			changed = true
-		} else if s, isStr := v.(string); isStr {
-			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-				m["EndLine"] = n
-				changed = true
-			}
-		}
-	}
-
-	// Subagent coercion:
-	// AGY client expects invoke_subagent with Subagents array
-	if strings.EqualFold(def.Name, "invoke_subagent") {
-		if _, hasSub := m["Subagents"]; !hasSub {
-			promptVal := ""
-			roleVal := "Codebase Researcher"
-			typeNameVal := "research"
-			if p, ok := m["prompt"].(string); ok && p != "" {
-				promptVal = p
-			} else if t, ok := m["task"].(string); ok && t != "" {
-				promptVal = t
-			} else if d, ok := m["description"].(string); ok && d != "" {
-				promptVal = d
-			}
-			if promptVal != "" {
-				if r, ok := m["description"].(string); ok && r != "" && r != promptVal {
-					roleVal = r
-				}
-				if tn, ok := m["type"].(string); ok && tn != "" {
-					typeNameVal = tn
-				} else if tn, ok := m["TypeName"].(string); ok && tn != "" {
-					typeNameVal = tn
-				}
-				m["Subagents"] = []map[string]any{
-					{
-						"TypeName":  typeNameVal,
-						"Role":      roleVal,
-						"Prompt":    promptVal,
-						"Model":     "inherit",
-						"Workspace": "inherit",
-					},
-				}
-				delete(m, "prompt")
-				delete(m, "description")
-				delete(m, "task")
-				changed = true
-			}
-		}
-	} else if strings.EqualFold(def.Name, "agent") || strings.EqualFold(def.Name, "subagent") || strings.EqualFold(def.Name, "task") {
-		// Claude/Codex client expects Agent with prompt/description
-		if subs, ok := m["Subagents"].([]any); ok && len(subs) > 0 {
-			if first, ok := subs[0].(map[string]any); ok {
-				if p, ok := first["Prompt"].(string); ok && p != "" {
-					m["prompt"] = p
-				}
-				if r, ok := first["Role"].(string); ok && r != "" {
-					m["description"] = r
-				}
-				delete(m, "Subagents")
-				delete(m, "toolAction")
-				delete(m, "toolSummary")
-				changed = true
-			}
-		}
-	}
-
-	if !changed {
-		return argsJSON
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return argsJSON
-	}
-	return string(b)
-}
 
 func repairJSON(s string) string {
 	var sb strings.Builder

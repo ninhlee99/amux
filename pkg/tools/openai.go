@@ -156,11 +156,6 @@ func normalizeOpenAIToolChoice(tc any) any {
 	return tc
 }
 
-func isReasoningModel(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "o1") || strings.Contains(m, "o3") || strings.Contains(m, "reasoning") || strings.Contains(m, "r1") || strings.Contains(m, "gpt-5")
-}
-
 func toOpenAIChatRequest(req *types.ChatRequest) *openAIChatRequest {
 	caps := GetModelCapabilities("", req.Model)
 	var tempPtr *float64
@@ -180,7 +175,7 @@ func toOpenAIChatRequest(req *types.ChatRequest) *openAIChatRequest {
 	}
 	if req.ReasoningEffort != "" {
 		out.ReasoningEffort = req.ReasoningEffort
-	} else if req.Thinking && isReasoningModel(req.Model) {
+	} else if req.Thinking && caps.SupportsReasoningEffort {
 		out.ReasoningEffort = "medium"
 	}
 	if len(req.Tools) > 0 {

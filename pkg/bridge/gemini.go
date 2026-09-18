@@ -369,7 +369,6 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 					}
 				}
 				if len(toolCalls) > 0 {
-					toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectGemini)
 					geminiCalls := tools.ToGeminiFunctionCalls(toolCalls)
 					parts := make([]geminiPart, 0, len(geminiCalls))
 					for _, gc := range geminiCalls {
@@ -440,9 +439,6 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
 		}
-	}
-	if len(toolCalls) > 0 {
-		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectGemini)
 	}
 	if fullContent.Len() > 0 {
 		text := fullContent.String()
