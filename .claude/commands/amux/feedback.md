@@ -1,11 +1,11 @@
 ---
-description: File a GitHub issue for am (bug or idea) via `am feedback`
+description: File a GitHub issue for amux (bug or idea) via `amux feedback`
 argument-hint: [-b|--bug|-i|--idea] [title]
 ---
 
-Run `am feedback $ARGUMENTS` in the shell.
+Run `amux feedback $ARGUMENTS` in the shell.
 
-`am feedback` prompts (in the terminal) for a title if none was given, then a
+`amux feedback` prompts (in the terminal) for a title if none was given, then a
 multi-line body ended by a blank line, then either:
 - shells out to `gh issue create -R ninhlee99/amux` if `gh` is
   installed and authenticated, or

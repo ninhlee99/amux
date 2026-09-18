@@ -48,6 +48,8 @@ func Run(rawArgs []string) {
 		CmdUpdate(args)
 	case "uninstall":
 		CmdUninstall(args)
+	case "feedback":
+		CmdFeedback(args)
 	case "statusline":
 		ui.CmdStatusline()
 	default:
