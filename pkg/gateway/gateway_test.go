@@ -138,6 +138,51 @@ func TestGateway_HookCodexLifecycle(t *testing.T) {
 	}
 }
 
+func TestGateway_HookCodex_ErrorAndFormatting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-codex-format-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	// Pre-create ~/.codex/config.toml with existing sections
+	codexDir := tmpDir + "/.codex"
+	_ = os.MkdirAll(codexDir, 0o755)
+	initialTOML := "[model]\nname = \"gpt-4o\"\ntemperature = 0.7\n"
+	_ = os.WriteFile(codexDir+"/config.toml", []byte(initialTOML), 0o600)
+
+	testURL := "http://127.0.0.1:8787/v1"
+	if err := gateway.HookCodex(testURL); err != nil {
+		t.Fatalf("HookCodex error: %v", err)
+	}
+
+	// Verify TOML preserves previous sections and appends baseURL
+	b, err := os.ReadFile(codexDir + "/config.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tomlContent := string(b)
+	if !strings.Contains(tomlContent, "[model]") || !strings.Contains(tomlContent, "name = \"gpt-4o\"") {
+		t.Fatalf("expected TOML to preserve existing sections, got: %s", tomlContent)
+	}
+	if !strings.Contains(tomlContent, `openai_base_url = "http://127.0.0.1:8787/v1"`) {
+		t.Fatalf("expected TOML to contain openai_base_url, got: %s", tomlContent)
+	}
+
+	// Verify JSON config
+	bj, err := os.ReadFile(codexDir + "/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(bj), `"openai_base_url": "http://127.0.0.1:8787/v1"`) {
+		t.Fatalf("expected JSON to contain openai_base_url, got: %s", string(bj))
+	}
+}
+
 func TestGateway_HookAgyLifecycle(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "amux-agy-hook-test")
 	if err != nil {

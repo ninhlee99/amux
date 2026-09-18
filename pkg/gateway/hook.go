@@ -132,14 +132,20 @@ func HookCodex(baseURL string) error {
 
 	// 1. Update ~/.codex/config.json
 	p := CodexConfigPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}
 	m["openai_base_url"] = baseURL
-	if b, err := json.MarshalIndent(m, "", "  "); err == nil {
-		_ = os.WriteFile(p, append(b, '\n'), 0o600)
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, append(b, '\n'), 0o600); err != nil {
+		return err
 	}
 
 	// 2. Update ~/.codex/config.toml
@@ -150,12 +156,23 @@ func HookCodex(baseURL string) error {
 		if reCodexBaseURL.MatchString(tomlStr) {
 			tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, line)
 		} else {
-			tomlStr = line + "\n" + tomlStr
+			if tomlStr != "" && !strings.HasSuffix(tomlStr, "\n") {
+				tomlStr += "\n"
+			}
+			tomlStr += line + "\n"
 		}
-		_ = os.WriteFile(tomlPath, []byte(tomlStr), 0o600)
+		if err := os.WriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+			return err
+		}
 	} else if os.IsNotExist(err) {
-		_ = os.MkdirAll(filepath.Dir(tomlPath), 0o755)
-		_ = os.WriteFile(tomlPath, []byte(line+"\n"), 0o600)
+		if err := os.MkdirAll(filepath.Dir(tomlPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(tomlPath, []byte(line+"\n"), 0o600); err != nil {
+			return err
+		}
+	} else {
+		return err
 	}
 
 	// 3. Update environment for session / launchctl
@@ -172,8 +189,12 @@ func UnhookCodex() error {
 		if err := json.Unmarshal(b, &m); err == nil {
 			if _, exists := m["openai_base_url"]; exists {
 				delete(m, "openai_base_url")
-				if data, err := json.MarshalIndent(m, "", "  "); err == nil {
-					_ = os.WriteFile(p, append(data, '\n'), 0o600)
+				data, err := json.MarshalIndent(m, "", "  ")
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(p, append(data, '\n'), 0o600); err != nil {
+					return err
 				}
 			}
 		}
@@ -186,7 +207,9 @@ func UnhookCodex() error {
 		if reCodexBaseURL.MatchString(tomlStr) {
 			tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, "")
 			tomlStr = strings.TrimLeft(tomlStr, "\r\n")
-			_ = os.WriteFile(tomlPath, []byte(tomlStr), 0o600)
+			if err := os.WriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+				return err
+			}
 		}
 	}
 

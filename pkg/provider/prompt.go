@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 
-	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -33,56 +32,32 @@ const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output
 `
 
 // WebBackendPrompt builds the single string web UIs accept.
-//
-// Token policy:
-//   - Cold start / new thread: flatten (compacted) history once.
-//   - Continuing server thread + tools: delta only (recent tool results + last user)
-//     so we do not re-pay full hist every turn.
-//   - Interactive am chat (!FullContext): last user (+ system) when continuing.
+// Prompt is kept intact without token-cutting or message-truncation layers,
+// preserving full agent harness, skills, guidelines, and conversation history.
 func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
 	}
 	msgs := req.Messages
-	if len(req.Tools) > 0 {
-		// Drop Claude/Cursor harness (huge + contradicts web tools).
-		// Catalog comes from this request's tools[] — new MCP/plugin/Skill
-		// show up automatically, no proxy code change.
-		msgs = slimWebMessages(msgs)
-	}
-	// Apply progressive token budget fitting to guarantee prompt stays comfortably
-	// under ChatGPT / Claude / Gemini web context ceiling (~20k tokens safe cap).
-	msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
 
 	var body string
-	useDelta := req.FullContext && continuingThread && len(req.Tools) > 0 && historyHasToolTurns(msgs)
-	switch {
-	case useDelta:
-		body = BuildDeltaWebPrompt(msgs)
-		if body == "" {
-			body = BuildConcatenatedPrompt(msgs)
-		}
-		body = contextHandoffPreamble + body
-	case req.FullContext:
+	if req.FullContext {
 		body = BuildConcatenatedPrompt(msgs)
 		if body == "" {
 			return ""
 		}
 		body = contextHandoffPreamble + body
-	case continuingThread:
+	} else if continuingThread {
 		body = PromptWithSystem(msgs, lastUserPrompt(msgs))
-	default:
+	} else {
 		body = BuildConcatenatedPrompt(msgs)
 	}
+
 	if len(req.Tools) == 0 {
-		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
+		return body
 	}
 	closer := tools.WebCloser()
 	preamble := tools.WebPreambleForRequest(req)
-	if continuingThread {
-		// Thread already saw full protocol; catalog-only saves ~2k tokens/turn.
-		preamble = tools.WebCatalogOnlyForRequest(req)
-	}
 	trimmedBody := strings.TrimSpace(body)
 	var finalPrompt string
 	if strings.HasSuffix(trimmedBody, "Assistant:") {
@@ -92,17 +67,7 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	} else {
 		finalPrompt = preamble + body + closer
 	}
-	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
-}
-
-func enforceWebPromptLimit(s string, maxRunes int) string {
-	r := []rune(s)
-	if len(r) <= maxRunes {
-		return s
-	}
-	head := maxRunes * 4 / 10
-	tail := maxRunes * 4 / 10
-	return string(r[:head]) + "\n\n... [history truncated to fit web payload limit] ...\n\n" + string(r[len(r)-tail:])
+	return finalPrompt
 }
 
 // historyHasToolTurns is true when the client already ran tools this session.
@@ -121,6 +86,18 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
+	// Extract the original user task so multi-turn tool continuing threads never lose context
+	firstUser := ""
+	for _, m := range messages {
+		if strings.EqualFold(m.Role, "user") {
+			c := strings.TrimSpace(m.Content)
+			if c != "" && !strings.EqualFold(c, "(no content)") {
+				firstUser = c
+				break
+			}
+		}
+	}
+
 	// Keep from the last user message that is NOT only a tool-result wrapper,
 	// including subsequent assistant tool_calls and tool results.
 	start := 0
@@ -149,6 +126,24 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 			break
 		}
 	}
+
+	// Guarantee original task is preserved in continuing prompt when slice has no user turn
+	if firstUser != "" {
+		hasUserInSlice := false
+		for _, m := range slice {
+			if strings.EqualFold(m.Role, "user") {
+				c := strings.TrimSpace(m.Content)
+				if c != "" && !strings.EqualFold(c, "(no content)") {
+					hasUserInSlice = true
+					break
+				}
+			}
+		}
+		if !hasUserInSlice {
+			slice = append([]types.ChatMessage{{Role: "user", Content: "[Task Goal]: " + firstUser}}, slice...)
+		}
+	}
+
 	return BuildConcatenatedPrompt(slice)
 }
 
@@ -162,11 +157,28 @@ func slimWebMessages(msgs []types.ChatMessage) []types.ChatMessage {
 		if strings.EqualFold(m.Role, "user") {
 			c := stripWebUserNoise(m.Content)
 			if c == "" {
-				continue
+				orig := strings.TrimSpace(m.Content)
+				if orig != "" && !strings.EqualFold(orig, "(no content)") {
+					c = reTotalTokens.ReplaceAllString(orig, "")
+					c = reHookNotice.ReplaceAllString(c, "")
+					c = strings.TrimSpace(c)
+				}
+				if c == "" {
+					continue
+				}
 			}
 			m.Content = c
 		}
 		out = append(out, m)
+	}
+	// If all user turns were dropped, retain at least one user turn to avoid sending empty prompt
+	if len(out) == 0 && len(msgs) > 0 {
+		for _, m := range msgs {
+			if strings.EqualFold(m.Role, "user") && strings.TrimSpace(m.Content) != "" {
+				out = append(out, m)
+				break
+			}
+		}
 	}
 	return out
 }
@@ -181,13 +193,48 @@ var (
 )
 
 func stripWebUserNoise(s string) string {
-	s = reSysReminder.ReplaceAllString(s, "")
+	s = cleanSystemReminders(s)
 	s = reTotalTokens.ReplaceAllString(s, "")
 	s = reScratchpadHint.ReplaceAllString(s, "")
 	s = reHookNotice.ReplaceAllString(s, "")
 	s = reEnvContext.ReplaceAllString(s, "")
 	s = reLocalCaveat.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
+}
+
+func cleanSystemReminders(s string) string {
+	return reSysReminder.ReplaceAllStringFunc(s, func(m string) string {
+		trimmed := strings.TrimSpace(m)
+		inner := strings.TrimPrefix(trimmed, "<system-reminder>")
+		inner = strings.TrimSuffix(inner, "</system-reminder>")
+		inner = reTotalTokens.ReplaceAllString(inner, "")
+		inner = reHookNotice.ReplaceAllString(inner, "")
+		inner = reScratchpadHint.ReplaceAllString(inner, "")
+		inner = reLocalCaveat.ReplaceAllString(inner, "")
+		inner = reEnvContext.ReplaceAllString(inner, "")
+		inner = strings.TrimSpace(inner)
+		if inner == "" {
+			return ""
+		}
+		// Strip "You are Claude Code" / harness identity to prevent prompt confusion
+		if strings.Contains(inner, "You are Claude Code") {
+			inner = strings.ReplaceAll(inner, "You are Claude Code", "")
+			inner = strings.TrimSpace(inner)
+		}
+		// If outer text already has user instructions (e.g. text outside <system-reminder>),
+		// and inner is just generic harness/skill listing, omit to save tokens.
+		outer := strings.TrimSpace(reSysReminder.ReplaceAllString(s, ""))
+		if outer != "" && !strings.EqualFold(outer, "(no content)") {
+			low := strings.ToLower(inner)
+			if !strings.Contains(low, "open-pr") && !strings.Contains(low, "<op>") && !strings.Contains(low, "review.md") {
+				return ""
+			}
+		}
+		if inner == "" {
+			return ""
+		}
+		return "\n[System Context:\n" + inner + "\n]\n"
+	})
 }
 
 func isClientHarness(s string) bool {

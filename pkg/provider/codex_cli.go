@@ -230,7 +230,7 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 		slim := *req
 		slim.Model = model
 		slim.Stream = true
-		slim.Messages = slimWebMessages(req.Messages)
+		slim.Messages = req.Messages
 		encoded, err := tools.MarshalCodexResponsesRequest(&slim)
 		if err != nil {
 			return nil, fmt.Errorf("%s: encode: %w", a.AdapterID, err)
