@@ -28,6 +28,8 @@ func SyncIdentityToNativeKeychain(id *Identity) error {
 		return syncClaudeKeychain(id)
 	case "openai":
 		return syncCodexAuth(id)
+	case "gemini":
+		return syncGeminiAuth(id)
 	default:
 		return nil
 	}
@@ -62,7 +64,28 @@ func syncClaudeKeychain(id *Identity) error {
 	}
 
 	acct := types.CurrentUser()
-	return auth.KCSet(ClaudeKeychainService, acct, string(b))
+	if err := auth.KCSet(ClaudeKeychainService, acct, string(b)); err != nil {
+		return err
+	}
+
+	if email := id.Email(); email != "" && email != "-" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			claudeJSONPath := filepath.Join(home, ".claude.json")
+			if data, err := os.ReadFile(claudeJSONPath); err == nil {
+				var doc map[string]any
+				if json.Unmarshal(data, &doc) == nil {
+					if oauthAcct, ok := doc["oauthAccount"].(map[string]any); ok {
+						oauthAcct["emailAddress"] = email
+						if nb, err := json.MarshalIndent(doc, "", "  "); err == nil {
+							_ = os.WriteFile(claudeJSONPath, nb, 0o600)
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func syncCodexAuth(id *Identity) error {
@@ -92,6 +115,49 @@ func syncCodexAuth(id *Identity) error {
 		return err
 	}
 	return os.WriteFile(authPath, append(b, '\n'), 0o600)
+}
+
+func syncGeminiAuth(id *Identity) error {
+	keychainData := id.Credentials["keychain_data"]
+	email := id.Email()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	if keychainData != "" {
+		_ = auth.KCSet("gemini", "antigravity", keychainData)
+		if email != "" && email != "-" {
+			_ = auth.KCSet("antigravity-service", email, keychainData)
+			_ = auth.KCSet("antigravity-service", "antigravity", keychainData)
+		}
+	}
+
+	if email != "" && email != "-" {
+		googleAcctsPath := filepath.Join(home, ".gemini", "google_accounts.json")
+		var gAccts struct {
+			Active string   `json:"active"`
+			Old    []string `json:"old"`
+		}
+		if d, err := os.ReadFile(googleAcctsPath); err == nil {
+			_ = json.Unmarshal(d, &gAccts)
+		}
+		gAccts.Active = email
+		found := false
+		for _, o := range gAccts.Old {
+			if o == email {
+				found = true
+				break
+			}
+		}
+		if !found {
+			gAccts.Old = append(gAccts.Old, email)
+		}
+		if gAcctsBytes, err := json.MarshalIndent(gAccts, "", "  "); err == nil {
+			_ = os.WriteFile(googleAcctsPath, gAcctsBytes, 0o600)
+		}
+	}
+	return nil
 }
 
 // RotateSubscriptionKeychain performs silent Keychain rotation when the active subscription hits threshold.
