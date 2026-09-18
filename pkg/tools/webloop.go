@@ -357,8 +357,12 @@ func isWebToolRefusal(text string) bool {
 		"chưa có yêu cầu cụ thể", "chưa có task cụ thể", "chưa có nhiệm vụ",
 		// Live PR review missing diff / cannot produce review needles
 		"unable to produce", "unable to produce a valid", "no findings are posted",
-		"do not expose that pr", "no verified pr diff", "do not have the pr",
+		"do not expose that pr", "did not expose that pr", "expose that pr", "no verified pr diff", "do not have the pr",
 		"cannot produce a valid", "can’t produce a valid", "can't produce a valid",
+		"cannot perform a valid", "can’t perform a valid", "can't perform a valid", "unable to perform",
+		"cannot perform a", "can't perform a", "can’t perform a",
+		"could not retrieve", "cannot retrieve", "can't retrieve", "can’t retrieve",
+		"target pr contents", "no review was posted", "requires the pr diff",
 		"could not complete the pr review", "could not complete the pr",
 		"can’t complete the `/open-pr:review`", "can't complete the `/open-pr:review`",
 		"cannot complete the `/open-pr:review`", "can’t complete the /open-pr",
