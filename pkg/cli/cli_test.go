@@ -392,5 +392,23 @@ func TestCmdAccount_AliasesAndSubcommands(t *testing.T) {
 	}
 }
 
+func TestCli_PerCommandHelp(t *testing.T) {
+	commands := []string{"start", "stop", "restart", "status", "login", "switch", "account", "hook", "unhook", "doctor", "usage"}
+	for _, cmd := range commands {
+		out := captureStdout(func() {
+			Run([]string{"amux", cmd, "--help"})
+		})
+		if !strings.Contains(out, "Purpose:") {
+			t.Errorf("command %q help missing Purpose:, got:\n%s", cmd, out)
+		}
+		if !strings.Contains(out, "Usage:") {
+			t.Errorf("command %q help missing Usage:, got:\n%s", cmd, out)
+		}
+		if !strings.Contains(out, "Examples:") {
+			t.Errorf("command %q help missing Examples:, got:\n%s", cmd, out)
+		}
+	}
+}
+
 
 

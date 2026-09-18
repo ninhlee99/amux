@@ -25,6 +25,47 @@ func Run(rawArgs []string) {
 	cmd := rawArgs[1]
 	args := rawArgs[2:]
 
+	if hasHelp(args) {
+		switch cmd {
+		case "start":
+			helpStart()
+			return
+		case "stop":
+			helpStop()
+			return
+		case "restart":
+			helpRestart()
+			return
+		case "status":
+			helpStatus()
+			return
+		case "login":
+			helpLogin()
+			return
+		case "switch":
+			helpSwitch()
+			return
+		case "account", "accounts", "id":
+			helpAccount()
+			return
+		case "hook":
+			helpHook()
+			return
+		case "unhook":
+			helpUnhook()
+			return
+		case "doctor":
+			helpDoctor()
+			return
+		case "usage":
+			helpUsage()
+			return
+		default:
+			usageHelp()
+			return
+		}
+	}
+
 	switch cmd {
 	case "help", "-h", "--help":
 		usageHelp()
