@@ -649,15 +649,24 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		searchText = sb.String()
 	}
 
+	var userSearch strings.Builder
+	for _, m := range hist {
+		if strings.EqualFold(m.Role, "user") {
+			userSearch.WriteString(" ")
+			userSearch.WriteString(m.Content)
+		}
+	}
+	lowUser := strings.ToLower(userSearch.String())
 	lowSearch := strings.ToLower(searchText)
-	isPRFixIntent := strings.Contains(lowSearch, "open-pr:fix") || strings.Contains(lowSearch, "/open-pr:fix") ||
-		strings.Contains(lowSearch, "fix pr") || strings.Contains(lowSearch, "pr fix")
 
-	isPRReviewIntent := !isPRFixIntent && (strings.Contains(lowSearch, "open-pr") || strings.Contains(lowSearch, "pr review") ||
-		strings.Contains(lowSearch, "review pr") || strings.Contains(lowSearch, "pr diff") ||
-		strings.Contains(lowSearch, "/open-pr") || strings.Contains(lowSearch, "/pull/") ||
-		strings.Contains(lowSearch, "pull request") || strings.Contains(lowSearch, "pr #") ||
-		strings.Contains(lowSearch, "pull/"))
+	isPRFixIntent := strings.Contains(lowUser, "open-pr:fix") || strings.Contains(lowUser, "/open-pr:fix") ||
+		strings.Contains(lowUser, "fix pr") || strings.Contains(lowUser, "pr fix")
+
+	isPRReviewIntent := !isPRFixIntent && (strings.Contains(lowUser, "open-pr:review") || strings.Contains(lowUser, "/open-pr:review") ||
+		strings.Contains(lowUser, "review pr") || strings.Contains(lowUser, "pr review") ||
+		strings.Contains(lowUser, "open-pr") || strings.Contains(lowUser, "/open-pr") ||
+		strings.Contains(lowUser, "/pull/") || strings.Contains(lowUser, "pull request") ||
+		strings.Contains(lowSearch, "open-pr:review") || strings.Contains(lowSearch, "/open-pr:review"))
 	isPRIntent := isPRFixIntent || isPRReviewIntent
 
 	if isPRFixIntent {
