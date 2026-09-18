@@ -72,9 +72,9 @@ func cmdGatewayStart(args []string) {
 			if err := proxy.SaveBindPublic(true); err != nil {
 				die("enable public bind: %v", err)
 			}
-			tok, _ := proxy.LoadAuthToken()
-			if tok == "" {
-				tok, _ = proxy.IssueNewAuthToken()
+			tok, err := proxy.LoadOrCreateAuthToken()
+			if err != nil {
+				die("load/create auth token: %v", err)
 			}
 			fmt.Println("Starting AMUX Gateway in foreground (PUBLIC mode 0.0.0.0:8787)...")
 			fmt.Printf("Access Token: %s\n", tok)
@@ -90,13 +90,16 @@ func cmdGatewayStart(args []string) {
 		if err := proxy.SaveBindPublic(true); err != nil {
 			die("enable public bind: %v", err)
 		}
-		tok, _ := proxy.LoadAuthToken()
-		if tok == "" {
-			tok, _ = proxy.IssueNewAuthToken()
+		tok, err := proxy.LoadOrCreateAuthToken()
+		if err != nil {
+			die("load/create auth token: %v", err)
 		}
 		fmt.Println("Starting detached AMUX Gateway background service (PUBLIC mode 0.0.0.0:8787)...")
 		if err := gateway.Start(); err != nil {
 			die("failed to start gateway: %v", err)
+		}
+		if actual, err := proxy.LoadAuthToken(); err == nil && actual != "" {
+			tok = actual
 		}
 		fmt.Printf("✓ Gateway started successfully in PUBLIC mode (0.0.0.0:8787).\n")
 		fmt.Printf("  Access Token: %s\n", tok)

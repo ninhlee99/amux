@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -76,14 +77,40 @@ func LoadOrCreateAuthToken() (string, error) {
 	return IssueNewAuthToken()
 }
 
-// isLoopback reports whether r arrived over a loopback connection.
+// isLoopback reports whether r arrived over a loopback connection or from a local interface IP.
 func isLoopback(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	return isLocalIP(ip)
+}
+
+func isLocalIP(ip net.IP) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		var ifIP net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ifIP = v.IP
+		case *net.IPAddr:
+			ifIP = v.IP
+		}
+		if ifIP != nil && ifIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // requestToken extracts the bearer token from X-Am-Token, X-Api-Key, x-goog-api-key, api-key, Authorization, or ?key=.
@@ -100,8 +127,11 @@ func requestToken(r *http.Request) string {
 	if t := strings.TrimSpace(r.Header.Get("api-key")); t != "" {
 		return t
 	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if strings.HasPrefix(auth, "Bearer ") {
+			return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+		}
+		return strings.TrimSpace(auth)
 	}
 	if key := strings.TrimSpace(r.URL.Query().Get("key")); key != "" {
 		return key
@@ -248,6 +278,22 @@ func recordSuccessfulAuth(ip string) {
 // On public hosts, sample keys, dummy keys, or arbitrary strings are strictly rejected;
 // only the ephemeral key issued for that public proxy run is accepted.
 // Also includes rate-limiting to protect against brute-force attacks.
+func writeAuthError(w http.ResponseWriter, r *http.Request, status int, errType, msg string) {
+	if isAnthropicClient(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    errType,
+				"message": msg,
+			},
+		})
+		return
+	}
+	http.Error(w, msg, status)
+}
+
 func requireAuth(token string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if token == "" || isLoopback(r) {
@@ -259,14 +305,14 @@ func requireAuth(token string, h http.Handler) http.Handler {
 			host = r.RemoteAddr
 		}
 		if isAuthRateLimited(host) {
-			http.Error(w, "amux proxy: too many failed authentication attempts — rate limited (try again later)", http.StatusTooManyRequests)
+			writeAuthError(w, r, http.StatusTooManyRequests, "rate_limit_error", "amux proxy: too many failed authentication attempts — rate limited (try again later)")
 			return
 		}
 
 		got := requestToken(r)
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
 			recordFailedAuth(host)
-			http.Error(w, "amux proxy: unauthorized — public host requires valid API key with format amux-<auth-token> (see: am proxy token)", http.StatusUnauthorized)
+			writeAuthError(w, r, http.StatusUnauthorized, "authentication_error", "amux proxy: unauthorized — public host requires valid API key with format amux-<auth-token> (see: amux gateway token)")
 			return
 		}
 		recordSuccessfulAuth(host)

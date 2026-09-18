@@ -123,12 +123,12 @@ func RunProxy(addr, upstream string) error {
 	var srv *http.Server
 	var authToken string
 	if IsPublicBind(addr) {
-		token, err := IssueNewAuthToken()
+		token, err := LoadOrCreateAuthToken()
 		if err != nil {
 			return fmt.Errorf("generate public API key: %w", err)
 		}
 		authToken = token
-		term.LogProxy("public bind: API key %s required for non-loopback requests (see: am proxy token)", authToken)
+		term.LogProxy("public bind: API key %s required for non-loopback requests (see: amux gateway token)", authToken)
 	}
 	handler := newHandler(rot, life, mode, pool, pool, rp, upstream, sw, authToken, func() {
 		if srv != nil {
@@ -186,7 +186,7 @@ func hasCallerCredential(r *http.Request, proxyToken string) bool {
 		// Local Claude/Codex hook uses this fixed placeholder to authenticate
 		// against amux. It is never an upstream credential, even on loopback
 		// where proxyToken is intentionally empty.
-		if key == "am-proxy" {
+		if key == "am-proxy" || key == "amux-proxy" {
 			return false
 		}
 		if proxyToken == "" || subtle.ConstantTimeCompare([]byte(key), []byte(proxyToken)) != 1 {
@@ -194,13 +194,13 @@ func hasCallerCredential(r *http.Request, proxyToken string) bool {
 		}
 	}
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
+	if auth != "" {
 		bearer := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		if bearer != "" {
-			if bearer == "am-proxy" {
+			if bearer == "am-proxy" || bearer == "amux-proxy" {
 				return false
 			}
-			if proxyToken == "" || subtle.ConstantTimeCompare([]byte(bearer), []byte(proxyToken)) != 1 {
+			if proxyToken == "" || (subtle.ConstantTimeCompare([]byte(bearer), []byte(proxyToken)) != 1 && subtle.ConstantTimeCompare([]byte(auth), []byte(proxyToken)) != 1) {
 				return true
 			}
 		}
@@ -602,9 +602,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-Api-Key"))), []byte(authToken)) == 1 {
 					r.Header.Del("X-Api-Key")
 				}
-				if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				if auth := r.Header.Get("Authorization"); auth != "" {
 					bearer := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-					if subtle.ConstantTimeCompare([]byte(bearer), []byte(authToken)) == 1 {
+					if subtle.ConstantTimeCompare([]byte(bearer), []byte(authToken)) == 1 || subtle.ConstantTimeCompare([]byte(auth), []byte(authToken)) == 1 {
 						r.Header.Del("Authorization")
 					}
 				}

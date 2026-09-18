@@ -30,7 +30,8 @@ Gateway:
   gateway unhook [flags]     Unhook IDE settings (--claude, --cursor, --codex, --all)
 
 Configuration & Migration:
-  config                     Inspect or edit configuration
+  config [property]          Inspect or edit configuration (e.g. amux config threshold 85)
+  threshold [percent]        Get or set global multi-account failover threshold (default: 95.0)
   migrate                    Non-destructive migration to flat Identity model
 
 System:

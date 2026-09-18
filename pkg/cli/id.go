@@ -36,8 +36,10 @@ func CmdID(args []string) {
 		cmdIDSelect(subArgs)
 	case "auto":
 		cmdIDAutoRotate(subArgs)
+	case "threshold":
+		CmdConfig(append([]string{"threshold"}, subArgs...))
 	default:
-		die("unknown id command: %s (valid: list, add, remove, select, auto, health)", sub)
+		die("unknown id command: %s (valid: list, add, remove, select, auto, threshold, health)", sub)
 	}
 }
 
@@ -196,17 +198,55 @@ func cmdIDSelect(args []string) {
 		die("identity %q not found", targetID)
 	}
 
-	if err := identity.SetActive("", targetID); err != nil {
+	if err := identity.SetActive("", target.ID); err != nil {
 		die("failed to activate identity: %v", err)
 	}
-	proxy.Sync()
 
-	// Instantly update target IDE native Keychain
+	// 1. Instantly update target IDE native Keychain & configs
 	if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
-		fmt.Printf("Notice: could not sync to native keychain: %v\n", err)
+		fmt.Printf("Notice: could not sync to native credentials: %v\n", err)
 	} else {
-		fmt.Printf("✓ macOS Keychain updated for native %s execution.\n", target.Provider)
+		fmt.Printf("✓ Native credentials updated for %s execution.\n", target.Provider)
 	}
 
-	fmt.Printf("✓ Identity %q is now ACTIVE.\n", targetID)
+	// 2. If backed by an amux profile bundle, switch the profile so active pointer and artifacts match
+	tool := ""
+	switch {
+	case strings.HasPrefix(target.ID, "antigravity"):
+		tool = "antigravity"
+	case strings.HasPrefix(target.ID, "claude"):
+		tool = "claude"
+	case strings.HasPrefix(target.ID, "gemini"):
+		tool = "gemini"
+	case strings.HasPrefix(target.ID, "codex"):
+		tool = "codex"
+	}
+
+	pName := ""
+	if target.Metadata != nil {
+		if s, ok := target.Metadata["profile_name"].(string); ok && s != "" {
+			pName = s
+		}
+	}
+	if pName == "" && target.Email() != "" && target.Email() != "-" {
+		pName = target.Email()
+	}
+
+	if tool != "" && pName != "" {
+		if _, err := os.Stat(profile.BundlePath(tool, pName)); err == nil {
+			_ = profile.CmdUse(tool, pName)
+		}
+	}
+
+	// 3. Notify proxy daemon
+	if proxy.ProxyUp() {
+		if tool == "claude" && pName != "" {
+			proxy.CmdSwitch("claude", pName)
+		} else {
+			proxy.CmdSwitchProvider(target.ID)
+		}
+		proxy.Sync()
+	}
+
+	fmt.Printf("✓ Identity %q is now ACTIVE.\n", target.ID)
 }

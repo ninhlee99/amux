@@ -60,9 +60,14 @@ func CmdStatus(args []string) {
 			id.ID, id.Email(), id.Provider, id.Tier, usageStr, activeStr, resetStr)
 	}
 
-	effThresh := identity.GetEffectiveThreshold("anthropic", cfg.Identities, cfg.ThresholdPct)
 	fmt.Println("--------------------------------------------------------------------")
-	fmt.Printf("Failover Rule: Multi-Account Threshold: %.1f%% | Effective Provider Threshold: %.1f%%\n",
-		cfg.ThresholdPct, effThresh)
+	providers := []string{"anthropic", "gemini", "openai"}
+	var threshParts []string
+	for _, p := range providers {
+		eff := identity.GetEffectiveThreshold(p, cfg.Identities, cfg.ThresholdPct)
+		threshParts = append(threshParts, fmt.Sprintf("%s: %.1f%%", p, eff))
+	}
+	fmt.Printf("Failover Rule: Multi-Account Threshold: %.1f%% | Effective: [%s]\n",
+		cfg.ThresholdPct, strings.Join(threshParts, " | "))
 	fmt.Println("====================================================================")
 }

@@ -42,6 +42,8 @@ func Run(rawArgs []string) {
 		CmdGateway(args)
 	case "config":
 		CmdConfig(args)
+	case "threshold":
+		CmdConfig(append([]string{"threshold"}, args...))
 	case "migrate":
 		CmdMigrate(args)
 	case "update":

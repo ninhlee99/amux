@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"amux-accounts/pkg/types"
@@ -97,15 +98,26 @@ func List(path string) ([]Identity, error) {
 	return cfg.Identities, nil
 }
 
-// Get finds an identity by ID or returns nil.
+// Get finds an identity by ID, email, or profile name, or returns nil.
 func Get(path string, id string) (*Identity, error) {
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return nil, err
 	}
+	id = strings.TrimSpace(id)
 	for _, item := range cfg.Identities {
 		if item.ID == id {
 			return &item, nil
+		}
+	}
+	for _, item := range cfg.Identities {
+		if strings.EqualFold(item.Email(), id) {
+			return &item, nil
+		}
+		if item.Metadata != nil {
+			if prof, ok := item.Metadata["profile_name"].(string); ok && strings.EqualFold(prof, id) {
+				return &item, nil
+			}
 		}
 	}
 	return nil, nil
@@ -162,31 +174,57 @@ func Remove(path string, id string) (bool, error) {
 	return true, SaveConfig(path, cfg)
 }
 
-// SetActive marks an identity as active for its provider and deactivates other identities of that provider.
+// SetActive marks an identity as active for its tool/provider group and deactivates other identities in that group.
 func SetActive(path string, id string) error {
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return err
 	}
 
-	var targetProvider string
-	for _, item := range cfg.Identities {
-		if item.ID == id {
-			targetProvider = CanonicalProvider(item.Provider)
+	id = strings.TrimSpace(id)
+	var targetIdentity *Identity
+	for i := range cfg.Identities {
+		if cfg.Identities[i].ID == id || strings.EqualFold(cfg.Identities[i].Email(), id) {
+			targetIdentity = &cfg.Identities[i]
 			break
 		}
+		if cfg.Identities[i].Metadata != nil {
+			if prof, ok := cfg.Identities[i].Metadata["profile_name"].(string); ok && strings.EqualFold(prof, id) {
+				targetIdentity = &cfg.Identities[i]
+				break
+			}
+		}
 	}
-	if targetProvider == "" {
+	if targetIdentity == nil {
 		return fmt.Errorf("identity %q not found", id)
 	}
 
+	actualID := targetIdentity.ID
+
 	for i := range cfg.Identities {
-		if CanonicalProvider(cfg.Identities[i].Provider) == targetProvider {
-			cfg.Identities[i].Active = (cfg.Identities[i].ID == id)
+		if isSameIdentityGroup(*targetIdentity, cfg.Identities[i]) {
+			cfg.Identities[i].Active = (cfg.Identities[i].ID == actualID)
 		}
 	}
 
 	return SaveConfig(path, cfg)
+}
+
+func isSameIdentityGroup(target, item Identity) bool {
+	if CanonicalProvider(target.Provider) != CanonicalProvider(item.Provider) {
+		return false
+	}
+	// Antigravity and Gemini Web are distinct tools under the Google/Gemini ecosystem
+	isTargetAGY := strings.HasPrefix(target.ID, "antigravity")
+	isItemAGY := strings.HasPrefix(item.ID, "antigravity")
+	if isTargetAGY != isItemAGY {
+		return false
+	}
+	// Subscription vs Web tiers are distinct execution modes
+	if target.Tier != "" && item.Tier != "" && target.Tier != item.Tier {
+		return false
+	}
+	return true
 }
 
 // SetAutoRotate updates whether an identity is eligible for automatic rotation.
