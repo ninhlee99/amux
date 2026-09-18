@@ -30,6 +30,9 @@ func CmdStatus(args []string) {
 	if gwStatus.CodexHooked {
 		hooks = append(hooks, "Codex")
 	}
+	if gwStatus.AgyHooked {
+		hooks = append(hooks, "Antigravity")
+	}
 	if len(hooks) == 0 {
 		fmt.Println("Active IDE Hooks: None (Native Direct Keychain Mode)")
 	} else {

@@ -91,3 +91,75 @@ func TestGateway_ConditionalHookAndAutoDetach(t *testing.T) {
 		t.Errorf("should auto-detach when subscription resets")
 	}
 }
+
+func TestGateway_HookCodexLifecycle(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-codex-hook-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	hooked, _ := gateway.IsCodexHooked()
+	if hooked {
+		t.Fatalf("expected Codex not hooked initially")
+	}
+
+	testURL := "http://127.0.0.1:8787/v1"
+	if err := gateway.HookCodex(testURL); err != nil {
+		t.Fatalf("HookCodex error: %v", err)
+	}
+
+	hooked, val := gateway.IsCodexHooked()
+	if !hooked || val != testURL {
+		t.Fatalf("expected hooked with %s, got hooked=%v, val=%s", testURL, hooked, val)
+	}
+
+	if err := gateway.UnhookCodex(); err != nil {
+		t.Fatalf("UnhookCodex error: %v", err)
+	}
+
+	hooked, _ = gateway.IsCodexHooked()
+	if hooked {
+		t.Fatalf("expected Codex unhooked")
+	}
+}
+
+func TestGateway_HookAgyLifecycle(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-agy-hook-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	hooked, _ := gateway.IsAgyHooked()
+	if hooked {
+		t.Fatalf("expected AGY not hooked initially")
+	}
+
+	testURL := "http://127.0.0.1:8787"
+	if err := gateway.HookAgy(testURL); err != nil {
+		t.Fatalf("HookAgy error: %v", err)
+	}
+
+	hooked, val := gateway.IsAgyHooked()
+	if !hooked || val != testURL {
+		t.Fatalf("expected hooked with %s, got hooked=%v, val=%s", testURL, hooked, val)
+	}
+
+	if err := gateway.UnhookAgy(); err != nil {
+		t.Fatalf("UnhookAgy error: %v", err)
+	}
+
+	hooked, _ = gateway.IsAgyHooked()
+	if hooked {
+		t.Fatalf("expected AGY unhooked")
+	}
+}
