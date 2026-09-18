@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"amux-accounts/pkg/identity"
@@ -24,6 +25,10 @@ func CmdID(args []string) {
 	subArgs := args[1:]
 
 	switch sub {
+	case "off", "disable":
+		cmdIDOff(subArgs)
+	case "on", "enable":
+		cmdIDOn(subArgs)
 	case "list":
 		cmdIDList()
 	case "add":
@@ -37,39 +42,47 @@ func CmdID(args []string) {
 	case "auto":
 		cmdIDAutoRotate(subArgs)
 	case "threshold":
-		CmdConfig(append([]string{"threshold"}, subArgs...))
+		cmdIDThreshold(subArgs)
 	default:
-		die("unknown id command: %s (valid: list, add, remove, select, auto, threshold, health)", sub)
+		die("unknown id command: %s (valid: list, add, remove, select, off, on, auto, threshold, health)", sub)
 	}
 }
 
 func cmdIDList() {
+	_, _ = identity.MigrateLegacyAccounts("", "")
 	cfg, err := identity.LoadConfig("")
-	if err != nil || len(cfg.Identities) == 0 {
-		if n, _ := identity.MigrateLegacyAccounts("", ""); n > 0 {
-			cfg, _ = identity.LoadConfig("")
-		}
-	}
 	if err != nil || len(cfg.Identities) == 0 {
 		fmt.Println("No identities configured. Run 'amux id add [provider]' to register an identity.")
 		return
 	}
 
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "TIER", "USAGE", "ACTIVE", "AUTO-SWITCH")
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------", "------------")
 
 	for _, id := range cfg.Identities {
 		activeStr := "NO"
 		if id.Active {
 			activeStr = "YES"
 		}
+		if !identity.IsEnabled(id) {
+			activeStr = "DISABLED"
+		}
 		autoStr := "ON"
 		if !id.CanAutoRotate() {
 			autoStr = "OFF"
 		}
+		if !identity.IsEnabled(id) {
+			autoStr = "-"
+		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Email(), id.Tier, usageStr, activeStr, autoStr)
+		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+		threshStr := fmt.Sprintf("%.1f%%", thresh)
+		resetStr := "unknown"
+		if id.ResetAt > 0 {
+			resetStr = id.FormatResetTime()
+		}
+		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n",
+			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr, resetStr)
 	}
 }
 
@@ -126,7 +139,16 @@ func cmdIDRemove(args []string) {
 		die("usage: amux id remove <id>")
 	}
 	id := args[0]
+	target, _ := identity.Get("", id)
 	profDeleted, _ := profile.DeleteProfileAnyTool(id)
+	if target != nil && target.Metadata != nil {
+		if pName, ok := target.Metadata["profile_name"].(string); ok && pName != "" && pName != id {
+			deleted, _ := profile.DeleteProfileAnyTool(pName)
+			if deleted {
+				profDeleted = true
+			}
+		}
+	}
 	provDeleted := provider.RemoveProvider(provider.DefaultAccountsPath(), id) == nil
 	removed, err := identity.Remove("", id)
 	if err != nil {
@@ -250,3 +272,181 @@ func cmdIDSelect(args []string) {
 
 	fmt.Printf("✓ Identity %q is now ACTIVE.\n", target.ID)
 }
+
+func cmdIDThreshold(args []string) {
+	cfg, err := identity.LoadConfig("")
+	if err != nil {
+		die("load config: %v", err)
+	}
+
+	if len(args) == 0 {
+		fmt.Printf("Global multi-account threshold: %.1f%%\n\n", cfg.ThresholdPct)
+		if len(cfg.Identities) == 0 {
+			fmt.Println("No identities configured.")
+			return
+		}
+		fmt.Printf("%-20s %-12s %-14s %s\n", "ID", "PROVIDER", "THRESHOLD", "TYPE")
+		fmt.Printf("%-20s %-12s %-14s %s\n", "--------------------", "------------", "--------------", "------")
+		for _, id := range cfg.Identities {
+			thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+			source := "(default)"
+			if id.ThresholdPct != nil {
+				source = "(custom)"
+			}
+			fmt.Printf("%-20s %-12s %-14s %s\n", id.ID, id.Provider, fmt.Sprintf("%.1f%%", thresh), source)
+		}
+		return
+	}
+
+	// 1 argument: can be a global threshold value (number) or identity ID to inspect
+	if len(args) == 1 {
+		valStr := strings.TrimSuffix(args[0], "%")
+		// Check if it's a number (global threshold update, e.g. 'amux id threshold 80')
+		if val, err := strconv.ParseFloat(valStr, 64); err == nil && val > 0 && val <= 100 {
+			cfg.ThresholdPct = val
+			if err := identity.SaveConfig("", cfg); err != nil {
+				die("save config: %v", err)
+			}
+			proxy.Sync()
+			fmt.Printf("✓ Updated global threshold_pct to %.1f%%\n", val)
+			return
+		}
+
+		// Otherwise inspect identity threshold
+		targetID := args[0]
+		target, err := identity.Get("", targetID)
+		if err != nil || target == nil {
+			die("identity %q not found (or invalid threshold number 0-100)", targetID)
+		}
+		thresh := identity.GetAccountThreshold(*target, cfg.Identities, cfg.ThresholdPct)
+		customStr := "(effective default)"
+		if target.ThresholdPct != nil {
+			customStr = "(custom override)"
+		}
+		fmt.Printf("Threshold for %q (%s): %.1f%% %s\n", target.ID, target.Provider, thresh, customStr)
+		return
+	}
+
+	// 2+ arguments:
+	// 'amux id threshold global <val>' OR 'amux id threshold <id> <val>'
+	first := args[0]
+	second := strings.TrimSuffix(args[1], "%")
+
+	if strings.EqualFold(first, "global") || strings.EqualFold(first, "--global") {
+		val, err := strconv.ParseFloat(second, 64)
+		if err != nil || val <= 0 || val > 100 {
+			die("invalid threshold value (must be 0-100)")
+		}
+		cfg.ThresholdPct = val
+		if err := identity.SaveConfig("", cfg); err != nil {
+			die("save config: %v", err)
+		}
+		proxy.Sync()
+		fmt.Printf("✓ Updated global threshold_pct to %.1f%%\n", val)
+		return
+	}
+
+	targetID := first
+	target, err := identity.Get("", targetID)
+	if err != nil || target == nil {
+		die("identity %q not found", targetID)
+	}
+
+	if strings.EqualFold(second, "reset") || strings.EqualFold(second, "default") || strings.EqualFold(second, "clear") || second == "0" {
+		if err := identity.SetThreshold("", target.ID, nil); err != nil {
+			die("failed to update threshold: %v", err)
+		}
+		proxy.Sync()
+		fmt.Printf("✓ Reset threshold for %q to default/effective\n", target.ID)
+		return
+	}
+
+	val, err := strconv.ParseFloat(second, 64)
+	if err != nil || val <= 0 || val > 100 {
+		die("invalid threshold value %q (must be between 0 and 100)", args[1])
+	}
+
+	if err := identity.SetThreshold("", target.ID, &val); err != nil {
+		die("failed to update threshold: %v", err)
+	}
+	proxy.Sync()
+	fmt.Printf("✓ Updated threshold for %q to %.1f%%\n", target.ID, val)
+}
+
+// cmdIDOff hard-disables an identity so it is never used by the proxy
+// (rotator + pool) until explicitly re-enabled with `amux id on`.
+// For Claude subscription accounts (claude:code:XX) it also marks the
+// underlying profile bundle as disabled so the rotator respects it immediately.
+func cmdIDOff(args []string) {
+	if len(args) == 0 {
+		die("usage: amux id off <id>")
+	}
+	targetID := args[0]
+	target, err := identity.Get("", targetID)
+	if err != nil || target == nil {
+		die("identity %q not found", targetID)
+	}
+
+	// 1. Hard-disable in identity store
+	if err := identity.SetEnabled("", targetID, false); err != nil {
+		die("failed to disable identity: %v", err)
+	}
+
+	// 2. For Claude subscription profiles: also mark the profile bundle disabled
+	//    so the rotator (which reads profile metadata, not identities.json) picks
+	//    it up immediately via RefreshFromDisk called during proxy.Sync().
+	if strings.HasPrefix(target.ID, "claude:code") {
+		pName := ""
+		if target.Metadata != nil {
+			if s, ok := target.Metadata["profile_name"].(string); ok {
+				pName = s
+			}
+		}
+		if pName == "" {
+			pName = target.Email()
+		}
+		if pName != "" && pName != "-" {
+			_ = profile.SetDisabled("claude", pName, true)
+		}
+	}
+
+	proxy.Sync()
+	fmt.Printf("✓ Identity %q is now OFF — will not be used until `amux id on %s`.\n", targetID, targetID)
+}
+
+// cmdIDOn re-enables a hard-disabled identity.
+func cmdIDOn(args []string) {
+	if len(args) == 0 {
+		die("usage: amux id on <id>")
+	}
+	targetID := args[0]
+	target, err := identity.Get("", targetID)
+	if err != nil || target == nil {
+		die("identity %q not found", targetID)
+	}
+
+	// 1. Re-enable in identity store
+	if err := identity.SetEnabled("", targetID, true); err != nil {
+		die("failed to enable identity: %v", err)
+	}
+
+	// 2. For Claude subscription profiles: clear the profile bundle disabled flag
+	if strings.HasPrefix(target.ID, "claude:code") {
+		pName := ""
+		if target.Metadata != nil {
+			if s, ok := target.Metadata["profile_name"].(string); ok {
+				pName = s
+			}
+		}
+		if pName == "" {
+			pName = target.Email()
+		}
+		if pName != "" && pName != "-" {
+			_ = profile.SetDisabled("claude", pName, false)
+		}
+	}
+
+	proxy.Sync()
+	fmt.Printf("✓ Identity %q is now ON — back in routing pool.\n", targetID)
+}
+

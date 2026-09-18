@@ -661,7 +661,7 @@ func (r *Rotator) forceSwitch(name string) error {
 	}
 	if r.disabled[name] {
 		r.mu.Unlock()
-		return fmt.Errorf("profile %q is off — run: am on %s", name, name)
+		return fmt.Errorf("profile %q is off — run: amux on %s", name, name)
 	}
 	r.idx = found
 	target := r.order[r.idx]

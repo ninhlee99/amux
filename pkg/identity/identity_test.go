@@ -162,3 +162,49 @@ func TestIdentity_AutoRotateExclusion(t *testing.T) {
 		t.Fatalf("expected HasAvailableSubscription to return false when only manual-only accounts are available, got: %v", avail)
 	}
 }
+
+func TestIdentity_PerAccountThreshold(t *testing.T) {
+	customThresh := 80.0
+	pool := []identity.Identity{
+		{
+			ID:           "sub-custom",
+			Provider:     "anthropic",
+			Tier:         identity.TierSubscription,
+			UsagePercent: 82.0,
+			Active:       true,
+			ThresholdPct: &customThresh,
+		},
+		{
+			ID:           "sub-default",
+			Provider:     "anthropic",
+			Tier:         identity.TierSubscription,
+			UsagePercent: 88.0,
+			Active:       false,
+		},
+	}
+
+	// sub-custom has explicit threshold 80.0%
+	thresh1 := identity.GetAccountThreshold(pool[0], pool, 95.0)
+	if thresh1 != 80.0 {
+		t.Errorf("expected 80.0 for sub-custom, got %f", thresh1)
+	}
+	if !identity.ShouldFailover(pool[0], pool, 95.0) {
+		t.Errorf("sub-custom at 82%% should failover because threshold is 80%%")
+	}
+
+	// sub-default has no custom threshold, multi-account pool base is 95.0%
+	thresh2 := identity.GetAccountThreshold(pool[1], pool, 95.0)
+	if thresh2 != 95.0 {
+		t.Errorf("expected 95.0 for sub-default, got %f", thresh2)
+	}
+	if identity.ShouldFailover(pool[1], pool, 95.0) {
+		t.Errorf("sub-default at 88%% should NOT failover under 95%% threshold")
+	}
+
+	// Next subscription from sub-custom should pick sub-default
+	next, ok := identity.NextSubscription("anthropic", "sub-custom", pool, 95.0)
+	if !ok || next.ID != "sub-default" {
+		t.Fatalf("expected next subscription to be sub-default, got %v (ok=%v)", next, ok)
+	}
+}
+

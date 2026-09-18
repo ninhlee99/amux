@@ -62,8 +62,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {
 		if cached, found := ctxshrink.GlobalReplayCache().GetForProject(req.Project(), replayKey); found {
-			recordChatUsage(r, pool, req.Model, 0, cached.OutputTokens, cached.InputTokens)
-			logChatRequest(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, time.Now(), nil)
+			logChatRequestWithCache(r, pool, req, "[cached replay]", "stop", "", 0, cached.OutputTokens, cached.InputTokens, 0, time.Now(), nil)
 			term.LogProxy("⚡ Deterministic Replay Cache HIT (Responses) [key=%s, project=%s] (0 upstream tokens, saved %d tokens, 0$)",
 				replayKey[:8], req.Project(), cached.InputTokens)
 			_ = cached.Serve(w, req.Stream)
@@ -315,7 +314,6 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 				OutputTokens: completionTokens,
 			})
 		}
-		recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 		logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 		return
 	}
@@ -407,7 +405,6 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 			OutputTokens: completionTokens,
 		})
 	}
-	recordChatUsage(r, pool, req.Model, inputTokens, completionTokens, 0)
 	logChatRequest(r, pool, req, pickLogOutput(fullContent.String(), logText), finishReason, "", inputTokens, completionTokens, started, toolCalls)
 }
 

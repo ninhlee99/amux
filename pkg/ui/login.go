@@ -1110,7 +1110,7 @@ func CmdAccountsFilter(filter string) {
 	}
 
 	filter = strings.ToLower(strings.TrimSpace(filter))
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "TIER", "USAGE", "ACTIVE", "AUTO-SWITCH")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH")
 	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------")
 
 	for _, id := range cfg.Identities {
@@ -1126,8 +1126,10 @@ func CmdAccountsFilter(filter string) {
 			autoStr = "OFF"
 		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
+		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+		threshStr := fmt.Sprintf("%.1f%%", thresh)
 		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Email(), id.Tier, usageStr, activeStr, autoStr)
+			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr)
 	}
 }
 

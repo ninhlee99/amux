@@ -45,19 +45,31 @@ func CmdStatus(args []string) {
 		return
 	}
 
-	fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "PROVIDER", "TIER", "USAGE", "ACTIVE", "RESETS IN")
-	fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n", "------------------", "--------------------------", "----------", "--------------", "--------", "--------", "------------")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
+	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------", "------------")
 
 	for _, id := range cfg.Identities {
 		activeStr := "NO"
 		if id.Active {
 			activeStr = "YES *"
 		}
+		if !identity.IsEnabled(id) {
+			activeStr = "DISABLED"
+		}
+		autoStr := "ON"
+		if !id.CanAutoRotate() {
+			autoStr = "OFF"
+		}
+		if !identity.IsEnabled(id) {
+			autoStr = "-"
+		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
 		resetStr := id.FormatResetTime()
+		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
+		threshStr := fmt.Sprintf("%.1f%%", thresh)
 
-		fmt.Printf("%-18s %-26s %-10s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Email(), id.Provider, id.Tier, usageStr, activeStr, resetStr)
+		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n",
+			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr, resetStr)
 	}
 
 	fmt.Println("--------------------------------------------------------------------")
