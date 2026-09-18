@@ -172,6 +172,7 @@ func cmdGatewayStatus() {
 	fmt.Printf("Claude Code:  %s\n", hookStatusStr(st.ClaudeHooked))
 	fmt.Printf("Cursor:       %s\n", hookStatusStr(st.CursorHooked))
 	fmt.Printf("Codex CLI:    %s\n", hookStatusStr(st.CodexHooked))
+	fmt.Printf("Antigravity:  %s\n", hookStatusStr(st.AgyHooked))
 }
 
 func hookStatusStr(hooked bool) string {
@@ -191,10 +192,12 @@ func cmdGatewayHook(args []string) {
 			target = gateway.TargetCursor
 		case "--codex", "codex":
 			target = gateway.TargetCodex
+		case "--agy", "agy", "--antigravity", "antigravity":
+			target = gateway.TargetAgy
 		case "--all", "-a", "all":
 			target = gateway.TargetAll
 		default:
-			die("unknown hook target: %s (use --claude, --cursor, --codex, or --all)", args[0])
+			die("unknown hook target: %s (use --claude, --cursor, --codex, --agy, or --all)", args[0])
 		}
 	}
 
@@ -214,10 +217,12 @@ func cmdGatewayUnhook(args []string) {
 			target = gateway.TargetCursor
 		case "--codex", "codex":
 			target = gateway.TargetCodex
+		case "--agy", "agy", "--antigravity", "antigravity":
+			target = gateway.TargetAgy
 		case "--all", "-a", "all":
 			target = gateway.TargetAll
 		default:
-			die("unknown unhook target: %s (use --claude, --cursor, --codex, or --all)", args[0])
+			die("unknown unhook target: %s (use --claude, --cursor, --codex, --agy, or --all)", args[0])
 		}
 	}
 

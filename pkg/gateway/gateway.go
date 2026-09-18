@@ -25,6 +25,7 @@ type GatewayStatus struct {
 	ClaudeHooked bool           `json:"claude_hooked"`
 	CursorHooked bool           `json:"cursor_hooked"`
 	CodexHooked  bool           `json:"codex_hooked"`
+	AgyHooked    bool           `json:"agy_hooked"`
 	Upstream     string         `json:"upstream,omitempty"`
 	Mode         string         `json:"mode,omitempty"`
 	Sessions     int            `json:"sessions"`
@@ -59,6 +60,7 @@ func GetStatus() GatewayStatus {
 	st.ClaudeHooked, _ = IsClaudeHooked()
 	st.CursorHooked, _ = IsCursorHooked()
 	st.CodexHooked, _ = IsCodexHooked()
+	st.AgyHooked, _ = IsAgyHooked()
 
 	c := http.Client{Timeout: 1 * time.Second}
 	resp, err := c.Get(GatewayDefaultURL + "/_am/status")

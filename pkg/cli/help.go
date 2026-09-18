@@ -29,8 +29,8 @@ Gateway:
   gateway stop [--public]    Gracefully stop the daemon (optional reset public bind)
   gateway status             Inspect socket status, public mode and routing tables
   gateway token [new|clear]  Manage public gateway access token
-  gateway hook [flags]       Hook IDE settings (--claude, --cursor, --codex, --all)
-  gateway unhook [flags]     Unhook IDE settings (--claude, --cursor, --codex, --all)
+  gateway hook [flags]       Hook IDE settings (--claude, --cursor, --codex, --agy, --all)
+  gateway unhook [flags]     Unhook IDE settings (--claude, --cursor, --codex, --agy, --all)
 
 Configuration & Migration:
   config [property]          Inspect or edit configuration (e.g. amux config threshold 85)
