@@ -28,18 +28,32 @@ func Run(rawArgs []string) {
 	switch cmd {
 	case "help", "-h", "--help":
 		usageHelp()
-	case "setup":
-		CmdSetup(args)
+	case "login":
+		ui.CmdLogin(args)
+	case "start":
+		cmdGatewayStart(args)
+	case "stop":
+		cmdGatewayStop(args)
+	case "restart":
+		cmdGatewayRestart(args)
 	case "status":
 		CmdStatus(args)
+	case "account", "accounts", "id":
+		CmdAccount(args)
+	case "switch":
+		cmdIDSelect(args)
+	case "hook":
+		cmdGatewayHook(args)
+	case "unhook":
+		cmdGatewayUnhook(args)
+	case "gateway":
+		CmdGateway(args)
 	case "usage":
 		CmdUsage(args)
 	case "doctor":
 		CmdDoctor(args)
-	case "id":
-		CmdID(args)
-	case "gateway":
-		CmdGateway(args)
+	case "setup":
+		CmdSetup(args)
 	case "config":
 		CmdConfig(args)
 	case "threshold":

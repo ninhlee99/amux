@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"amux-accounts/pkg/gateway"
 	"amux-accounts/pkg/proxy"
@@ -28,6 +29,8 @@ func CmdGateway(args []string) {
 		cmdGatewayStart(subArgs)
 	case "stop":
 		cmdGatewayStop(subArgs)
+	case "restart":
+		cmdGatewayRestart(subArgs)
 	case "status":
 		cmdGatewayStatus()
 	case "hook":
@@ -137,6 +140,16 @@ func cmdGatewayStop(args []string) {
 		die("failed to stop gateway: %v", err)
 	}
 	fmt.Println("✓ Gateway stopped gracefully.")
+}
+
+func cmdGatewayRestart(args []string) {
+	if gateway.IsRunning() {
+		fmt.Println("Stopping running AMUX Gateway daemon...")
+		cmdGatewayStop(nil)
+		time.Sleep(500 * time.Millisecond)
+	}
+	fmt.Println("Starting AMUX Gateway daemon...")
+	cmdGatewayStart(args)
 }
 
 func cmdGatewayStatus() {

@@ -640,6 +640,7 @@ func (r *Rotator) ForceSwitchExplicit(name string) error {
 
 func (r *Rotator) forceSwitch(name string) error {
 	r.snapshotActiveIfChanged()
+	r.RefreshFromDisk()
 
 	r.mu.Lock()
 	if len(r.order) == 0 {

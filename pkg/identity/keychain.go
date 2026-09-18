@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/auth"
+	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/types"
 )
 
@@ -38,6 +39,29 @@ func SyncIdentityToNativeKeychain(id *Identity) error {
 func syncClaudeKeychain(id *Identity) error {
 	accessTok := id.Credentials["access_token"]
 	refreshTok := id.Credentials["refresh_token"]
+
+	if accessTok == "" && refreshTok == "" {
+		if id.Metadata != nil {
+			if pName, ok := id.Metadata["profile_name"].(string); ok && pName != "" {
+				tok := profile.LoadClaudeToken("claude", pName)
+				if tok != nil && (tok.Access != "" || tok.Refresh != "") {
+					accessTok = tok.Access
+					refreshTok = tok.Refresh
+				}
+			}
+		}
+	}
+
+	if accessTok == "" && refreshTok == "" {
+		if kcData, ok := id.Credentials["keychain_data"]; ok && kcData != "" {
+			tok := auth.ParseClaudeCreds([]byte(kcData))
+			if tok != nil && (tok.Access != "" || tok.Refresh != "") {
+				accessTok = tok.Access
+				refreshTok = tok.Refresh
+			}
+		}
+	}
+
 	if accessTok == "" && refreshTok == "" {
 		return fmt.Errorf("no tokens available for identity %s", id.ID)
 	}
@@ -64,24 +88,29 @@ func syncClaudeKeychain(id *Identity) error {
 	}
 
 	acct := types.CurrentUser()
-	if err := auth.KCSet(ClaudeKeychainService, acct, string(b)); err != nil {
-		return err
-	}
+	_ = auth.KCSet(ClaudeKeychainService, acct, string(b))
 
-	if email := id.Email(); email != "" && email != "-" {
+	email := id.Email()
+	if email != "" && email != "-" {
+		_ = auth.KCSet(ClaudeKeychainService, email, string(b))
 		home, err := os.UserHomeDir()
 		if err == nil {
 			claudeJSONPath := filepath.Join(home, ".claude.json")
+			var doc map[string]any
 			if data, err := os.ReadFile(claudeJSONPath); err == nil {
-				var doc map[string]any
-				if json.Unmarshal(data, &doc) == nil {
-					if oauthAcct, ok := doc["oauthAccount"].(map[string]any); ok {
-						oauthAcct["emailAddress"] = email
-						if nb, err := json.MarshalIndent(doc, "", "  "); err == nil {
-							_ = os.WriteFile(claudeJSONPath, nb, 0o600)
-						}
-					}
-				}
+				_ = json.Unmarshal(data, &doc)
+			}
+			if doc == nil {
+				doc = make(map[string]any)
+			}
+			oauthAcct, _ := doc["oauthAccount"].(map[string]any)
+			if oauthAcct == nil {
+				oauthAcct = make(map[string]any)
+			}
+			oauthAcct["emailAddress"] = email
+			doc["oauthAccount"] = oauthAcct
+			if nb, err := json.MarshalIndent(doc, "", "  "); err == nil {
+				_ = os.WriteFile(claudeJSONPath, nb, 0o600)
 			}
 		}
 	}
@@ -89,12 +118,6 @@ func syncClaudeKeychain(id *Identity) error {
 }
 
 func syncCodexAuth(id *Identity) error {
-	accessTok := id.Credentials["access_token"]
-	refreshTok := id.Credentials["refresh_token"]
-	if accessTok == "" && refreshTok == "" {
-		return fmt.Errorf("no tokens for codex identity %s", id.ID)
-	}
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -102,13 +125,34 @@ func syncCodexAuth(id *Identity) error {
 	authPath := filepath.Join(home, ".codex", "auth.json")
 	_ = os.MkdirAll(filepath.Dir(authPath), 0o700)
 
+	fileData := id.Credentials["file_data"]
+	accessTok := id.Credentials["access_token"]
+	refreshTok := id.Credentials["refresh_token"]
+
+	if accessTok == "" && refreshTok == "" && fileData != "" {
+		return os.WriteFile(authPath, []byte(fileData), 0o600)
+	}
+
+	if accessTok == "" && refreshTok == "" {
+		return fmt.Errorf("no tokens for codex identity %s", id.ID)
+	}
+
+	tokensMap := map[string]any{
+		"access_token":  accessTok,
+		"refresh_token": refreshTok,
+	}
+	if idTok, ok := id.Credentials["id_token"]; ok && idTok != "" {
+		tokensMap["id_token"] = idTok
+	}
+	if acctID, ok := id.Credentials["account_id"]; ok && acctID != "" {
+		tokensMap["account_id"] = acctID
+	}
+
 	doc := map[string]any{
-		"tokens": map[string]any{
-			"access_token":  accessTok,
-			"refresh_token": refreshTok,
-			"id_token":      id.Credentials["id_token"],
-			"account_id":    id.Credentials["account_id"],
-		},
+		"auth_mode":      "chatgpt",
+		"OPENAI_API_KEY": nil,
+		"tokens":         tokensMap,
+		"last_refresh":   time.Now().UTC().Format(time.RFC3339),
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
