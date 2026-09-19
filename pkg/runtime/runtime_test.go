@@ -270,3 +270,113 @@ func TestRuntimeContract_ReferencedExecutableToolsExistInCatalog(t *testing.T) {
 	}
 }
 
+func TestScenario_DynamicFutureTools_AcrossAGY_Codex_Cursor(t *testing.T) {
+	testClients := []struct {
+		ClientDialect string
+		RuntimeName   string
+		Tools         []types.ToolDef
+	}{
+		{
+			ClientDialect: "antigravity",
+			RuntimeName:   "Antigravity",
+			Tools: []types.ToolDef{
+				{
+					Name:        "future_agy_cloud_deploy",
+					Description: "Deploy cloud services",
+					InputSchema: []byte(`{"type":"object","required":["serviceName","region"],"properties":{"serviceName":{"type":"string"},"region":{"type":"string"}}}`),
+				},
+				{
+					Name:        "mcp__kubernetes__get_pods",
+					Description: "Fetch K8s pods",
+					InputSchema: []byte(`{"type":"object","required":["namespace"],"properties":{"namespace":{"type":"string"}}}`),
+				},
+			},
+		},
+		{
+			ClientDialect: "codex",
+			RuntimeName:   "Codex",
+			Tools: []types.ToolDef{
+				{
+					Name:        "codex_custom_sandbox",
+					Description: "Execute code in sandbox",
+					InputSchema: []byte(`{"type":"object","required":["code","timeout"],"properties":{"code":{"type":"string"},"timeout":{"type":"integer"}}}`),
+				},
+				{
+					Name:        "mcp__github__create_issue",
+					Description: "Open GitHub issue",
+					InputSchema: []byte(`{"type":"object","required":["title","body"],"properties":{"title":{"type":"string"},"body":{"type":"string"}}}`),
+				},
+			},
+		},
+		{
+			ClientDialect: "cursor",
+			RuntimeName:   "Cursor",
+			Tools: []types.ToolDef{
+				{
+					Name:        "cursor_semantic_symbol_search",
+					Description: "Search symbols semantically",
+					InputSchema: []byte(`{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}}`),
+				},
+				{
+					Name:        "mcp__slack__send_message",
+					Description: "Post message to Slack",
+					InputSchema: []byte(`{"type":"object","required":["channel","text"],"properties":{"channel":{"type":"string"},"text":{"type":"string"}}}`),
+				},
+			},
+		},
+	}
+
+	for _, tc := range testClients {
+		t.Run(tc.RuntimeName, func(t *testing.T) {
+			req := &types.ChatRequest{
+				ClientDialect: tc.ClientDialect,
+				Tools:         tc.Tools,
+			}
+
+			// 1. Dynamic Discovery without hardcoded knowledge
+			manifest := runtime.DiscoverManifest(req)
+			if manifest.Runtime != tc.RuntimeName {
+				t.Fatalf("expected runtime %s, got %s", tc.RuntimeName, manifest.Runtime)
+			}
+			if len(manifest.Tools) != len(tc.Tools) {
+				t.Fatalf("expected %d tools, got %d", len(tc.Tools), len(manifest.Tools))
+			}
+
+			// 2. Strict Contract Generation
+			contract := runtime.BuildRuntimeContract(manifest)
+			for _, tool := range tc.Tools {
+				if !strings.Contains(contract, tool.Name) {
+					t.Fatalf("contract missing future tool %s:\n%s", tool.Name, contract)
+				}
+			}
+
+			// 3. Automated Validation for future tools
+			firstTool := manifest.Tools[0]
+			validCall := types.ToolCall{
+				Name: firstTool.Name,
+			}
+			if tc.RuntimeName == "Antigravity" {
+				validCall.Arguments = `{"serviceName": "amux-svc", "region": "us-central1"}`
+			} else if tc.RuntimeName == "Codex" {
+				validCall.Arguments = `{"code": "fmt.Println(1)", "timeout": 30}`
+			} else {
+				validCall.Arguments = `{"query": "BuildRuntimeContract"}`
+			}
+
+			if err := runtime.ValidateToolCall(validCall, firstTool); err != nil {
+				t.Fatalf("validation failed for valid call to future tool %s: %v", firstTool.Name, err)
+			}
+
+			// 4. Invalidation of bad calls
+			invalidCall := types.ToolCall{
+				Name:      firstTool.Name,
+				Arguments: `{"unexpected_param": "bad"}`,
+			}
+			if err := runtime.ValidateToolCall(invalidCall, firstTool); err == nil {
+				t.Fatalf("validation should reject call missing required parameters for %s", firstTool.Name)
+			}
+		})
+	}
+}
+
+
