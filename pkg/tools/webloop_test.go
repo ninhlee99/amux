@@ -512,3 +512,74 @@ Fix — Restrict matching to known model families instead of substring matching.
 		}
 	}
 }
+
+func TestFinalizeWebToolCalls_WebappEvidenceRecording_ForcesInspectOrSkill(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
+		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+	}
+
+	hist := []types.ChatMessage{
+		{
+			Role:    "user",
+			Content: "/webapp-evidence:recording https://example.com/checkout",
+		},
+	}
+
+	evasionText := "I’m ready to help with the coding task. Provide the repository task, PR number, issue description, or relevant command/context."
+
+	calls, forced := FinalizeWebToolCalls(evasionText, defs, hist)
+	if !forced {
+		t.Fatalf("expected webapp-evidence evasion to be intercepted and forced")
+	}
+	if len(calls) == 0 {
+		t.Fatalf("expected at least 1 forced tool call for recording")
+	}
+
+	foundInspectOrSkill := false
+	for _, c := range calls {
+		if strings.Contains(c.Arguments, "inspect.js") || strings.Contains(c.Arguments, "recording/SKILL.md") || strings.Contains(c.Arguments, "example.com") {
+			foundInspectOrSkill = true
+			break
+		}
+	}
+	if !foundInspectOrSkill {
+		t.Fatalf("expected tool call to target inspect.js, recording SKILL.md, or target URL, got: %+v", calls)
+	}
+}
+
+func TestFinalizeWebToolCalls_WebappEvidenceVision_ForcesContactSheetOrSkill(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
+		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+	}
+
+	hist := []types.ChatMessage{
+		{
+			Role:    "user",
+			Content: "/webapp-evidence:vision evidence/take-01.mp4",
+		},
+	}
+
+	evasionText := "I cannot run contact-sheet or look at videos in this chat."
+
+	calls, forced := FinalizeWebToolCalls(evasionText, defs, hist)
+	if !forced {
+		t.Fatalf("expected webapp-evidence vision refusal to be intercepted and forced")
+	}
+	if len(calls) == 0 {
+		t.Fatalf("expected at least 1 forced tool call for vision")
+	}
+
+	foundVisionTarget := false
+	for _, c := range calls {
+		if strings.Contains(c.Arguments, "contact-sheet.js") || strings.Contains(c.Arguments, "vision/SKILL.md") || strings.Contains(c.Arguments, "take-01.mp4") {
+			foundVisionTarget = true
+			break
+		}
+	}
+	if !foundVisionTarget {
+		t.Fatalf("expected tool call to target contact-sheet.js, vision SKILL.md, or target video, got: %+v", calls)
+	}
+}
+

@@ -69,19 +69,25 @@ var (
 
 func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) string {
 	trimmed := strings.TrimSpace(content)
-	isNoContent := trimmed == "(no content)" || strings.HasSuffix(trimmed, "(no content)") || trimmed == ""
-	if !isNoContent {
-		return content
-	}
 
 	isFix := false
 	isReview := false
+	isWebappRecording := false
+	isWebappVision := false
 	for i := len(allMessages) - 1; i >= 0; i-- {
 		msg := allMessages[i]
 		if !strings.EqualFold(msg.Role, "user") {
 			continue
 		}
 		low := strings.ToLower(msg.Content)
+		if strings.Contains(low, "webapp-evidence:recording") || strings.Contains(low, "/webapp-evidence:recording") {
+			isWebappRecording = true
+			break
+		}
+		if strings.Contains(low, "webapp-evidence:vision") || strings.Contains(low, "/webapp-evidence:vision") {
+			isWebappVision = true
+			break
+		}
 		if strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
 			strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") {
 			isFix = true
@@ -95,7 +101,11 @@ func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) stri
 	}
 
 	task := ""
-	if isFix {
+	if isWebappRecording {
+		task = "Record web application evidence (video, screenshots, runbook) for the target flow using Playwright/webapp-evidence scripts. Inspect the screen, prepare steps.js, and execute the recording."
+	} else if isWebappVision {
+		task = "Analyze the recorded evidence video and screenshots via contact sheets to inspect UI rendering, visual defects, and timeline anomalies."
+	} else if isFix {
 		task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
 	} else if isReview {
 		task = "Review the Pull Request. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION)."
@@ -121,6 +131,14 @@ func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) stri
 		for i := len(allMessages) - 1; i >= 0; i-- {
 			msg := allMessages[i]
 			low := strings.ToLower(msg.Content)
+			if strings.Contains(low, "webapp-evidence:recording") {
+				task = "Record web application evidence (video, screenshots, runbook) for the target flow using Playwright/webapp-evidence scripts. Inspect the screen, prepare steps.js, and execute the recording."
+				break
+			}
+			if strings.Contains(low, "webapp-evidence:vision") {
+				task = "Analyze the recorded evidence video and screenshots via contact sheets to inspect UI rendering, visual defects, and timeline anomalies."
+				break
+			}
 			if strings.Contains(low, "open-pr:fix") {
 				task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
 				break
@@ -136,7 +154,14 @@ func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) stri
 		if trimmed == "(no content)" || trimmed == "" {
 			return task
 		}
-		return strings.TrimSuffix(trimmed, "(no content)") + "\n\n" + task
+		prefix := strings.TrimSpace(strings.TrimSuffix(trimmed, "(no content)"))
+		if prefix == "" {
+			return task
+		}
+		if !strings.Contains(prefix, task) {
+			return prefix + "\n\n" + task
+		}
+		return prefix
 	}
 	return content
 }
@@ -159,7 +184,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 		return ""
 	}
 	if len(messages) == 1 && strings.EqualFold(messages[0].Role, "user") {
-		return messages[0].Content
+		return resolveUserTaskIntent(messages[0].Content, messages)
 	}
 
 	var sys strings.Builder

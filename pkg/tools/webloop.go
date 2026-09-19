@@ -18,6 +18,8 @@ const webToolCloser = `
 [end] Need data → <tool_call> now. Have tool results → answer fully. No checklist / paste / "no tools".
 If fixing code or PR issues (e.g. /open-pr:fix), IMMEDIATELY emit <tool_call> to inspect review comments/files and edit code to resolve 🔴 MUST FIX and 🟠 SHOULD FIX issues directly.
 If reviewing a pull request or repository (/open-pr:review), IMMEDIATELY emit <tool_call> with gh pr view <num>, git diff main...HEAD --stat, and targeted diffs to fetch changes.
+If recording web evidence (/webapp-evidence:recording), IMMEDIATELY emit <tool_call> to inspect the web page/selectors and run recording scripts.
+If analyzing evidence video/sheets (/webapp-evidence:vision), IMMEDIATELY emit <tool_call> to run contact-sheet.js or inspect evidence sheets.
 If tool output was truncated or persisted (<persisted-output> / "saved to:"), IMMEDIATELY emit <tool_call> with targeted git diffs (e.g. git diff main...HEAD -- <path>) to inspect the changes.
 If tool results contain code diffs for a review, IMMEDIATELY perform an exhaustive, rigorous, line-by-line technical code review covering:
 1. 🔴 MUST FIX: Bugs, nil-pointers, race conditions, goroutine leaks, logic flaws, regressions.
@@ -54,6 +56,8 @@ var (
 	)
 	reWebTitleJSON = regexp.MustCompile(`(?s)^\s*\{\s*"title"\s*:`)
 	rePRNum        = regexp.MustCompile(`(?i)(?:pull/|pr\s*#?|pull\s*request\s*#?)\s*(\d+)`)
+	reURL          = regexp.MustCompile(`https?://[^\s"'>]+`)
+	reMP4          = regexp.MustCompile(`[^\s"'>]+\.mp4`)
 )
 
 // WebPreambleForRequest generates the strict host runtime contract for a specific ChatRequest.
@@ -356,13 +360,18 @@ func isWebToolRefusal(text string) bool {
 		"chỉ chứa phần catalog", "chỉ chứa catalog", "catalog/tool schema", "không có nội dung",
 		"không có dữ liệu", "vui lòng gửi lại", "gửi lại một trong", "kèm phần output",
 		"không có diff", "không có pr",
-		// Asking what review to do / claiming no user request
+		// Asking what review to do / claiming no user request / boilerplate evasions
 		"don't have an actual user request", "do not have an actual user request",
 		"don't have an actual user", "tell me the type of review you need",
 		"tell me the type of review", "what type of review you need",
 		"what type of review", "chưa có yêu cầu", "loại review bạn cần",
 		"bạn muốn review theo hướng nào", "vui lòng cho biết loại review",
 		"chưa có yêu cầu cụ thể", "chưa có task cụ thể", "chưa có nhiệm vụ",
+		"ready to help with the coding task", "provide the repository task",
+		"relevant command/context", "provide the repository task, pr number",
+		"ready to help with the", "provide the task or", "provide the issue description",
+		"tell me what to record", "what page do you want", "what url do you want",
+		"provide the url or", "provide the video file", "provide the mp4",
 		// Live PR review missing diff / cannot produce review needles
 		"unable to produce", "unable to produce a valid", "no findings are posted",
 		"do not expose that pr", "did not expose that pr", "expose that pr", "no verified pr diff", "do not have the pr",
@@ -489,13 +498,16 @@ func shouldForceWebTools(text string, hist ...[]types.ChatMessage) bool {
 	if isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebFakeExecution(text, h) {
 		return true
 	}
-	// If the user's latest command is an explicit PR fix command (/open-pr:fix)
+	// If the user's latest command is an explicit PR fix command (/open-pr:fix) or webapp-evidence command
 	// and the response does NOT contain any tool call markup, it is refusing/failing to execute.
 	for i := len(h) - 1; i >= 0; i-- {
 		if strings.EqualFold(h[i].Role, "user") {
 			low := strings.ToLower(h[i].Content)
 			if (strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
-				strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix")) &&
+				strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") ||
+				strings.Contains(low, "webapp-evidence:recording") || strings.Contains(low, "/webapp-evidence:recording") ||
+				strings.Contains(low, "webapp-evidence:vision") || strings.Contains(low, "/webapp-evidence:vision") ||
+				strings.Contains(low, "webapp-evidence") || strings.Contains(low, "/webapp-evidence")) &&
 				!hasExplicitWebToolMarkup(text) {
 				return true
 			}
@@ -590,6 +602,24 @@ func findOpenPRScript() string {
 		if _, err := os.Stat(c); err == nil {
 			return c
 		}
+	}
+	return ""
+}
+
+func findWebappEvidenceFile(skill, relPath string) string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".claude/plugins/cache/webapp-evidence/webapp-evidence/b2383da05e9b/skills", skill, relPath),
+		filepath.Join(home, ".claude/plugins/cache/webapp-evidence/webapp-evidence/9068f3b5c426/skills", skill, relPath),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, ".claude/plugins/cache/webapp-evidence/webapp-evidence/*/skills", skill, relPath))
+	if len(matches) > 0 {
+		return matches[len(matches)-1]
 	}
 	return ""
 }
@@ -694,20 +724,38 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 	}
 	lowLastUser := strings.ToLower(lastUserMsg)
 
-	// LATEST user message decides the current intent (fix overrides previous review turns)
-	isPRFixIntent := strings.Contains(lowLastUser, "open-pr:fix") || strings.Contains(lowLastUser, "/open-pr:fix") ||
-		strings.Contains(lowLastUser, "fix pr") || strings.Contains(lowLastUser, "pr fix")
+	isWebappRecordingIntent := strings.Contains(lowLastUser, "webapp-evidence:recording") ||
+		strings.Contains(lowLastUser, "/webapp-evidence:recording") ||
+		(strings.Contains(lowLastUser, "webapp-evidence") && strings.Contains(lowLastUser, "record"))
 
-	isPRReviewIntent := !isPRFixIntent && (strings.Contains(lowLastUser, "open-pr:review") || strings.Contains(lowLastUser, "/open-pr:review") ||
-		strings.Contains(lowLastUser, "review pr") || strings.Contains(lowLastUser, "pr review") ||
-		strings.Contains(lowLastUser, "open-pr") || strings.Contains(lowLastUser, "/open-pr") ||
-		strings.Contains(lowLastUser, "/pull/") || strings.Contains(lowLastUser, "pull request"))
+	isWebappVisionIntent := strings.Contains(lowLastUser, "webapp-evidence:vision") ||
+		strings.Contains(lowLastUser, "/webapp-evidence:vision") ||
+		(strings.Contains(lowLastUser, "webapp-evidence") && (strings.Contains(lowLastUser, "vision") || strings.Contains(lowLastUser, "contact sheet")))
+
+	// LATEST user message decides the current intent (fix overrides previous review turns)
+	isPRFixIntent := !isWebappRecordingIntent && !isWebappVisionIntent &&
+		(strings.Contains(lowLastUser, "open-pr:fix") || strings.Contains(lowLastUser, "/open-pr:fix") ||
+			strings.Contains(lowLastUser, "fix pr") || strings.Contains(lowLastUser, "pr fix"))
+
+	isPRReviewIntent := !isWebappRecordingIntent && !isWebappVisionIntent && !isPRFixIntent &&
+		(strings.Contains(lowLastUser, "open-pr:review") || strings.Contains(lowLastUser, "/open-pr:review") ||
+			strings.Contains(lowLastUser, "review pr") || strings.Contains(lowLastUser, "pr review") ||
+			strings.Contains(lowLastUser, "open-pr") || strings.Contains(lowLastUser, "/open-pr") ||
+			strings.Contains(lowLastUser, "/pull/") || strings.Contains(lowLastUser, "pull request"))
 
 	// Fallback to scanning user history backwards if the last message was short/confirmation
-	if !isPRFixIntent && !isPRReviewIntent {
+	if !isWebappRecordingIntent && !isWebappVisionIntent && !isPRFixIntent && !isPRReviewIntent {
 		for i := len(hist) - 1; i >= 0; i-- {
 			if strings.EqualFold(hist[i].Role, "user") {
 				low := strings.ToLower(hist[i].Content)
+				if strings.Contains(low, "webapp-evidence:recording") || strings.Contains(low, "/webapp-evidence:recording") {
+					isWebappRecordingIntent = true
+					break
+				}
+				if strings.Contains(low, "webapp-evidence:vision") || strings.Contains(low, "/webapp-evidence:vision") {
+					isWebappVisionIntent = true
+					break
+				}
 				if strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
 					strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") {
 					isPRFixIntent = true
@@ -723,7 +771,61 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		}
 	}
 
-	isPRIntent := isPRFixIntent || isPRReviewIntent
+	isPRIntent := isPRFixIntent || isPRReviewIntent || isWebappRecordingIntent || isWebappVisionIntent
+
+	if isWebappRecordingIntent {
+		skillMD := findWebappEvidenceFile("recording", "SKILL.md")
+		inspectJS := findWebappEvidenceFile("recording", "scripts/inspect.js")
+		targetURL := reURL.FindString(lastUserMsg)
+		if targetURL == "" {
+			targetURL = reURL.FindString(searchText)
+		}
+
+		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
+			if targetURL != "" && inspectJS != "" {
+				addBash(fmt.Sprintf("node %s %s", inspectJS, targetURL))
+			} else {
+				if _, err := os.Stat("evidence.config.js"); err == nil {
+					addBash("cat evidence.config.js")
+				} else {
+					addBash("git status && ls -la")
+				}
+			}
+		}
+		if len(out) < maxForcedWebTools && skillMD != "" {
+			if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
+				addRead(skillMD)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	if isWebappVisionIntent {
+		skillMD := findWebappEvidenceFile("vision", "SKILL.md")
+		contactSheetJS := findWebappEvidenceFile("vision", "scripts/contact-sheet.js")
+		targetMP4 := reMP4.FindString(lastUserMsg)
+		if targetMP4 == "" {
+			targetMP4 = reMP4.FindString(searchText)
+		}
+
+		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
+			if targetMP4 != "" && contactSheetJS != "" {
+				addBash(fmt.Sprintf("node %s %s --every 2", contactSheetJS, targetMP4))
+			} else {
+				addBash("find . -name \"*.mp4\" -o -name \"*.png\" | head -n 20")
+			}
+		}
+		if len(out) < maxForcedWebTools && skillMD != "" {
+			if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
+				addRead(skillMD)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
 
 	if isPRFixIntent {
 		var prNum string
