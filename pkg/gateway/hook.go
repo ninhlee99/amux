@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"amux-accounts/pkg/identity"
@@ -25,6 +28,68 @@ const (
 	TargetAll    HookTarget = "all"
 )
 
+var (
+	reCodexBaseURL   = regexp.MustCompile(`(?m)^[ \t]*openai_base_url[ \t]*=.*$`)
+	reFirstTOMLTable = regexp.MustCompile(`(?m)^\[.+\]`)
+)
+
+func isGatewayURL(v string) bool {
+	trimmed := strings.TrimSpace(v)
+	return strings.HasPrefix(trimmed, GatewayDefaultURL) ||
+		strings.HasPrefix(trimmed, "http://localhost:8787") ||
+		strings.HasPrefix(trimmed, "http://0.0.0.0:8787")
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "hook-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+func setLaunchEnv(key, val string) {
+	if runtime.GOOS == "darwin" {
+		_ = exec.Command("launchctl", "setenv", key, val).Run()
+	}
+}
+
+func unsetLaunchEnv(key string) {
+	if runtime.GOOS == "darwin" {
+		_ = exec.Command("launchctl", "unsetenv", key).Run()
+	}
+}
+
+func getLaunchEnv(key string) string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	out, err := exec.Command("launchctl", "getenv", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // ClaudeSettingsPath returns ~/.claude/settings.json.
 func ClaudeSettingsPath() string {
 	home, _ := os.UserHomeDir()
@@ -37,11 +102,14 @@ func HookClaude(baseURL string) error {
 		baseURL = GatewayDefaultURL
 	}
 	p := ClaudeSettingsPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
 
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
-		_ = json.Unmarshal(b, &m)
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
+			}
+		}
 	}
 
 	envMap, _ := m["env"].(map[string]any)
@@ -55,7 +123,7 @@ func HookClaude(baseURL string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(b, '\n'), 0o600)
+	return atomicWriteFile(p, append(b, '\n'), 0o600)
 }
 
 // UnhookClaude removes ANTHROPIC_BASE_URL from ~/.claude/settings.json.
@@ -66,15 +134,18 @@ func UnhookClaude() error {
 		return nil
 	}
 	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil
+	if len(bytes.TrimSpace(b)) > 0 {
+		if err := json.Unmarshal(b, &m); err != nil {
+			return fmt.Errorf("unmarshal %s: %w", p, err)
+		}
 	}
 
 	envMap, ok := m["env"].(map[string]any)
 	if !ok || envMap == nil {
 		return nil
 	}
-	if _, exists := envMap["ANTHROPIC_BASE_URL"]; !exists {
+	val, exists := envMap["ANTHROPIC_BASE_URL"].(string)
+	if !exists || !isGatewayURL(val) {
 		return nil
 	}
 	delete(envMap, "ANTHROPIC_BASE_URL")
@@ -88,7 +159,7 @@ func UnhookClaude() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0o600)
+	return atomicWriteFile(p, append(data, '\n'), 0o600)
 }
 
 // IsClaudeHooked checks if Claude Code is currently pointed at the gateway.
@@ -103,17 +174,12 @@ func IsClaudeHooked() (bool, string) {
 		return false, ""
 	}
 	if envMap, ok := m["env"].(map[string]any); ok {
-		if val, ok := envMap["ANTHROPIC_BASE_URL"].(string); ok && strings.TrimSpace(val) != "" {
+		if val, ok := envMap["ANTHROPIC_BASE_URL"].(string); ok && isGatewayURL(val) {
 			return true, val
 		}
 	}
 	return false, ""
 }
-
-var (
-	reCodexBaseURL   = regexp.MustCompile(`(?m)^[ \t]*openai_base_url[ \t]*=.*$`)
-	reFirstTOMLTable = regexp.MustCompile(`(?m)^\[.+\]`)
-)
 
 // CodexConfigPath returns ~/.codex/config.json.
 func CodexConfigPath() string {
@@ -135,19 +201,20 @@ func HookCodex(baseURL string) error {
 
 	// 1. Update ~/.codex/config.json
 	p := CodexConfigPath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
-		_ = json.Unmarshal(b, &m)
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
+			}
+		}
 	}
 	m["openai_base_url"] = baseURL
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(p, append(b, '\n'), 0o600); err != nil {
+	if err := atomicWriteFile(p, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 
@@ -156,16 +223,22 @@ func HookCodex(baseURL string) error {
 	line := fmt.Sprintf("openai_base_url = %q", baseURL)
 	if tomlBytes, err := os.ReadFile(tomlPath); err == nil {
 		tomlStr := string(tomlBytes)
-		if reCodexBaseURL.MatchString(tomlStr) {
-			tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, line)
-		} else {
-			// Place at root table scope before any [section] header
-			if loc := reFirstTOMLTable.FindStringIndex(tomlStr); loc != nil {
-				prefix := tomlStr[:loc[0]]
-				if prefix != "" && !strings.HasSuffix(prefix, "\n") {
-					prefix += "\n"
+		loc := reFirstTOMLTable.FindStringIndex(tomlStr)
+		if loc != nil {
+			rootSection := tomlStr[:loc[0]]
+			rest := tomlStr[loc[0]:]
+			if reCodexBaseURL.MatchString(rootSection) {
+				rootSection = reCodexBaseURL.ReplaceAllString(rootSection, line)
+			} else {
+				if rootSection != "" && !strings.HasSuffix(rootSection, "\n") {
+					rootSection += "\n"
 				}
-				tomlStr = prefix + line + "\n\n" + tomlStr[loc[0]:]
+				rootSection += line + "\n\n"
+			}
+			tomlStr = rootSection + rest
+		} else {
+			if reCodexBaseURL.MatchString(tomlStr) {
+				tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, line)
 			} else {
 				if tomlStr != "" && !strings.HasSuffix(tomlStr, "\n") {
 					tomlStr += "\n"
@@ -173,14 +246,11 @@ func HookCodex(baseURL string) error {
 				tomlStr += line + "\n"
 			}
 		}
-		if err := os.WriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+		if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
 			return err
 		}
 	} else if os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(tomlPath), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(tomlPath, []byte(line+"\n"), 0o600); err != nil {
+		if err := atomicWriteFile(tomlPath, []byte(line+"\n"), 0o600); err != nil {
 			return err
 		}
 	} else {
@@ -188,7 +258,7 @@ func HookCodex(baseURL string) error {
 	}
 
 	// 3. Update environment for session / launchctl
-	_ = exec.Command("launchctl", "setenv", "OPENAI_BASE_URL", baseURL).Run()
+	setLaunchEnv("OPENAI_BASE_URL", baseURL)
 	return nil
 }
 
@@ -198,15 +268,17 @@ func UnhookCodex() error {
 	p := CodexConfigPath()
 	if b, err := os.ReadFile(p); err == nil {
 		var m map[string]any
-		if err := json.Unmarshal(b, &m); err == nil {
-			if _, exists := m["openai_base_url"]; exists {
-				delete(m, "openai_base_url")
-				data, err := json.MarshalIndent(m, "", "  ")
-				if err != nil {
-					return err
-				}
-				if err := os.WriteFile(p, append(data, '\n'), 0o600); err != nil {
-					return err
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err == nil {
+				if val, exists := m["openai_base_url"].(string); exists && isGatewayURL(val) {
+					delete(m, "openai_base_url")
+					data, err := json.MarshalIndent(m, "", "  ")
+					if err != nil {
+						return err
+					}
+					if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -216,17 +288,39 @@ func UnhookCodex() error {
 	tomlPath := CodexTomlPath()
 	if tomlBytes, err := os.ReadFile(tomlPath); err == nil {
 		tomlStr := string(tomlBytes)
-		if reCodexBaseURL.MatchString(tomlStr) {
-			tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, "")
-			tomlStr = strings.TrimLeft(tomlStr, "\r\n")
-			if err := os.WriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
-				return err
+		loc := reFirstTOMLTable.FindStringIndex(tomlStr)
+		if loc != nil {
+			rootSection := tomlStr[:loc[0]]
+			rest := tomlStr[loc[0]:]
+			if m := reCodexBaseURL.FindString(rootSection); m != "" {
+				parts := strings.SplitN(m, "=", 2)
+				if len(parts) == 2 && isGatewayURL(strings.Trim(strings.TrimSpace(parts[1]), `"'`)) {
+					rootSection = reCodexBaseURL.ReplaceAllString(rootSection, "")
+					rootSection = strings.TrimLeft(rootSection, "\r\n")
+					tomlStr = rootSection + rest
+					if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			if m := reCodexBaseURL.FindString(tomlStr); m != "" {
+				parts := strings.SplitN(m, "=", 2)
+				if len(parts) == 2 && isGatewayURL(strings.Trim(strings.TrimSpace(parts[1]), `"'`)) {
+					tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, "")
+					tomlStr = strings.TrimLeft(tomlStr, "\r\n")
+					if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}
 
-	// 3. Remove launchctl env
-	_ = exec.Command("launchctl", "unsetenv", "OPENAI_BASE_URL").Run()
+	// 3. Remove launchctl env if pointed to gateway
+	if isGatewayURL(getLaunchEnv("OPENAI_BASE_URL")) {
+		unsetLaunchEnv("OPENAI_BASE_URL")
+	}
 	return nil
 }
 
@@ -235,11 +329,16 @@ func IsCodexHooked() (bool, string) {
 	// 1. Check config.toml
 	tomlPath := CodexTomlPath()
 	if b, err := os.ReadFile(tomlPath); err == nil {
-		if m := reCodexBaseURL.FindString(string(b)); m != "" {
+		tomlStr := string(b)
+		loc := reFirstTOMLTable.FindStringIndex(tomlStr)
+		if loc != nil {
+			tomlStr = tomlStr[:loc[0]]
+		}
+		if m := reCodexBaseURL.FindString(tomlStr); m != "" {
 			parts := strings.SplitN(m, "=", 2)
 			if len(parts) == 2 {
 				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-				if val != "" {
+				if isGatewayURL(val) {
 					return true, val
 				}
 			}
@@ -251,16 +350,16 @@ func IsCodexHooked() (bool, string) {
 	if b, err := os.ReadFile(p); err == nil {
 		var m map[string]any
 		if err := json.Unmarshal(b, &m); err == nil {
-			if val, ok := m["openai_base_url"].(string); ok && strings.TrimSpace(val) != "" {
+			if val, ok := m["openai_base_url"].(string); ok && isGatewayURL(val) {
 				return true, val
 			}
 		}
 	}
 
 	// 3. Check launchctl
-	out, err := exec.Command("launchctl", "getenv", "OPENAI_BASE_URL").Output()
-	if err == nil && strings.TrimSpace(string(out)) != "" {
-		return true, strings.TrimSpace(string(out))
+	envVal := getLaunchEnv("OPENAI_BASE_URL")
+	if isGatewayURL(envVal) {
+		return true, envVal
 	}
 
 	return false, ""
@@ -278,11 +377,14 @@ func HookCursor(baseURL string) error {
 		baseURL = GatewayDefaultURL + "/v1"
 	}
 	p := CursorSettingsPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
 
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
-		_ = json.Unmarshal(b, &m)
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
+			}
+		}
 	}
 	m["cursor.openaiBaseUrl"] = baseURL
 
@@ -290,7 +392,7 @@ func HookCursor(baseURL string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(b, '\n'), 0o600)
+	return atomicWriteFile(p, append(b, '\n'), 0o600)
 }
 
 // UnhookCursor removes Cursor hook.
@@ -301,10 +403,13 @@ func UnhookCursor() error {
 		return nil
 	}
 	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil
+	if len(bytes.TrimSpace(b)) > 0 {
+		if err := json.Unmarshal(b, &m); err != nil {
+			return fmt.Errorf("unmarshal %s: %w", p, err)
+		}
 	}
-	if _, exists := m["cursor.openaiBaseUrl"]; !exists {
+	val, exists := m["cursor.openaiBaseUrl"].(string)
+	if !exists || !isGatewayURL(val) {
 		return nil
 	}
 	delete(m, "cursor.openaiBaseUrl")
@@ -313,7 +418,7 @@ func UnhookCursor() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0o600)
+	return atomicWriteFile(p, append(data, '\n'), 0o600)
 }
 
 // IsCursorHooked checks if Cursor is hooked.
@@ -327,7 +432,7 @@ func IsCursorHooked() (bool, string) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return false, ""
 	}
-	if val, ok := m["cursor.openaiBaseUrl"].(string); ok && strings.TrimSpace(val) != "" {
+	if val, ok := m["cursor.openaiBaseUrl"].(string); ok && isGatewayURL(val) {
 		return true, val
 	}
 	return false, ""
@@ -345,11 +450,14 @@ func HookAgy(baseURL string) error {
 		baseURL = GatewayDefaultURL
 	}
 	p := AGYSettingsPath()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
 
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
-		_ = json.Unmarshal(b, &m)
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
+			}
+		}
 	}
 	m["modelProvider"] = "gemini"
 
@@ -365,12 +473,12 @@ func HookAgy(baseURL string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(p, append(b, '\n'), 0o600); err != nil {
+	if err := atomicWriteFile(p, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 
-	_ = exec.Command("launchctl", "setenv", "GOOGLE_GEMINI_BASE_URL", baseURL).Run()
-	_ = exec.Command("launchctl", "setenv", "GEMINI_API_KEY", "amux-local").Run()
+	setLaunchEnv("GOOGLE_GEMINI_BASE_URL", baseURL)
+	setLaunchEnv("GEMINI_API_KEY", "amux-local")
 	return nil
 }
 
@@ -379,24 +487,33 @@ func UnhookAgy() error {
 	p := AGYSettingsPath()
 	if b, err := os.ReadFile(p); err == nil {
 		var m map[string]any
-		if json.Unmarshal(b, &m) == nil {
-			delete(m, "modelProvider")
-			if envMap, ok := m["env"].(map[string]any); ok {
-				delete(envMap, "GOOGLE_GEMINI_BASE_URL")
-				delete(envMap, "GEMINI_API_KEY")
-				if len(envMap) == 0 {
-					delete(m, "env")
-				} else {
-					m["env"] = envMap
-				}
-			}
-			if data, err := json.MarshalIndent(m, "", "  "); err == nil {
-				_ = os.WriteFile(p, append(data, '\n'), 0o600)
+		if len(bytes.TrimSpace(b)) > 0 {
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
 			}
 		}
+		delete(m, "modelProvider")
+		if envMap, ok := m["env"].(map[string]any); ok {
+			delete(envMap, "GOOGLE_GEMINI_BASE_URL")
+			delete(envMap, "GEMINI_API_KEY")
+			if len(envMap) == 0 {
+				delete(m, "env")
+			} else {
+				m["env"] = envMap
+			}
+		}
+		data, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
+			return err
+		}
 	}
-	_ = exec.Command("launchctl", "unsetenv", "GOOGLE_GEMINI_BASE_URL").Run()
-	_ = exec.Command("launchctl", "unsetenv", "GEMINI_API_KEY").Run()
+	if isGatewayURL(getLaunchEnv("GOOGLE_GEMINI_BASE_URL")) {
+		unsetLaunchEnv("GOOGLE_GEMINI_BASE_URL")
+		unsetLaunchEnv("GEMINI_API_KEY")
+	}
 	return nil
 }
 
@@ -407,15 +524,15 @@ func IsAgyHooked() (bool, string) {
 		var m map[string]any
 		if json.Unmarshal(b, &m) == nil {
 			if envMap, ok := m["env"].(map[string]any); ok {
-				if val, ok := envMap["GOOGLE_GEMINI_BASE_URL"].(string); ok && strings.TrimSpace(val) != "" {
+				if val, ok := envMap["GOOGLE_GEMINI_BASE_URL"].(string); ok && isGatewayURL(val) {
 					return true, val
 				}
 			}
 		}
 	}
-	out, err := exec.Command("launchctl", "getenv", "GOOGLE_GEMINI_BASE_URL").Output()
-	if err == nil && strings.TrimSpace(string(out)) != "" {
-		return true, strings.TrimSpace(string(out))
+	envVal := getLaunchEnv("GOOGLE_GEMINI_BASE_URL")
+	if isGatewayURL(envVal) {
+		return true, envVal
 	}
 	return false, ""
 }
@@ -432,11 +549,12 @@ func Hook(target HookTarget, baseURL string) error {
 	case TargetAgy:
 		return HookAgy(baseURL)
 	case TargetAll:
-		_ = HookClaude(baseURL)
-		_ = HookCodex(baseURL)
-		_ = HookCursor(baseURL)
-		_ = HookAgy(baseURL)
-		return nil
+		return errors.Join(
+			HookClaude(baseURL),
+			HookCodex(baseURL),
+			HookCursor(baseURL),
+			HookAgy(baseURL),
+		)
 	default:
 		return fmt.Errorf("unknown hook target: %s", target)
 	}
@@ -454,11 +572,12 @@ func Unhook(target HookTarget) error {
 	case TargetAgy:
 		return UnhookAgy()
 	case TargetAll:
-		_ = UnhookClaude()
-		_ = UnhookCodex()
-		_ = UnhookCursor()
-		_ = UnhookAgy()
-		return nil
+		return errors.Join(
+			UnhookClaude(),
+			UnhookCodex(),
+			UnhookCursor(),
+			UnhookAgy(),
+		)
 	default:
 		return fmt.Errorf("unknown unhook target: %s", target)
 	}
@@ -471,6 +590,7 @@ func Unhook(target HookTarget) error {
 //    AMUX automatically detaches the gateway hook from the IDE and restores direct native execution.
 func CheckAndConditionalHook(identities []identity.Identity, threshold float64) error {
 	providers := []string{"anthropic", "openai", "gemini"}
+	var errs []error
 
 	for _, prov := range providers {
 		canon := identity.CanonicalProvider(prov)
@@ -483,46 +603,46 @@ func CheckAndConditionalHook(identities []identity.Identity, threshold float64) 
 			if exhausted && !hooked {
 				// All subscriptions exhausted -> Inject gateway hook!
 				if err := HookClaude(""); err != nil {
-					return fmt.Errorf("hook claude: %w", err)
+					errs = append(errs, fmt.Errorf("hook claude: %w", err))
 				}
 			} else if hasAvail && hooked {
 				// Quota reset or subscription available -> Auto-detach hook and restore direct Keychain!
 				if err := UnhookClaude(); err != nil {
-					return fmt.Errorf("unhook claude: %w", err)
+					errs = append(errs, fmt.Errorf("unhook claude: %w", err))
 				}
 				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					return fmt.Errorf("sync claude keychain: %w", err)
+					errs = append(errs, fmt.Errorf("sync claude keychain: %w", err))
 				}
 			}
 		case "openai":
 			hooked, _ := IsCodexHooked()
 			if exhausted && !hooked {
 				if err := HookCodex(""); err != nil {
-					return fmt.Errorf("hook codex: %w", err)
+					errs = append(errs, fmt.Errorf("hook codex: %w", err))
 				}
 			} else if hasAvail && hooked {
 				if err := UnhookCodex(); err != nil {
-					return fmt.Errorf("unhook codex: %w", err)
+					errs = append(errs, fmt.Errorf("unhook codex: %w", err))
 				}
 				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					return fmt.Errorf("sync codex keychain: %w", err)
+					errs = append(errs, fmt.Errorf("sync codex keychain: %w", err))
 				}
 			}
 		case "gemini":
 			hooked, _ := IsAgyHooked()
 			if exhausted && !hooked {
 				if err := HookAgy(""); err != nil {
-					return fmt.Errorf("hook agy: %w", err)
+					errs = append(errs, fmt.Errorf("hook agy: %w", err))
 				}
 			} else if hasAvail && hooked {
 				if err := UnhookAgy(); err != nil {
-					return fmt.Errorf("unhook agy: %w", err)
+					errs = append(errs, fmt.Errorf("unhook agy: %w", err))
 				}
 				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					return fmt.Errorf("sync agy keychain: %w", err)
+					errs = append(errs, fmt.Errorf("sync agy keychain: %w", err))
 				}
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

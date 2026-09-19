@@ -232,3 +232,49 @@ func TestGateway_HookAgyLifecycle(t *testing.T) {
 		t.Fatalf("expected AGY unhooked")
 	}
 }
+
+func TestGateway_IsHooked_IgnoresExternalURLs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-ext-url-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	origEnv, _ := exec.Command("launchctl", "getenv", "OPENAI_BASE_URL").Output()
+	_ = exec.Command("launchctl", "unsetenv", "OPENAI_BASE_URL").Run()
+	defer func() {
+		if strings.TrimSpace(string(origEnv)) != "" {
+			_ = exec.Command("launchctl", "setenv", "OPENAI_BASE_URL", strings.TrimSpace(string(origEnv))).Run()
+		}
+	}()
+
+	// Pre-create ~/.codex/config.json with corporate / third-party proxy
+	codexDir := tmpDir + "/.codex"
+	_ = os.MkdirAll(codexDir, 0o755)
+	_ = os.WriteFile(codexDir+"/config.json", []byte(`{"openai_base_url":"https://api.openai.com/v1"}`), 0o600)
+
+	// Pre-create ~/.codex/config.toml with third-party proxy
+	_ = os.WriteFile(codexDir+"/config.toml", []byte("openai_base_url = \"https://corp.proxy.internal/v1\"\n"), 0o600)
+
+	hooked, val := gateway.IsCodexHooked()
+	if hooked {
+		t.Fatalf("IsCodexHooked should ignore non-amux URLs, got hooked=%v val=%s", hooked, val)
+	}
+
+	// UnhookCodex must NOT delete user's non-amux URLs
+	if err := gateway.UnhookCodex(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(codexDir + "/config.json")
+	if !strings.Contains(string(b), "https://api.openai.com/v1") {
+		t.Fatalf("UnhookCodex deleted non-amux URL in JSON: %s", string(b))
+	}
+	bt, _ := os.ReadFile(codexDir + "/config.toml")
+	if !strings.Contains(string(bt), "https://corp.proxy.internal/v1") {
+		t.Fatalf("UnhookCodex deleted non-amux URL in TOML: %s", string(bt))
+	}
+}
