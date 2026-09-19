@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	"amux-accounts/pkg/env"
 	"amux-accounts/pkg/identity"
 )
 
@@ -539,6 +540,74 @@ func AGYSettingsPath() string {
 	return filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
 }
 
+const agyShellBlockStart = "# >>> amux agy gateway >>>"
+const agyShellBlockEnd = "# <<< amux agy gateway <<<"
+
+func agyShellRCBlock(baseURL string) string {
+	return fmt.Sprintf(`%s
+if [ -f "$HOME/.gemini/antigravity-cli/settings.json" ] && grep -q '"modelProvider"[[:space:]]*:[[:space:]]*"gemini"' "$HOME/.gemini/antigravity-cli/settings.json" 2>/dev/null; then
+  export GEMINI_API_KEY="${GEMINI_API_KEY:-amux-local}"
+  export GOOGLE_GEMINI_BASE_URL="${GOOGLE_GEMINI_BASE_URL:-%s}"
+fi
+%s
+`, agyShellBlockStart, baseURL, agyShellBlockEnd)
+}
+
+func targetShellRCs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	candidates := []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".bash_profile"),
+	}
+	var res []string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			res = append(res, c)
+		}
+	}
+	if len(res) == 0 {
+		if strings.Contains(os.Getenv("SHELL"), "bash") {
+			res = append(res, filepath.Join(home, ".bashrc"))
+		} else {
+			res = append(res, filepath.Join(home, ".zshrc"))
+		}
+	}
+	return res
+}
+
+func syncAgyShellRC(baseURL string, install bool) error {
+	for _, rc := range targetShellRCs() {
+		b, err := os.ReadFile(rc)
+		if err != nil && !os.IsNotExist(err) {
+			continue
+		}
+		content := string(b)
+		startIdx := strings.Index(content, agyShellBlockStart)
+		endIdx := strings.Index(content, agyShellBlockEnd)
+		if startIdx != -1 && endIdx != -1 && endIdx >= startIdx {
+			endIdx += len(agyShellBlockEnd)
+			if endIdx < len(content) && content[endIdx] == '\n' {
+				endIdx++
+			}
+			content = content[:startIdx] + content[endIdx:]
+		}
+
+		if install {
+			if content != "" && !strings.HasSuffix(content, "\n") {
+				content += "\n"
+			}
+			content += agyShellRCBlock(baseURL)
+		}
+
+		_ = atomicWriteFile(rc, []byte(content), 0o644)
+	}
+	return nil
+}
+
 // HookAgy points Antigravity CLI (agy) at the gateway.
 func HookAgy(baseURL string) error {
 	if baseURL == "" {
@@ -588,6 +657,11 @@ func HookAgy(baseURL string) error {
 	if existingKey := getLaunchEnv("GEMINI_API_KEY"); existingKey == "" || isAmuxOwnedEnv("GEMINI_API_KEY", existingKey) {
 		setLaunchEnv("GEMINI_API_KEY", "amux-local")
 	}
+	mEnv := env.LoadEnvVars()
+	mEnv["GOOGLE_GEMINI_BASE_URL"] = baseURL
+	mEnv["GEMINI_API_KEY"] = "amux-local"
+	_ = env.SaveEnvVars(mEnv)
+	_ = syncAgyShellRC(baseURL, true)
 	return nil
 }
 
@@ -616,6 +690,10 @@ func UnhookAgy() error {
 			} else {
 				m["env"] = envMap
 			}
+		} else {
+			if mp, ok := m["modelProvider"].(string); ok && mp == "gemini" {
+				delete(m, "modelProvider")
+			}
 		}
 		data, err := json.MarshalIndent(m, "", "  ")
 		if err != nil {
@@ -633,6 +711,11 @@ func UnhookAgy() error {
 			unsetLaunchEnv("GEMINI_API_KEY")
 		}
 	}
+	mEnv := env.LoadEnvVars()
+	delete(mEnv, "GOOGLE_GEMINI_BASE_URL")
+	delete(mEnv, "GEMINI_API_KEY")
+	_ = env.SaveEnvVars(mEnv)
+	_ = syncAgyShellRC("", false)
 	return nil
 }
 
@@ -642,16 +725,18 @@ func IsAgyHooked() (bool, string) {
 	if b, err := os.ReadFile(p); err == nil {
 		var m map[string]any
 		if json.Unmarshal(b, &m) == nil {
-			if envMap, ok := m["env"].(map[string]any); ok {
-				if val, ok := envMap["GOOGLE_GEMINI_BASE_URL"].(string); ok && isGatewayURL(val) {
-					return true, val
+			if mp, ok := m["modelProvider"].(string); ok && mp != "" {
+				if envMap, ok := m["env"].(map[string]any); ok {
+					if val, ok := envMap["GOOGLE_GEMINI_BASE_URL"].(string); ok && isGatewayURL(val) {
+						return true, val
+					}
+				}
+				envVal := getLaunchEnv("GOOGLE_GEMINI_BASE_URL")
+				if isGatewayURL(envVal) {
+					return true, envVal
 				}
 			}
 		}
-	}
-	envVal := getLaunchEnv("GOOGLE_GEMINI_BASE_URL")
-	if isGatewayURL(envVal) {
-		return true, envVal
 	}
 	return false, ""
 }

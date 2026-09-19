@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,9 @@ func TestNormalizeAGYModel(t *testing.T) {
 }
 
 func TestAntigravityAdapter_CLIIntegration(t *testing.T) {
+	if os.Getenv("AMUX_RUN_LIVE_TESTS") != "1" {
+		t.Skip("skipping live AGY CLI test: AMUX_RUN_LIVE_TESTS not enabled")
+	}
 	bin := findAGYBinary()
 	if bin == "" {
 		t.Skip("agy CLI not found in environment, skipping live test")
@@ -74,6 +78,9 @@ func TestAntigravityAdapter_CLIIntegration(t *testing.T) {
 }
 
 func TestAntigravityAdapter_PureHTTPIntegration(t *testing.T) {
+	if os.Getenv("AMUX_RUN_LIVE_TESTS") != "1" {
+		t.Skip("skipping live AGY HTTP test: AMUX_RUN_LIVE_TESTS not enabled")
+	}
 	if !AGYAuthAvailable() {
 		t.Skip("No AGY credentials available, skipping pure HTTP test")
 	}

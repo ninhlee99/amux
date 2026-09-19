@@ -1230,12 +1230,62 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		if c, ok := allow[strings.ToLower(name)]; ok {
 			return c, true
 		}
+		if targetDef, found := defaultGateway.findMatchingToolDef(name, defs, ""); found {
+			return targetDef.Name, true
+		}
 		return "", false
 	}
 
 	var out []types.ToolCall
 	seen := map[string]bool{}
 	add := func(name, id, args string) {
+		if strings.EqualFold(name, "call_mcp_tool") {
+			if _, exists := allow["call_mcp_tool"]; !exists {
+				var parsedArgs map[string]any
+				if json.Unmarshal([]byte(args), &parsedArgs) == nil {
+					server, _ := parsedArgs["ServerName"].(string)
+					tool, _ := parsedArgs["ToolName"].(string)
+					if server != "" && tool != "" {
+						targetMCP := fmt.Sprintf("mcp__%s__%s", server, tool)
+						if c, exists := allow[strings.ToLower(targetMCP)]; exists {
+							name = c
+							if inner, ok := parsedArgs["Arguments"].(map[string]any); ok && inner != nil {
+								if b, err := json.Marshal(inner); err == nil {
+									args = string(b)
+								}
+							}
+						}
+					}
+				}
+			}
+		} else if strings.HasPrefix(strings.ToLower(name), "mcp__") {
+			if _, exists := allow[strings.ToLower(name)]; !exists {
+				if c, exists := allow["call_mcp_tool"]; exists {
+					parts := strings.Split(name, "__")
+					if len(parts) >= 3 {
+						server := parts[1]
+						tool := strings.Join(parts[2:], "__")
+						var parsedArgs map[string]any
+						_ = json.Unmarshal([]byte(args), &parsedArgs)
+						if parsedArgs == nil {
+							parsedArgs = make(map[string]any)
+						}
+						wrapped := map[string]any{
+							"ServerName":  server,
+							"ToolName":    tool,
+							"Arguments":   parsedArgs,
+							"toolAction":  "Running " + tool,
+							"toolSummary": "Run " + tool,
+						}
+						if b, err := json.Marshal(wrapped); err == nil {
+							name = c
+							args = string(b)
+						}
+					}
+				}
+			}
+		}
+
 		canon, ok := canonical(name)
 		if !ok {
 			monitor.AppendEvent("RUNTIME", fmt.Sprintf("rejected unlisted/hallucinated tool: %s", name))

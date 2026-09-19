@@ -101,6 +101,12 @@ func (id Identity) Email() string {
 		if em, ok := id.Metadata["email"].(string); ok && strings.TrimSpace(em) != "" {
 			return strings.TrimSpace(em)
 		}
+		if em, ok := id.Metadata["account"].(string); ok && strings.TrimSpace(em) != "" {
+			return strings.TrimSpace(em)
+		}
+		if em, ok := id.Metadata["profile_name"].(string); ok && strings.Contains(em, "@") {
+			return strings.TrimSpace(em)
+		}
 	}
 	if em, ok := id.Credentials["account"]; ok && strings.TrimSpace(em) != "" {
 		return strings.TrimSpace(em)

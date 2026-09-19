@@ -757,22 +757,7 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 
 	if !hasCodex {
 		if a := codexPoolAdapter(providers); a != nil {
-			if rotateOnly {
-				adapters = append(adapters, a)
-			} else {
-				// Always include codex when credentials exist unless explicit opt-out
-				// and rotateOnly — for addressable, include even if disabled? If
-				// Enabled:false, codexPoolAdapter returns nil. Build manually:
-				adapters = append(adapters, a)
-			}
-		} else if !rotateOnly && CodexAuthAvailable() {
-			// Out-of-pool codex still addressable via X-Provider.
-			for i := range providers {
-				if providers[i].Type == "codex_cli" && providers[i].Enabled != nil && !*providers[i].Enabled {
-					adapters = append(adapters, &CodexCLIAdapter{AdapterID: codexPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group})
-					break
-				}
-			}
+			adapters = append(adapters, a)
 		}
 	}
 
@@ -786,18 +771,7 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 
 	if !hasAGY {
 		if a := agyPoolAdapter(providers); a != nil {
-			if rotateOnly {
-				adapters = append(adapters, a)
-			} else {
-				adapters = append(adapters, a)
-			}
-		} else if !rotateOnly && AGYAuthAvailable() {
-			for i := range providers {
-				if (providers[i].Type == "antigravity" || providers[i].Type == "agy") && providers[i].Enabled != nil && !*providers[i].Enabled {
-					adapters = append(adapters, &AntigravityAdapter{AdapterID: agyPoolID(), PriorityLvl: providers[i].Priority, TargetModel: providers[i].Model, GroupLabel: providers[i].Group, PlanTier: providers[i].Plan})
-					break
-				}
-			}
+			adapters = append(adapters, a)
 		}
 	}
 
@@ -1182,10 +1156,23 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 		}
 	}
 
-	// 2. Match by Account identity (same provider type + same account email)
+	// 2. Match by Account identity (same canonical provider + same account email)
 	if !updated && strings.TrimSpace(p.Account) != "" {
 		for i, existing := range f.Providers {
-			if existing.Type == p.Type && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
+			if CanonicalProvider(existing.Type) == CanonicalProvider(p.Type) && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
+				pIsSub := IsSubscriptionType(p.Type)
+				existIsSub := IsSubscriptionType(existing.Type)
+				// Subscription strictly supersedes Web
+				if pIsSub && !existIsSub {
+					f.Providers[i] = p
+					updated = true
+					break
+				}
+				if !pIsSub && existIsSub {
+					// Existing subscription cannot be downgraded or duplicated by web
+					updated = true
+					break
+				}
 				if isLegacyNumericID(existing.ID) && !isLegacyNumericID(p.ID) {
 					// Upgrade legacy numeric ID (01, 02) to named ID: keep p.ID
 				} else {

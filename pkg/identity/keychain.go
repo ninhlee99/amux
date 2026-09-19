@@ -1,10 +1,12 @@
 package identity
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"amux-accounts/pkg/auth"
@@ -175,6 +177,12 @@ func syncGeminiAuth(id *Identity) error {
 			_ = auth.KCSet("antigravity-service", email, keychainData)
 			_ = auth.KCSet("antigravity-service", "antigravity", keychainData)
 		}
+
+		// Also restore ~/.gemini/antigravity-cli/credentials.json so that AGY CLI
+		// can start in native mode (without going through the proxy gateway).
+		// The keychain_data is stored as "go-keyring-base64:<base64(JSON)>" where
+		// JSON = {token:{access_token,refresh_token,expiry,...}, auth_method, id_token}.
+		_ = writeAgyCredentialsJSON(home, keychainData, email)
 	}
 
 	if email != "" && email != "-" {
@@ -203,6 +211,98 @@ func syncGeminiAuth(id *Identity) error {
 	}
 	return nil
 }
+
+// writeAgyCredentialsJSON writes ~/.gemini/antigravity-cli/credentials.json from
+// the stored keychain_data value (which is in "go-keyring-base64:<b64>" format).
+// AGY CLI reads this file on startup to authenticate without hitting the gateway.
+func writeAgyCredentialsJSON(home, keychainData, email string) error {
+	raw := keychainData
+	if strings.HasPrefix(raw, "go-keyring-base64:") {
+		decoded, err := base64.StdEncoding.DecodeString(raw[len("go-keyring-base64:"):])
+		if err != nil {
+			return err
+		}
+		raw = string(decoded)
+	}
+
+	var kd struct {
+		Token struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			Expiry       string `json:"expiry"`
+		} `json:"token"`
+		AuthMethod string `json:"auth_method"`
+		IDToken    string `json:"id_token"`
+	}
+	if err := json.Unmarshal([]byte(raw), &kd); err != nil {
+		return err
+	}
+
+	if kd.Token.AccessToken == "" && kd.Token.RefreshToken == "" {
+		return nil // nothing to write
+	}
+
+	// Compute expires_at in milliseconds (same as OAuth login flow).
+	var expiresAt int64
+	if kd.Token.Expiry != "" {
+		if t, err := time.Parse(time.RFC3339Nano, kd.Token.Expiry); err == nil {
+			expiresAt = t.UnixMilli()
+		}
+	}
+	if expiresAt == 0 {
+		expiresAt = time.Now().Add(time.Hour).UnixMilli()
+	}
+
+	// Parse email from id_token if not provided.
+	if email == "" || email == "-" {
+		email = parseJWTEmailLocal(kd.IDToken)
+	}
+
+	credsPayload, err := json.MarshalIndent(map[string]any{
+		"access_token":  kd.Token.AccessToken,
+		"refresh_token": kd.Token.RefreshToken,
+		"id_token":      kd.IDToken,
+		"email":         email,
+		"expires_at":    expiresAt,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	agyDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	_ = os.MkdirAll(agyDir, 0o700)
+	return os.WriteFile(filepath.Join(agyDir, "credentials.json"), credsPayload, 0o600)
+}
+
+// parseJWTEmailLocal extracts the email claim from a JWT id_token without verifying signature.
+func parseJWTEmailLocal(idToken string) string {
+	parts := strings.Split(idToken, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload := parts[1]
+	// Add padding
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(payload)
+		if err != nil {
+			return ""
+		}
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return ""
+	}
+	email, _ := claims["email"].(string)
+	return email
+}
+
 
 // RotateSubscriptionKeychain performs silent Keychain rotation when the active subscription hits threshold.
 // It locates the next available subscription under threshold and writes it to the native Keychain.

@@ -60,6 +60,9 @@ func Run(rawArgs []string) {
 		case "usage":
 			helpUsage()
 			return
+		case "env":
+			helpEnv()
+			return
 		default:
 			usageHelp()
 			return
@@ -87,6 +90,8 @@ func Run(rawArgs []string) {
 		cmdGatewayHook(args)
 	case "unhook":
 		cmdGatewayUnhook(args)
+	case "env":
+		CmdEnv(args)
 	case "gateway":
 		CmdGateway(args)
 	case "usage":

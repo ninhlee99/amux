@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -32,13 +33,17 @@ const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output
 `
 
 // WebBackendPrompt builds the single string web UIs accept.
-// Prompt is kept intact without token-cutting or message-truncation layers,
-// preserving full agent harness, skills, guidelines, and conversation history.
+// WebBackendPrompt builds the single string web UIs accept.
+// When conversations exceed safety token limits (~20k tokens) or max rune limits (85k runes),
+// it progressively fits messages while preserving initial user goal, system instructions, and recent tail.
 func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
 	}
 	msgs := req.Messages
+	if len(req.Tools) > 0 && ctxshrink.EstimateMessagesTokens(msgs) > ctxshrink.DefaultWebMaxTokens {
+		msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
+	}
 
 	var body string
 	if req.FullContext {
@@ -54,7 +59,7 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	}
 
 	if len(req.Tools) == 0 {
-		return body
+		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
 	preamble := tools.WebPreambleForRequest(req)
@@ -67,7 +72,17 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	} else {
 		finalPrompt = preamble + body + closer
 	}
-	return finalPrompt
+	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
+}
+
+func enforceWebPromptLimit(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	head := maxRunes * 4 / 10
+	tail := maxRunes * 4 / 10
+	return string(r[:head]) + "\n\n... [history truncated to fit web payload limit] ...\n\n" + string(r[len(r)-tail:])
 }
 
 // historyHasToolTurns is true when the client already ran tools this session.

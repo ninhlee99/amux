@@ -24,6 +24,7 @@ Gateway Daemon:
   status                     Real-time dashboard of accounts, quotas & gateway state
   hook [flags]               Hook IDE settings to gateway (--claude, --cursor, --codex, --agy, --all)
   unhook [flags]             Restore IDE settings to direct upstream
+  env                        Output shell export statements (eval "$(amux env)")
 
 Account Management:
   login [provider]           Interactive or CLI login (claude, codex, antigravity, gemini, chatgpt, api)
@@ -296,3 +297,24 @@ Examples:
   amux usage month 2026-09    # View September 2026 usage analytics
 `)
 }
+
+func helpEnv() {
+	fmt.Print(`Purpose:
+  Inspect or output shell environment exports for AMUX Gateway integration.
+
+Usage:
+  amux env [subcommand]
+
+Shell Integration:
+  Add to ~/.zshrc or ~/.bashrc:
+    eval "$(amux env)"
+
+Subcommands:
+  (no args)           Output shell export lines (eval "$(amux env)")
+  set KEY VALUE       Set a persistent custom environment variable in ~/.amux/env.json
+  get KEY             Read a custom environment variable
+  rm KEY              Remove a custom environment variable
+  list                List all custom environment variables
+`)
+}
+

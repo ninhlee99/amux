@@ -3,6 +3,7 @@ package gateway_test
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -223,6 +224,15 @@ func TestGateway_HookAgyLifecycle(t *testing.T) {
 		t.Fatalf("expected hooked with %s, got hooked=%v, val=%s", testURL, hooked, val)
 	}
 
+	// Verify shell rc contains AGY gateway hook block
+	zshrcBytes, err := os.ReadFile(filepath.Join(tmpDir, ".zshrc"))
+	if err != nil {
+		t.Fatalf("expected .zshrc created: %v", err)
+	}
+	if !strings.Contains(string(zshrcBytes), "amux agy gateway") || !strings.Contains(string(zshrcBytes), testURL) {
+		t.Fatalf("expected .zshrc to contain agy gateway block, got: %s", string(zshrcBytes))
+	}
+
 	if err := gateway.UnhookAgy(); err != nil {
 		t.Fatalf("UnhookAgy error: %v", err)
 	}
@@ -230,6 +240,12 @@ func TestGateway_HookAgyLifecycle(t *testing.T) {
 	hooked, _ = gateway.IsAgyHooked()
 	if hooked {
 		t.Fatalf("expected AGY unhooked")
+	}
+
+	// Verify shell rc has removed AGY gateway hook block
+	zshrcAfter, _ := os.ReadFile(filepath.Join(tmpDir, ".zshrc"))
+	if strings.Contains(string(zshrcAfter), "amux agy gateway") {
+		t.Fatalf("expected agy gateway block removed from .zshrc, got: %s", string(zshrcAfter))
 	}
 }
 

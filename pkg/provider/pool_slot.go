@@ -18,6 +18,29 @@ var poolBrandMethod = map[string][2]string{
 	"claude_cli":  {"claude", "code"},
 }
 
+// CanonicalProvider normalizes provider type strings into anthropic, openai, gemini, cursor.
+func CanonicalProvider(p string) string {
+	s := strings.ToLower(strings.TrimSpace(p))
+	switch {
+	case strings.Contains(s, "claude") || strings.Contains(s, "anthropic"):
+		return "anthropic"
+	case strings.Contains(s, "codex") || strings.Contains(s, "openai") || strings.Contains(s, "chatgpt"):
+		return "openai"
+	case strings.Contains(s, "gemini") || strings.Contains(s, "agy") || strings.Contains(s, "antigravity"):
+		return "gemini"
+	case strings.Contains(s, "cursor"):
+		return "cursor"
+	default:
+		return s
+	}
+}
+
+// IsSubscriptionType checks if providerType corresponds to a subscription tier.
+func IsSubscriptionType(providerType string) bool {
+	pType := strings.ToLower(providerType)
+	return strings.Contains(pType, "sub") || pType == "codex_cli" || pType == "codex" || pType == "claude_oauth" || pType == "claude_code" || pType == "antigravity"
+}
+
 // isLegacyNumericID reports whether an ID is a legacy numeric ID (ends with :01, :02, etc.)
 // or old flat form like claudeweb:01 or codexcli:01, rather than a named identity ID.
 func isLegacyNumericID(id string) bool {
@@ -142,6 +165,44 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 				Priority: p.Priority,
 				Relogin:  true,
 				Enabled:  p.Enabled,
+			}
+		}
+	}
+
+	// Cross-type matching for same canonical provider + same email:
+	// Rule: 1 account per email per provider.
+	// If existing account is web and incoming is subscription -> upgrade (RenameFrom existing web ID).
+	// If existing account is subscription and incoming is web -> reuse subscription slot (block web duplicate).
+	if email != "" && f != nil {
+		incomingCanon := CanonicalProvider(providerType)
+		incomingSub := IsSubscriptionType(providerType)
+
+		for _, p := range f.Providers {
+			if strings.EqualFold(p.Account, email) && CanonicalProvider(p.Type) == incomingCanon {
+				existingSub := IsSubscriptionType(p.Type) || types.IsSubscriptionTier(p.Plan)
+				if !existingSub && incomingSub {
+					// Upgrade existing web entry to subscription entry
+					targetID := wanted
+					if targetID == "" {
+						targetID = p.ID
+					}
+					return PoolSlot{
+						ID:         targetID,
+						Priority:   p.Priority,
+						Relogin:    true,
+						RenameFrom: p.ID,
+						Enabled:    p.Enabled,
+					}
+				}
+				if existingSub && !incomingSub {
+					// Existing is already subscription — keep subscription, do not create web duplicate
+					return PoolSlot{
+						ID:       p.ID,
+						Priority: p.Priority,
+						Relogin:  true,
+						Enabled:  p.Enabled,
+					}
+				}
 			}
 		}
 	}
