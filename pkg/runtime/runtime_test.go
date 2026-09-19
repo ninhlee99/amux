@@ -379,4 +379,66 @@ func TestScenario_DynamicFutureTools_AcrossAGY_Codex_Cursor(t *testing.T) {
 	}
 }
 
+func TestZeroTools_NoCatalogAndNoBlock(t *testing.T) {
+	// A pure conversational chat request with NO tools
+	req := &types.ChatRequest{
+		ClientDialect: "claude",
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "Hello, what is Go?"},
+		},
+		Tools: nil,
+	}
+
+	manifest := runtime.DiscoverManifest(req)
+	contract := runtime.BuildRuntimeContract(manifest)
+
+	// Invariant: Zero tools MUST return empty contract and never block or fail
+	if contract != "" {
+		t.Fatalf("expected empty contract when no tools are present, got:\n%s", contract)
+	}
+}
+
+func TestMultiUserMultiConfig_StrictIsolation(t *testing.T) {
+	// User A with Python + K8s tools
+	reqA := &types.ChatRequest{
+		ClientDialect: "cursor",
+		Tools: []types.ToolDef{
+			{Name: "python_interpreter", InputSchema: []byte(`{"type":"object","required":["code"],"properties":{"code":{"type":"string"}}}`)},
+			{Name: "k8s_status", InputSchema: []byte(`{"type":"object","required":["cluster"],"properties":{"cluster":{"type":"string"}}}`)},
+		},
+	}
+
+	// User B with Go + PostgreSQL tools
+	reqB := &types.ChatRequest{
+		ClientDialect: "antigravity",
+		Tools: []types.ToolDef{
+			{Name: "go_test_runner", InputSchema: []byte(`{"type":"object","required":["package"],"properties":{"package":{"type":"string"}}}`)},
+			{Name: "postgres_query", InputSchema: []byte(`{"type":"object","required":["sql"],"properties":{"sql":{"type":"string"}}}`)},
+		},
+	}
+
+	manifestA := runtime.DiscoverManifest(reqA)
+	manifestB := runtime.DiscoverManifest(reqB)
+
+	contractA := runtime.BuildRuntimeContract(manifestA)
+	contractB := runtime.BuildRuntimeContract(manifestB)
+
+	// Contract A must only contain User A tools
+	if !strings.Contains(contractA, "python_interpreter") || !strings.Contains(contractA, "k8s_status") {
+		t.Fatalf("contractA missing User A tools")
+	}
+	if strings.Contains(contractA, "go_test_runner") || strings.Contains(contractA, "postgres_query") {
+		t.Fatalf("contractA leaked User B tools")
+	}
+
+	// Contract B must only contain User B tools
+	if !strings.Contains(contractB, "go_test_runner") || !strings.Contains(contractB, "postgres_query") {
+		t.Fatalf("contractB missing User B tools")
+	}
+	if strings.Contains(contractB, "python_interpreter") || strings.Contains(contractB, "k8s_status") {
+		t.Fatalf("contractB leaked User A tools")
+	}
+}
+
+
 
