@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+
+	"amux-accounts/pkg/types"
 )
 
 // extractJWTEmailAndTimestamp extracts email and issued-at (or pwd_auth_time/exp)
@@ -104,6 +106,18 @@ func effectiveAccount(p ProviderConfig) string {
 // isBetterProvider compares candidate against current best.
 // Returns true if candidate is preferred over best (newest login wins).
 func isBetterProvider(candidate, best ProviderConfig) bool {
+	// Subscription tier ALWAYS beats Web tier for the same provider
+	candSub := IsSubscriptionType(candidate.Type)
+	bestSub := IsSubscriptionType(best.Type)
+	if candSub != bestSub {
+		return candSub
+	}
+	candPlanSub := types.IsSubscriptionTier(candidate.Plan)
+	bestPlanSub := types.IsSubscriptionTier(best.Plan)
+	if candPlanSub != bestPlanSub {
+		return candPlanSub
+	}
+
 	candCred := hasAnyCredential(candidate)
 	bestCred := hasAnyCredential(best)
 	if candCred != bestCred {
@@ -164,6 +178,13 @@ func mergeProviderConfig(dest *ProviderConfig, src ProviderConfig) {
 	if dest.SessionToken == "" && src.SessionToken != "" {
 		dest.SessionToken = src.SessionToken
 	}
+	destSub := IsSubscriptionType(dest.Type)
+	srcSub := IsSubscriptionType(src.Type)
+	if !destSub && srcSub {
+		dest.Type = src.Type
+		dest.Plan = src.Plan
+		dest.ID = src.ID
+	}
 	if isLegacyNumericID(dest.ID) && !isLegacyNumericID(src.ID) {
 		dest.ID = src.ID
 	}
@@ -208,8 +229,8 @@ func areDuplicates(p1, p2 ProviderConfig) bool {
 		}
 	}
 
-	// 2. Same provider type + same account identity (explicit or decoded from JWT)
-	if p1.Type == p2.Type {
+	// 2. Same canonical provider + same account identity (explicit or decoded from JWT)
+	if CanonicalProvider(p1.Type) == CanonicalProvider(p2.Type) {
 		acct1 := effectiveAccount(p1)
 		acct2 := effectiveAccount(p2)
 		if acct1 != "" && acct2 != "" && strings.EqualFold(acct1, acct2) {

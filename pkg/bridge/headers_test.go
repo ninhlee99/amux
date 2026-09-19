@@ -9,9 +9,20 @@ import (
 	"testing"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
 )
+
+// resetPacingForTest clears guard's anti-ban pacer state so tests reusing the
+// same mock account ID (e.g. "slow:01") don't inherit spacing reserved by a
+// previous test/subtest, which previously made requests wait 10-15s or made
+// worker entry checks (which time out after 1s) fail spuriously.
+func resetPacingForTest(t *testing.T) {
+	t.Helper()
+	guard.ResetAll()
+	t.Cleanup(guard.ResetAll)
+}
 
 func TestBeginSSE_CommitsKeepaliveBeforeProviderWork(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -66,6 +77,7 @@ func (d *delayAdapter) SendMessageStream(ctx context.Context, req *types.ChatReq
 }
 
 func TestPoolSendStreaming_WritesKeepaliveWhileUpstreamPending(t *testing.T) {
+	resetPacingForTest(t)
 	old := streamKeepaliveInterval
 	streamKeepaliveInterval = 15 * time.Millisecond
 	defer func() { streamKeepaliveInterval = old }()

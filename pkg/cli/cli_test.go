@@ -75,11 +75,10 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 	})
 
 	categories := []string{
-		"Core Commands:",
-		"Identity Management:",
-		"Gateway:",
-		"Configuration & Migration:",
-		"System:",
+		"Gateway Daemon:",
+		"Account Management:",
+		"Diagnostics & Setup:",
+		"Examples:",
 	}
 	for _, cat := range categories {
 		if !strings.Contains(out, cat) {
@@ -369,6 +368,45 @@ func TestCmdIDThreshold_PerAccount(t *testing.T) {
 	targetConfig, _ := identity.Get("", "claude-acc")
 	if targetConfig.ThresholdPct == nil || *targetConfig.ThresholdPct != 75.0 {
 		t.Fatalf("expected ThresholdPct to be 75.0 via config threshold, got %v", targetConfig.ThresholdPct)
+	}
+}
+
+func TestCmdAccount_AliasesAndSubcommands(t *testing.T) {
+	// Verify CmdAccount help
+	out := captureStdout(func() {
+		CmdAccount([]string{"help"})
+	})
+	if !strings.Contains(out, "Usage: amux account <subcommand>") {
+		t.Errorf("expected CmdAccount help text, got:\n%s", out)
+	}
+	if !strings.Contains(out, "switch, select <id>") {
+		t.Errorf("expected switch command in help, got:\n%s", out)
+	}
+
+	// Verify CmdID calls CmdAccount without panic
+	outID := captureStdout(func() {
+		CmdID([]string{"help"})
+	})
+	if !strings.Contains(outID, "Usage: amux account <subcommand>") {
+		t.Errorf("expected CmdID to delegate to CmdAccount")
+	}
+}
+
+func TestCli_PerCommandHelp(t *testing.T) {
+	commands := []string{"start", "stop", "restart", "status", "login", "switch", "account", "hook", "unhook", "doctor", "usage"}
+	for _, cmd := range commands {
+		out := captureStdout(func() {
+			Run([]string{"amux", cmd, "--help"})
+		})
+		if !strings.Contains(out, "Purpose:") {
+			t.Errorf("command %q help missing Purpose:, got:\n%s", cmd, out)
+		}
+		if !strings.Contains(out, "Usage:") {
+			t.Errorf("command %q help missing Usage:, got:\n%s", cmd, out)
+		}
+		if !strings.Contains(out, "Examples:") {
+			t.Errorf("command %q help missing Examples:, got:\n%s", cmd, out)
+		}
 	}
 }
 

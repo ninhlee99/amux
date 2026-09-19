@@ -166,7 +166,7 @@ func ToolSpec(tool string) types.ToolSpec {
 	c := LoadConfig()
 	spec, ok := c.Tools[tool]
 	if !ok {
-		panic(fmt.Sprintf("unknown tool %q (known: %s)", tool, strings.Join(ToolNames(c), ", ")))
+		return types.ToolSpec{Name: tool}
 	}
 	return spec
 }

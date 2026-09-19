@@ -61,6 +61,13 @@ func TestPace_WebAndAPIInterval(t *testing.T) {
 	ResetAll()
 	t.Cleanup(ResetAll)
 
+	origBase, origJitter := PaceBaseMs, PaceJitterMs
+	PaceBaseMs = 1000
+	PaceJitterMs = 500
+	t.Cleanup(func() {
+		PaceBaseMs, PaceJitterMs = origBase, origJitter
+	})
+
 	// First request on an account should proceed immediately
 	ctx := context.Background()
 	start := time.Now()

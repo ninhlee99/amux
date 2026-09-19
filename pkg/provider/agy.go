@@ -216,12 +216,17 @@ func buildAGYRequestBody(project, model string, req *types.ChatRequest) agyReque
 		}
 	}
 
-	if req.Temperature > 0 || req.MaxTokens > 0 {
+	caps := tools.GetModelCapabilities("gemini", model)
+	var temp float64
+	if caps.SupportsTemperature && req.Temperature > 0 {
+		temp = req.Temperature
+	}
+	if temp > 0 || req.MaxTokens > 0 {
 		inner.GenerationConfig = &struct {
 			Temperature     float64 `json:"temperature,omitempty"`
 			MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
 		}{
-			Temperature:     req.Temperature,
+			Temperature:     temp,
 			MaxOutputTokens: req.MaxTokens,
 		}
 	}

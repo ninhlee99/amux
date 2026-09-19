@@ -50,18 +50,22 @@ type Config struct {
 }
 
 // CanAutoRotate reports whether this identity is eligible for automatic rotation/failover.
-// Defaults to true unless explicitly set to false in AutoRotate or Metadata["manual_only"].
+// Defaults to true unless explicitly set to false in AutoRotate, Metadata["manual_only"],
+// or hard-disabled via Metadata["disabled"].
 func (id Identity) CanAutoRotate() bool {
-	if id.AutoRotate != nil {
-		return *id.AutoRotate
-	}
 	if id.Metadata != nil {
+		if v, ok := id.Metadata["disabled"].(bool); ok && v {
+			return false
+		}
+		if v, ok := id.Metadata["manual_only"].(bool); ok && v {
+			return false
+		}
 		if v, ok := id.Metadata["auto_rotate"].(bool); ok {
 			return v
 		}
-		if v, ok := id.Metadata["manual_only"].(bool); ok {
-			return !v
-		}
+	}
+	if id.AutoRotate != nil {
+		return *id.AutoRotate
 	}
 	return true
 }
@@ -95,6 +99,12 @@ func (id Identity) Email() string {
 	}
 	if id.Metadata != nil {
 		if em, ok := id.Metadata["email"].(string); ok && strings.TrimSpace(em) != "" {
+			return strings.TrimSpace(em)
+		}
+		if em, ok := id.Metadata["account"].(string); ok && strings.TrimSpace(em) != "" {
+			return strings.TrimSpace(em)
+		}
+		if em, ok := id.Metadata["profile_name"].(string); ok && strings.Contains(em, "@") {
 			return strings.TrimSpace(em)
 		}
 	}

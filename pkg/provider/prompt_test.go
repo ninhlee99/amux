@@ -49,8 +49,8 @@ func TestWebBackendPrompt_ToolsCloserLast(t *testing.T) {
 	if strings.LastIndex(got, closer) < strings.LastIndex(got, "please audit the readme file now") {
 		t.Fatal("closer must follow user text")
 	}
-	if strings.Contains(got, "permission mode") {
-		t.Fatal("harness system must be stripped")
+	if !strings.Contains(got, "permission mode") {
+		t.Fatal("system content should be preserved")
 	}
 	if !strings.Contains(got, "<tool_call>") {
 		t.Fatal("missing protocol")
@@ -91,12 +91,12 @@ func TestWebBackendPrompt_LiveCatalogNoCodeChange(t *testing.T) {
 	if !strings.Contains(got, "mcp__new__search:q:string") || !strings.Contains(got, "Skill:skill:string") {
 		t.Fatalf("live catalog: %s", got)
 	}
-	if strings.Contains(got, "You are Claude Code") {
-		t.Fatal("harness leaked")
+	if !strings.Contains(got, "You are Claude Code") {
+		t.Fatal("harness content should be preserved")
 	}
 }
 
-func TestWebBackendPrompt_ContinuingToolsUsesDelta(t *testing.T) {
+func TestWebBackendPrompt_ContinuingToolsPreservesFullContext(t *testing.T) {
 	req := &types.ChatRequest{
 		FullContext: true,
 		Tools:       []types.ToolDef{{Name: "Read"}},
@@ -108,21 +108,18 @@ func TestWebBackendPrompt_ContinuingToolsUsesDelta(t *testing.T) {
 		},
 	}
 	got := WebBackendPrompt(req, true)
-	if strings.Contains(got, "old task about foo.go") {
-		t.Fatalf("should delta-skip early user: %q", got)
+	if !strings.Contains(got, "old task about foo.go") {
+		t.Fatalf("should keep full context: %q", got)
 	}
 	if !strings.Contains(got, "now fix the bug") || !strings.Contains(got, "package foo") {
-		t.Fatalf("delta must keep latest: %q", got)
-	}
-	if strings.Contains(got, "Coding-agent backend") {
-		t.Fatal("continuing must use catalog-only preamble")
+		t.Fatalf("must keep latest: %q", got)
 	}
 	if !strings.Contains(got, "CATALOG") {
 		t.Fatal("missing catalog")
 	}
 }
 
-func TestWebBackendPrompt_StripsSystemReminder(t *testing.T) {
+func TestWebBackendPrompt_PreservesSystemReminder(t *testing.T) {
 	req := &types.ChatRequest{
 		FullContext: true,
 		Tools:       []types.ToolDef{{Name: "Read"}},
@@ -131,8 +128,8 @@ func TestWebBackendPrompt_StripsSystemReminder(t *testing.T) {
 		},
 	}
 	got := WebBackendPrompt(req, false)
-	if strings.Contains(got, "system-reminder") || strings.Contains(got, "You are Claude Code") {
-		t.Fatal("reminder leaked", got)
+	if !strings.Contains(got, "system-reminder") || !strings.Contains(got, "You are Claude Code") {
+		t.Fatal("reminder should be preserved", got)
 	}
 	if !strings.Contains(got, "review README.md") {
 		t.Fatal("user task dropped", got)
@@ -147,3 +144,34 @@ func TestWebBackendPrompt_NoToolsOmitsProtocol(t *testing.T) {
 		t.Fatal("no tools[] must not inject web protocol", got)
 	}
 }
+
+func TestWebBackendPrompt_PreservesOpenPRSkillReminder(t *testing.T) {
+	req := &types.ChatRequest{
+		FullContext: true,
+		Tools:       []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n- open-pr:review: Review PRs against conventions\ncall fetches everything — `<op> context`\n</system-reminder>\n\n(no content)"},
+		},
+	}
+	got := WebBackendPrompt(req, false)
+	if !strings.Contains(got, "open-pr:review") || !strings.Contains(got, "<op> context") {
+		t.Fatal("open-pr skill instructions must be preserved in web prompt", got)
+	}
+}
+
+func TestWebBackendPrompt_ContinuingThreadPreservesTaskGoal(t *testing.T) {
+	req := &types.ChatRequest{
+		FullContext: true,
+		Tools:       []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/39"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{Name: "Bash", Arguments: `{"command":"git status -sb"}`}}},
+			{Role: "tool", ToolCallID: "toolu_web_1", Content: "## feat/amux-merged-latest...origin/feat/amux-merged-latest"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	if !strings.Contains(got, "open-pr:review") || !strings.Contains(got, "pull/39") {
+		t.Fatalf("continuing thread must preserve initial task goal so model knows what to do, got: %s", got)
+	}
+}
+

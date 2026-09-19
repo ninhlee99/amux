@@ -25,21 +25,81 @@ func Run(rawArgs []string) {
 	cmd := rawArgs[1]
 	args := rawArgs[2:]
 
+	if hasHelp(args) {
+		switch cmd {
+		case "start":
+			helpStart()
+			return
+		case "stop":
+			helpStop()
+			return
+		case "restart":
+			helpRestart()
+			return
+		case "status":
+			helpStatus()
+			return
+		case "login":
+			helpLogin()
+			return
+		case "switch":
+			helpSwitch()
+			return
+		case "account", "accounts", "id":
+			helpAccount()
+			return
+		case "hook":
+			helpHook()
+			return
+		case "unhook":
+			helpUnhook()
+			return
+		case "doctor":
+			helpDoctor()
+			return
+		case "usage":
+			helpUsage()
+			return
+		case "env":
+			helpEnv()
+			return
+		default:
+			usageHelp()
+			return
+		}
+	}
+
 	switch cmd {
 	case "help", "-h", "--help":
 		usageHelp()
-	case "setup":
-		CmdSetup(args)
+	case "login":
+		ui.CmdLogin(args)
+	case "start":
+		cmdGatewayStart(args)
+	case "stop":
+		cmdGatewayStop(args)
+	case "restart":
+		cmdGatewayRestart(args)
 	case "status":
 		CmdStatus(args)
+	case "account", "accounts", "id":
+		CmdAccount(args)
+	case "switch":
+		cmdIDSelect(args)
+	case "hook":
+		cmdGatewayHook(args)
+	case "unhook":
+		cmdGatewayUnhook(args)
+	case "env":
+		CmdEnv(args)
+	case "gateway":
+		CmdGateway(args)
 	case "usage":
 		CmdUsage(args)
 	case "doctor":
 		CmdDoctor(args)
-	case "id":
-		CmdID(args)
-	case "gateway":
-		CmdGateway(args)
+	case "setup":
+		CmdSetup(args)
 	case "config":
 		CmdConfig(args)
 	case "threshold":

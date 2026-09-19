@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -61,6 +62,110 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 	return defaultHTTPClient
 }
 
+var (
+	rePRURL = regexp.MustCompile(`https?://(?:www\.)?(?:github\.com|gitlab\.com)/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/(?:pull|merge_requests)/(\d+)`)
+	rePRRef = regexp.MustCompile(`(?i)(?:pr|pull\s*request)\s*#?(\d+)`)
+)
+
+func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) string {
+	trimmed := strings.TrimSpace(content)
+
+	isFix := false
+	isReview := false
+	isWebappRecording := false
+	isWebappVision := false
+	for i := len(allMessages) - 1; i >= 0; i-- {
+		msg := allMessages[i]
+		if !strings.EqualFold(msg.Role, "user") {
+			continue
+		}
+		low := strings.ToLower(msg.Content)
+		if strings.Contains(low, "webapp-evidence:recording") || strings.Contains(low, "/webapp-evidence:recording") {
+			isWebappRecording = true
+			break
+		}
+		if strings.Contains(low, "webapp-evidence:vision") || strings.Contains(low, "/webapp-evidence:vision") {
+			isWebappVision = true
+			break
+		}
+		if strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
+			strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") {
+			isFix = true
+			break
+		}
+		if strings.Contains(low, "open-pr:review") || strings.Contains(low, "/open-pr:review") ||
+			strings.Contains(low, "review pr") || strings.Contains(low, "pr review") {
+			isReview = true
+			break
+		}
+	}
+
+	task := ""
+	if isWebappRecording {
+		task = "Record web application evidence (video, screenshots, runbook) for the target flow using Playwright/webapp-evidence scripts. Inspect the screen, prepare steps.js, and execute the recording."
+	} else if isWebappVision {
+		task = "Analyze the recorded evidence video and screenshots via contact sheets to inspect UI rendering, visual defects, and timeline anomalies."
+	} else if isFix {
+		task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
+	} else if isReview {
+		task = "Review the Pull Request. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION)."
+	} else if url := rePRURL.FindString(content); url != "" {
+		task = fmt.Sprintf("Review Pull Request: %s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", url)
+	} else if m := rePRRef.FindStringSubmatch(content); len(m) > 1 {
+		task = fmt.Sprintf("Review Pull Request #%s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", m[1])
+	} else {
+		for i := len(allMessages) - 1; i >= 0; i-- {
+			msg := allMessages[i]
+			if url := rePRURL.FindString(msg.Content); url != "" {
+				task = fmt.Sprintf("Review Pull Request: %s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", url)
+				break
+			}
+			if m := rePRRef.FindStringSubmatch(msg.Content); len(m) > 1 {
+				task = fmt.Sprintf("Review Pull Request #%s. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION).", m[1])
+				break
+			}
+		}
+	}
+
+	if task == "" {
+		for i := len(allMessages) - 1; i >= 0; i-- {
+			msg := allMessages[i]
+			low := strings.ToLower(msg.Content)
+			if strings.Contains(low, "webapp-evidence:recording") {
+				task = "Record web application evidence (video, screenshots, runbook) for the target flow using Playwright/webapp-evidence scripts. Inspect the screen, prepare steps.js, and execute the recording."
+				break
+			}
+			if strings.Contains(low, "webapp-evidence:vision") {
+				task = "Analyze the recorded evidence video and screenshots via contact sheets to inspect UI rendering, visual defects, and timeline anomalies."
+				break
+			}
+			if strings.Contains(low, "open-pr:fix") {
+				task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
+				break
+			}
+			if strings.Contains(low, "open-pr") {
+				task = "Review the Pull Request. Analyze the diff and repository changes for bugs, logic errors, regressions, security, edge cases, and code quality. Group findings by severity (🔴 MUST FIX, 🟠 SHOULD FIX, 🔵 SUGGESTION)."
+				break
+			}
+		}
+	}
+
+	if task != "" {
+		if trimmed == "(no content)" || trimmed == "" {
+			return task
+		}
+		prefix := strings.TrimSpace(strings.TrimSuffix(trimmed, "(no content)"))
+		if prefix == "" {
+			return task
+		}
+		if !strings.Contains(prefix, task) {
+			return prefix + "\n\n" + task
+		}
+		return prefix
+	}
+	return content
+}
+
 // BuildConcatenatedPrompt flattens a multi-turn ChatRequest into the single
 // text blob the web adapters (ChatGPT, Claude web) send as one message.
 // Multiple system messages are merged into one "[System Instructions]"
@@ -79,7 +184,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 		return ""
 	}
 	if len(messages) == 1 && strings.EqualFold(messages[0].Role, "user") {
-		return messages[0].Content
+		return resolveUserTaskIntent(messages[0].Content, messages)
 	}
 
 	var sys strings.Builder
@@ -94,7 +199,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sys.WriteString(m.Content)
 		case "user":
 			sb.WriteString("User: ")
-			sb.WriteString(m.Content)
+			sb.WriteString(resolveUserTaskIntent(m.Content, messages))
 			sb.WriteString("\n\n")
 		case "assistant":
 			sb.WriteString("Assistant: ")
@@ -118,13 +223,12 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 				sb.WriteString(")")
 			}
 			sb.WriteString(":\n")
-			content := m.Content
-			// Keep last 2 tool results full; older ones hard-cap (token save).
-			if idx < len(messages)-2 && len([]rune(content)) > 800 {
-				r := []rune(content)
-				content = string(r[:500]) + "\n... [truncated] ...\n" + string(r[len(r)-150:])
+			toolContent := m.Content
+			// If this is an older tool result and exceeds limit, keep essential head to avoid HTTP 413
+			if idx < len(messages)-2 && len(toolContent) > 2000 {
+				toolContent = toolContent[:2000] + "\n...[older output truncated to preserve prompt limit]..."
 			}
-			sb.WriteString(content)
+			sb.WriteString(toolContent)
 			sb.WriteString("\n\n")
 		default:
 			title := role
@@ -226,7 +330,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	for {
 		activeConv, hasActive := cm.GetActive(project)
 		var convID, parentID string
-		if hasActive && activeConv != nil && !rotatedConv {
+		if !req.FullContext && hasActive && activeConv != nil && !rotatedConv {
 			convID = activeConv.ID
 			parentID = activeConv.ParentID
 		}
@@ -237,8 +341,9 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			parentID = ""
 		}
 
-		// Continuing a server-side thread: send only the latest user turn.
-		// Fresh thread / FullContext: flatten history once into the first message.
+		// When FullContext is true (Claude Code / API coding agents), execute statelessly
+		// like a true API: evaluate the clean flattened transcript without server-side drift.
+		// Only interactive single-turn sessions (!FullContext) continue server-side threads.
 		prompt := WebBackendPrompt(req, convID != "" && parentID != "")
 		if parentID == "" {
 			parentID = nilParentMessageID
@@ -329,6 +434,14 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 					rotatedConv = true
 					cm.ResetProject(project)
 					log.Printf("%s: conversation not found for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
+					continue
+				}
+			}
+			if resp.StatusCode == http.StatusRequestEntityTooLarge || (resp.StatusCode >= 400 && strings.Contains(msg, "input_too_large")) {
+				if !rotatedConv {
+					rotatedConv = true
+					cm.ResetProject(project)
+					log.Printf("%s: input too large for ChatGPT Web — retrying with fresh conversation thread", a.AdapterID)
 					continue
 				}
 			}

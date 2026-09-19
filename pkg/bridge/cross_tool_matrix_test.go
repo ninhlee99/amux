@@ -1737,4 +1737,192 @@ func assertSchemaSubset(t *testing.T, want, got map[string]any) {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// 21. Web Backend & Native Stream -> AGY Client: RunCommand Strict Coercion
+// ----------------------------------------------------------------------------
+func TestCrossMatrix_WebBackend_AGYClient_RunCommandCoercion(t *testing.T) {
+	backend := &mockCrossBackend{
+		id:       "chatgpt:web:01",
+		priority: 1,
+		group:    "chatgpt_web",
+		onSend: func(req *types.ChatRequest) []types.StreamChunk {
+			xml := `<tool_call>
+{"name":"run_command","arguments":{"command":"git status"}}
+</tool_call>`
+			return []types.StreamChunk{
+				{ID: "chatgpt:web:01", Content: xml, Done: true, FinishReason: "stop"},
+			}
+		},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+
+	// AGY client with strict run_command declaration
+	agyBody := map[string]any{
+		"contents": []map[string]any{
+			{"role": "user", "parts": []map[string]any{{"text": "check git"}}},
+		},
+		"tools": []map[string]any{
+			{
+				"functionDeclarations": []map[string]any{
+					{
+						"name":        "run_command",
+						"description": "PROPOSE a command to run",
+						"parameters": map[string]any{
+							"type": "OBJECT",
+							"properties": map[string]any{
+								"CommandLine":       map[string]any{"type": "STRING"},
+								"Cwd":               map[string]any{"type": "STRING"},
+								"WaitMsBeforeAsync": map[string]any{"type": "INTEGER"},
+								"toolAction":        map[string]any{"type": "STRING"},
+								"toolSummary":       map[string]any{"type": "STRING"},
+							},
+							"required": []string{"Cwd", "WaitMsBeforeAsync", "CommandLine", "toolSummary", "toolAction"},
+						},
+					},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(agyBody)
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	bridge.HandleGeminiGenerateContent(w, req, pool)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HandleGeminiGenerateContent status=%d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					FunctionCall *struct {
+						Name string         `json:"name"`
+						Args map[string]any `json:"args"`
+					} `json:"functionCall"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal resp: %v (body: %s)", err, w.Body.String())
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		t.Fatalf("expected candidate parts, got: %s", w.Body.String())
+	}
+
+	var fc *struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	}
+	for _, p := range resp.Candidates[0].Content.Parts {
+		if p.FunctionCall != nil {
+			fc = p.FunctionCall
+			break
+		}
+	}
+	if fc == nil {
+		t.Fatalf("expected functionCall in response, got: %s", w.Body.String())
+	}
+
+	if fc.Name != "run_command" {
+		t.Errorf("expected tool run_command, got %s", fc.Name)
+	}
+
+	// Verify CommandLine was normalized
+	if fc.Args["CommandLine"] != "git status" {
+		t.Errorf("expected CommandLine 'git status', got %v", fc.Args["CommandLine"])
+	}
+
+	// Verify 'command' was removed so AGY validator won't reject with 'additional properties: command not allowed'
+	if _, hasCmd := fc.Args["command"]; hasCmd {
+		t.Errorf("expected 'command' to be stripped from args, but still present: %v", fc.Args)
+	}
+
+	// Verify required AGY fields
+	if fc.Args["Cwd"] != "." {
+		t.Errorf("expected Cwd '.', got %v", fc.Args["Cwd"])
+	}
+	if v, ok := fc.Args["WaitMsBeforeAsync"].(float64); !ok || int(v) != 10000 {
+		t.Errorf("expected WaitMsBeforeAsync 10000, got %v", fc.Args["WaitMsBeforeAsync"])
+	}
+	if fc.Args["toolAction"] == "" {
+		t.Errorf("expected non-empty toolAction, got %v", fc.Args["toolAction"])
+	}
+	if fc.Args["toolSummary"] == "" {
+		t.Errorf("expected non-empty toolSummary, got %v", fc.Args["toolSummary"])
+	}
+}
+
+func TestCrossMatrix_NativeStream_AGYClient_BashToRunCommand(t *testing.T) {
+	backend := &mockCrossBackend{
+		id:       "codex:01",
+		priority: 1,
+		group:    "codex_sub",
+		onSend: func(req *types.ChatRequest) []types.StreamChunk {
+			return []types.StreamChunk{
+				{
+					ID: "codex:01",
+					ToolCalls: []types.ToolCall{
+						{ID: "call_native_1", Name: "Bash", Arguments: `{"command":"pwd"}`},
+					},
+					FinishReason: "tool_calls",
+					Done:         true,
+				},
+			}
+		},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+
+	agyBody := map[string]any{
+		"contents": []map[string]any{
+			{"role": "user", "parts": []map[string]any{{"text": "check pwd"}}},
+		},
+		"tools": []map[string]any{
+			{
+				"functionDeclarations": []map[string]any{
+					{
+						"name":        "run_command",
+						"description": "Run command",
+						"parameters": map[string]any{
+							"type": "OBJECT",
+							"properties": map[string]any{
+								"CommandLine":       map[string]any{"type": "STRING"},
+								"Cwd":               map[string]any{"type": "STRING"},
+								"WaitMsBeforeAsync": map[string]any{"type": "INTEGER"},
+								"toolAction":        map[string]any{"type": "STRING"},
+								"toolSummary":       map[string]any{"type": "STRING"},
+							},
+							"required": []string{"Cwd", "WaitMsBeforeAsync", "CommandLine", "toolSummary", "toolAction"},
+						},
+					},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(agyBody)
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	bridge.HandleGeminiGenerateContent(w, req, pool)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HandleGeminiGenerateContent status=%d: %s", w.Code, w.Body.String())
+	}
+
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, `"name":"run_command"`) {
+		t.Fatalf("expected stream to contain run_command, got:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"CommandLine":"pwd"`) {
+		t.Fatalf("expected stream to contain CommandLine pwd, got:\n%s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `"command":"pwd"`) {
+		t.Fatalf("stream MUST NOT contain redundant 'command', got:\n%s", bodyStr)
+	}
+}
+
+
 

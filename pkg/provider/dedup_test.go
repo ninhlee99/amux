@@ -146,3 +146,160 @@ func TestResolvePoolSlot_PromoteLegacyNumericOnRelogin(t *testing.T) {
 		t.Errorf("expected updated token tok2-updated, got %s", file.Providers[0].RefreshToken)
 	}
 }
+
+func TestDeduplicateProviders_SubBeatsWebForSameEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "accounts.json")
+
+	// Same email for Claude: one Web, one Subscription (claude_code) saved directly
+	f := &AccountsFile{
+		Providers: []ProviderConfig{
+			{
+				ID:         "claude:web:alice",
+				Type:       "claude_web",
+				Priority:   3,
+				Account:    "alice@example.com",
+				SessionKey: "web-cookie-123",
+			},
+			{
+				ID:           "claude:code:alice",
+				Type:         "claude_code",
+				Priority:     1,
+				Account:      "alice@example.com",
+				RefreshToken: "sub-refresh-456",
+				Plan:         "pro",
+			},
+		},
+	}
+	if err := SaveConfigFile(cfgPath, f); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	removed, err := DeduplicateProviders(cfgPath)
+	if err != nil {
+		t.Fatalf("DeduplicateProviders error: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != "claude:web:alice" {
+		t.Errorf("expected claude:web:alice to be removed, got: %v", removed)
+	}
+
+	file, _ := LoadConfigFile(cfgPath)
+	if len(file.Providers) != 1 {
+		t.Fatalf("expected 1 provider, got %d", len(file.Providers))
+	}
+	if file.Providers[0].ID != "claude:code:alice" {
+		t.Errorf("expected subscription claude:code:alice to win, got %s", file.Providers[0].ID)
+	}
+}
+
+func TestAddOrUpdateProvider_SubBeatsWebForSameEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "accounts.json")
+
+	// 1. Add Claude Web
+	err := AddOrUpdateProvider(cfgPath, ProviderConfig{
+		ID:         "claude:web:alice",
+		Type:       "claude_web",
+		Priority:   3,
+		Account:    "alice@example.com",
+		SessionKey: "web-cookie-123",
+	})
+	if err != nil {
+		t.Fatalf("add web: %v", err)
+	}
+
+	// 2. Add Claude Subscription with same email -> upgrades existing
+	err = AddOrUpdateProvider(cfgPath, ProviderConfig{
+		ID:           "claude:code:alice",
+		Type:         "claude_code",
+		Priority:     1,
+		Account:      "alice@example.com",
+		RefreshToken: "sub-refresh-456",
+		Plan:         "pro",
+	})
+	if err != nil {
+		t.Fatalf("add sub: %v", err)
+	}
+
+	file, _ := LoadConfigFile(cfgPath)
+	if len(file.Providers) != 1 {
+		t.Fatalf("expected exactly 1 provider, got %d", len(file.Providers))
+	}
+	if file.Providers[0].ID != "claude:code:alice" || file.Providers[0].Type != "claude_code" {
+		t.Errorf("expected claude:code:alice, got %+v", file.Providers[0])
+	}
+
+	// 3. Attempting to add Claude Web with same email cannot downgrade subscription
+	err = AddOrUpdateProvider(cfgPath, ProviderConfig{
+		ID:         "claude:web:alice2",
+		Type:       "claude_web",
+		Priority:   3,
+		Account:    "alice@example.com",
+		SessionKey: "new-web-cookie",
+	})
+	if err != nil {
+		t.Fatalf("add web attempt: %v", err)
+	}
+
+	file, _ = LoadConfigFile(cfgPath)
+	if len(file.Providers) != 1 {
+		t.Fatalf("expected still exactly 1 provider, got %d", len(file.Providers))
+	}
+	if file.Providers[0].ID != "claude:code:alice" || file.Providers[0].Type != "claude_code" {
+		t.Errorf("expected subscription to be preserved, got %+v", file.Providers[0])
+	}
+}
+
+func TestResolvePoolSlot_SubscriptionUpgradesWeb(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "accounts.json")
+
+	// 1. Existing ChatGPT Web account
+	_ = AddOrUpdateProvider(cfgPath, ProviderConfig{
+		ID:         "chatgpt:bob",
+		Type:       "chatgpt_web",
+		Priority:   5,
+		Account:    "bob@company.com",
+		SessionKey: "sess-bob",
+	})
+
+	// 2. Bob logs in via Codex (subscription) with same email
+	slot := ResolvePoolSlot(cfgPath, "codex_cli", "bob@company.com")
+	if !slot.Relogin {
+		t.Errorf("expected Relogin=true, got false")
+	}
+	if slot.RenameFrom != "chatgpt:bob" {
+		t.Errorf("expected RenameFrom=chatgpt:bob, got %q", slot.RenameFrom)
+	}
+	if slot.ID != "codex:bob" {
+		t.Errorf("expected slot.ID=codex:bob, got %q", slot.ID)
+	}
+
+	// 3. Upsert replaces web entry with subscription entry
+	err := UpsertPoolProvider(cfgPath, ProviderConfig{
+		ID:           slot.ID,
+		Type:         "codex_cli",
+		Priority:     slot.Priority,
+		Account:      "bob@company.com",
+		RefreshToken: "codex-refresh-token",
+		Plan:         "pro",
+	}, slot.RenameFrom)
+	if err != nil {
+		t.Fatalf("UpsertPoolProvider error: %v", err)
+	}
+
+	file, _ := LoadConfigFile(cfgPath)
+	if len(file.Providers) != 1 {
+		t.Fatalf("expected exactly 1 provider after upgrade, got %d", len(file.Providers))
+	}
+	if file.Providers[0].ID != "codex:bob" || file.Providers[0].Type != "codex_cli" {
+		t.Errorf("expected codex:bob (codex_cli), got: %+v", file.Providers[0])
+	}
+
+	// 4. If Bob tries to add chatgpt_web again, it points to existing subscription slot (no web duplicate)
+	webSlot := ResolvePoolSlot(cfgPath, "chatgpt_web", "bob@company.com")
+	if !webSlot.Relogin || webSlot.ID != "codex:bob" {
+		t.Errorf("expected web login for same email to reuse subscription slot codex:bob, got: %+v", webSlot)
+	}
+}
+

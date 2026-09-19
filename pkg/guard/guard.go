@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"sync"
+	"testing"
 	"time"
 
 	"amux-accounts/pkg/types"
@@ -17,7 +18,22 @@ var (
 
 	pacerMu        sync.Mutex
 	accountLastReq = make(map[string]time.Time)
+
+	// PaceBaseMs / PaceJitterMs control the spacing window applied by Pace for
+	// web and API-key accounts (base..base+jitter milliseconds). They default to
+	// the 10-15s anti-ban window but are exported so tests can shrink the window
+	// instead of either sleeping for real seconds or disabling pacing outright
+	// (which would stop covering the actual spacing/cancellation logic).
+	PaceBaseMs   int64 = 10000
+	PaceJitterMs int64 = 5000
 )
+
+func init() {
+	if testing.Testing() {
+		PaceBaseMs = 1
+		PaceJitterMs = 1
+	}
+}
 
 // GlobalHealth returns the singleton health tracker instance.
 func GlobalHealth() *HealthTracker {
@@ -46,12 +62,20 @@ func Pace(ctx context.Context, accountID string, isPaced bool) error {
 	last := accountLastReq[accountID]
 	var wait time.Duration
 	if !last.IsZero() {
-		// Random interval between 10s and 15s to add jitter and avoid robotic bursts
-		jitterMs := int64(10000)
-		if n, err := rand.Int(rand.Reader, big.NewInt(5001)); err == nil {
-			jitterMs = 10000 + n.Int64()
+		// Random interval between PaceBaseMs and PaceBaseMs+PaceJitterMs to add
+		// jitter and avoid robotic bursts (defaults: 10-15s).
+		base := PaceBaseMs
+		jitter := PaceJitterMs
+		if base < 0 {
+			base = 0
 		}
-		interval := time.Duration(jitterMs) * time.Millisecond
+		intervalMs := base
+		if jitter > 0 {
+			if n, err := rand.Int(rand.Reader, big.NewInt(jitter+1)); err == nil {
+				intervalMs = base + n.Int64()
+			}
+		}
+		interval := time.Duration(intervalMs) * time.Millisecond
 		elapsed := time.Since(last)
 		if elapsed < interval {
 			wait = interval - elapsed
