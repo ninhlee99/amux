@@ -16,22 +16,57 @@ func BuildRuntimeContract(m *RuntimeManifest) string {
 		runtimeName = "NativeRuntime"
 	}
 
+	// 1. Sort and index tools deterministically
+	sortedTools := make([]NativeToolDefinition, len(m.Tools))
+	copy(sortedTools, m.Tools)
+	sort.Slice(sortedTools, func(i, j int) bool {
+		return sortedTools[i].Name < sortedTools[j].Name
+	})
+
+	toolNames := make([]string, len(sortedTools))
+	toolSet := make(map[string]bool, len(sortedTools))
+	for i, t := range sortedTools {
+		toolNames[i] = t.Name
+		toolSet[t.Name] = true
+	}
+
+	// 2. Derive dynamic guidance strictly based on tools present in the manifest
+	var dynamicGuidance []string
+	if toolSet["run_command"] {
+		dynamicGuidance = append(dynamicGuidance, "Execute shell commands via 'run_command' (do NOT use Claude 'Bash').")
+	} else if toolSet["Bash"] {
+		dynamicGuidance = append(dynamicGuidance, "Execute shell commands via 'Bash' (do NOT use Antigravity 'run_command').")
+	}
+
+	if toolSet["replace_file_content"] {
+		dynamicGuidance = append(dynamicGuidance, "Edit files via 'replace_file_content' (do NOT use Claude 'FileEdit').")
+	} else if toolSet["FileEdit"] {
+		dynamicGuidance = append(dynamicGuidance, "Edit files via 'FileEdit' (do NOT use Antigravity 'replace_file_content').")
+	}
+
+	if toolSet["view_file"] {
+		dynamicGuidance = append(dynamicGuidance, "Inspect files via 'view_file' (do NOT use Claude 'FileRead' / 'View').")
+	} else if toolSet["FileRead"] {
+		dynamicGuidance = append(dynamicGuidance, "Inspect files via 'FileRead' (do NOT use Antigravity 'view_file').")
+	}
+
 	var sb strings.Builder
 	sb.WriteString("Coding-agent backend. Client executes tools locally with automated schema validation. [Tool result] = verified output.\n")
-	sb.WriteString(fmt.Sprintf("================================================================================\n"))
+	sb.WriteString("================================================================================\n")
 	sb.WriteString(fmt.Sprintf("STRICT RUNTIME CONTRACT: Host Environment is [%s]\n", runtimeName))
-	sb.WriteString(fmt.Sprintf("================================================================================\n"))
-	sb.WriteString(`STRICT EXECUTION RULES - ZERO TOLERANCE:
-1. EXCLUSIVE CATALOG USAGE - NO TOOL HALLUCINATIONS:
-   - ONLY tools listed in the CATALOG below exist in this environment.
-   - NEVER call tools from a different IDE or CLI.
-     * If host is Antigravity: NEVER call Claude's 'Bash', 'FileEdit', or 'FileRead'. You MUST use 'run_command', 'replace_file_content', 'view_file'.
-     * If host is Claude Code: NEVER call 'run_command' or 'replace_file_content'. You MUST use 'Bash', 'FileEdit', etc.
-     * If host is Cursor: NEVER call tools not in Cursor's catalog.
-   - NEVER invent, synthesize, or hallucinate tool names. Calling an unlisted tool causes an immediate FATAL failure.
-   - If a tool is not in the CATALOG, it DOES NOT EXIST.
+	sb.WriteString("================================================================================\n")
+	sb.WriteString("STRICT EXECUTION RULES - ZERO TOLERANCE:\n")
+	sb.WriteString("1. EXCLUSIVE CATALOG USAGE - NO TOOL HALLUCINATIONS:\n")
+	sb.WriteString("   - ONLY tools listed in the CATALOG below exist in this environment.\n")
+	sb.WriteString(fmt.Sprintf("   - Available executable tools: [%s].\n", strings.Join(toolNames, ", ")))
+	sb.WriteString("   - NEVER call tools that are not declared in the available tools list above.\n")
+	for _, g := range dynamicGuidance {
+		sb.WriteString(fmt.Sprintf("   - %s\n", g))
+	}
+	sb.WriteString("   - NEVER invent, synthesize, or hallucinate tool names. Calling an unlisted tool causes an immediate FATAL failure.\n")
+	sb.WriteString("   - If a tool is not in the CATALOG, it DOES NOT EXIST.\n\n")
 
-2. STRICT PARAMETER & SCHEMA COMPLIANCE:
+	sb.WriteString(`2. STRICT PARAMETER & SCHEMA COMPLIANCE:
    - Every parameter name, casing, and type MUST match the schema EXACTLY.
    - You MUST supply ALL required properties listed for each tool.
    - Do NOT rename properties (e.g. if catalog lists 'CommandLine', use 'CommandLine' — NEVER rename to 'command' or 'cmd').
@@ -74,7 +109,16 @@ Multiple blocks OK.
 
 CATALOG
 `)
-	sb.WriteString(FormatSchemaCatalog(m))
+	sb.WriteString(formatSortedCatalog(sortedTools))
+	return sb.String()
+}
+
+func formatSortedCatalog(tools []NativeToolDefinition) string {
+	var sb strings.Builder
+	for _, t := range tools {
+		sb.WriteString(FormatToolSchema(t))
+		sb.WriteByte('\n')
+	}
 	return sb.String()
 }
 
@@ -90,12 +134,7 @@ func FormatSchemaCatalog(m *RuntimeManifest) string {
 		return sortedTools[i].Name < sortedTools[j].Name
 	})
 
-	var sb strings.Builder
-	for _, t := range sortedTools {
-		sb.WriteString(FormatToolSchema(t))
-		sb.WriteByte('\n')
-	}
-	return sb.String()
+	return formatSortedCatalog(sortedTools)
 }
 
 // FormatToolSchema formats a single tool definition with clear required/optional parameters.

@@ -235,3 +235,38 @@ func TestAntiHallucination_RejectCrossIDETools(t *testing.T) {
 		t.Fatalf("expected rejection message, got %s", errsClaude[0].Message)
 	}
 }
+
+func TestRuntimeContract_ReferencedExecutableToolsExistInCatalog(t *testing.T) {
+	// Manifest with a subset of tools: only run_command and view_file (no replace_file_content)
+	manifest := runtime.FromToolDefs("Antigravity", []types.ToolDef{
+		{
+			Name:        "run_command",
+			InputSchema: []byte(`{"type":"object","required":["CommandLine"],"properties":{"CommandLine":{"type":"string"}}}`),
+		},
+		{
+			Name:        "view_file",
+			InputSchema: []byte(`{"type":"object","required":["AbsolutePath"],"properties":{"AbsolutePath":{"type":"string"}}}`),
+		},
+	})
+
+	contract := runtime.BuildRuntimeContract(manifest)
+
+	// Invariant 1: Available executable tools header contains only the present tools
+	if !strings.Contains(contract, "Available executable tools: [run_command, view_file].") {
+		t.Fatalf("expected available tools list to match manifest exactly, got:\n%s", contract)
+	}
+
+	// Invariant 2: Present tools have guidance
+	if !strings.Contains(contract, "Execute shell commands via 'run_command'") {
+		t.Fatalf("expected guidance for present run_command, got:\n%s", contract)
+	}
+	if !strings.Contains(contract, "Inspect files via 'view_file'") {
+		t.Fatalf("expected guidance for present view_file, got:\n%s", contract)
+	}
+
+	// Invariant 3: Absent tools (e.g. replace_file_content) MUST NOT be instructed
+	if strings.Contains(contract, "Edit files via 'replace_file_content'") {
+		t.Fatalf("contract instructed using replace_file_content which does not exist in manifest:\n%s", contract)
+	}
+}
+
