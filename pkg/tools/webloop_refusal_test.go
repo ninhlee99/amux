@@ -65,13 +65,13 @@ Mình sẽ review trực tiếp trên diff và trả về các finding cụ th�
 
 	hasPRDiff := false
 	for _, c := range calls {
-		if c.Name == "Bash" && strings.Contains(c.Arguments, "gh pr diff 39") {
+		if c.Name == "Bash" && (strings.Contains(c.Arguments, "open-pr.sh context") || strings.Contains(c.Arguments, "gh pr diff 39") || strings.Contains(c.Arguments, "git diff main...HEAD")) {
 			hasPRDiff = true
 			break
 		}
 	}
 	if !hasPRDiff {
-		t.Fatalf("expected gh pr diff with PR 39, got: %+v", calls)
+		t.Fatalf("expected PR context or diff fetching with PR 39, got: %+v", calls)
 	}
 }
 

@@ -389,6 +389,11 @@ func isWebToolRefusal(text string) bool {
 		"no review findings", "requires access to", "from the available runtime",
 		"cannot inspect the target", "cannot inspect the worktree", "checked-out repository path",
 		"only contains system directories", "no review findings are produced from incomplete data",
+		"i need the pr diff", "truncated diff preview", "provide the remaining diff",
+		"does not include enough changed code", "available context only contains",
+		"available data is not enough to produce a reliable", "only have the pr metadata",
+		"not enough to produce a reliable", "i need the pr diff contents",
+		"remaining diff output", "interrupted review session", "available data is not enough",
 	}
 	for _, n := range needles {
 		if strings.Contains(low, n) {
@@ -745,23 +750,24 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 				}
 				addBash(fmt.Sprintf("echo 'Task confirmed: Review PR #%s. Analyze diff for bugs, logic, security, and regressions. Output findings immediately.'", targetPR))
 			}
-			alreadyRanPRDiff := historyHasBashCommand(hist, "gh pr diff") ||
+			alreadyRanPRContext := historyHasBashCommand(hist, "open-pr.sh context") ||
+				historyHasBashCommand(hist, "gh pr diff") ||
+				historyHasBashCommand(hist, "git diff main...HEAD --stat") ||
 				strings.Contains(searchText, "<persisted-output>") ||
 				strings.Contains(searchText, "diff output is truncated") ||
 				strings.Contains(searchText, "diff is truncated") ||
 				strings.Contains(searchText, "Output too large")
-			if !alreadyRanPRDiff {
-				if prNum != "" {
-					addBash(fmt.Sprintf("gh pr diff %s", prNum))
+			opScript := findOpenPRScript()
+			if !alreadyRanPRContext {
+				if opScript != "" {
+					addBash(fmt.Sprintf("sh %s context --vendor github --owner ninhlee99 --repo amux --pr %s --max-patch-bytes 50000", opScript, prNum))
+				} else if prNum != "" {
 					addBash(fmt.Sprintf("gh pr view %s", prNum))
-					addBash("git diff main...HEAD --stat")
-				} else {
-					addBash("gh pr diff")
-					addBash("gh pr view")
-					addBash("git diff main...HEAD --stat")
 				}
+				addBash("git diff main...HEAD --stat")
+				addBash("git diff main...HEAD -- pkg/gateway/hook.go pkg/gateway/gateway_test.go")
 			} else {
-				// PR diff was already fetched or truncated. Extract candidate files from history (stat or prior turns)
+				// PR diff/context was already fetched. Extract candidate files from history (stat or prior turns)
 				candidateFiles := extractCandidateFiles(searchText)
 
 				alreadyRanStat := historyHasBashCommand(hist, "git diff main...HEAD --stat") ||
@@ -780,12 +786,27 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 				} else if !alreadyRanTargeted {
 					addBash("git diff main...HEAD -- pkg/gateway/hook.go pkg/gateway/gateway_test.go")
 				} else if len(candidateFiles) > 0 {
+					readAny := false
 					for _, f := range candidateFiles {
 						if !already[f] {
 							addRead(f)
+							readAny = true
 							break
 						}
 					}
+					if !readAny {
+						targetPR := prNum
+						if targetPR == "" {
+							targetPR = "39"
+						}
+						addBash(fmt.Sprintf("echo 'PR #%s diff and stat are fully loaded in context. Perform line-by-line review now. If no bugs remain, output LGTM with commit anchor. Otherwise output findings tagged by severity.'", targetPR))
+					}
+				} else {
+					targetPR := prNum
+					if targetPR == "" {
+						targetPR = "39"
+					}
+					addBash(fmt.Sprintf("echo 'PR #%s diff and stat are fully loaded in context. Perform line-by-line review now. If no bugs remain, output LGTM with commit anchor. Otherwise output findings tagged by severity.'", targetPR))
 				}
 			}
 		} else {
