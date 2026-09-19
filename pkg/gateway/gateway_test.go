@@ -257,12 +257,12 @@ func TestGateway_IsHooked_IgnoresExternalURLs(t *testing.T) {
 	_ = os.MkdirAll(codexDir, 0o755)
 	_ = os.WriteFile(codexDir+"/config.json", []byte(`{"openai_base_url":"https://api.openai.com/v1"}`), 0o600)
 
-	// Pre-create ~/.codex/config.toml with third-party proxy
-	_ = os.WriteFile(codexDir+"/config.toml", []byte("openai_base_url = \"https://corp.proxy.internal/v1\"\n"), 0o600)
+	// Pre-create ~/.codex/config.toml with third-party proxy including prefix collision attempt
+	_ = os.WriteFile(codexDir+"/config.toml", []byte("openai_base_url = \"http://127.0.0.1:8787.evil.example/v1\"\n"), 0o600)
 
 	hooked, val := gateway.IsCodexHooked()
 	if hooked {
-		t.Fatalf("IsCodexHooked should ignore non-amux URLs, got hooked=%v val=%s", hooked, val)
+		t.Fatalf("IsCodexHooked should ignore prefix collision URL, got hooked=%v val=%s", hooked, val)
 	}
 
 	// UnhookCodex must NOT delete user's non-amux URLs
@@ -274,7 +274,7 @@ func TestGateway_IsHooked_IgnoresExternalURLs(t *testing.T) {
 		t.Fatalf("UnhookCodex deleted non-amux URL in JSON: %s", string(b))
 	}
 	bt, _ := os.ReadFile(codexDir + "/config.toml")
-	if !strings.Contains(string(bt), "https://corp.proxy.internal/v1") {
+	if !strings.Contains(string(bt), "http://127.0.0.1:8787.evil.example/v1") {
 		t.Fatalf("UnhookCodex deleted non-amux URL in TOML: %s", string(bt))
 	}
 }
@@ -384,4 +384,40 @@ func TestGateway_UnhookCodex_PropagatesMalformedJSON(t *testing.T) {
 		t.Fatalf("expected unmarshal error message, got: %v", err)
 	}
 }
+
+func TestGateway_HookAgy_RefusesOverwriteExternalBaseURL(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-agy-ext-url-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	agyDir := tmpDir + "/.gemini/antigravity-cli"
+	_ = os.MkdirAll(agyDir, 0o755)
+	userSettings := `{
+  "env": {
+    "GOOGLE_GEMINI_BASE_URL": "https://custom.gemini.proxy/v1"
+  }
+}`
+	_ = os.WriteFile(agyDir+"/settings.json", []byte(userSettings), 0o600)
+
+	err = gateway.HookAgy("http://127.0.0.1:8787")
+	if err == nil {
+		t.Fatalf("expected HookAgy to refuse overwriting external base URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("expected error message to mention refusal, got: %v", err)
+	}
+
+	// Verify original file is untouched
+	b, _ := os.ReadFile(agyDir + "/settings.json")
+	if !strings.Contains(string(b), "https://custom.gemini.proxy/v1") {
+		t.Fatalf("expected file to be unmodified, got: %s", string(b))
+	}
+}
+
 

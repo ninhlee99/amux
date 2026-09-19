@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,9 +36,22 @@ var (
 
 func isGatewayURL(v string) bool {
 	trimmed := strings.TrimSpace(v)
-	return strings.HasPrefix(trimmed, GatewayDefaultURL) ||
-		strings.HasPrefix(trimmed, "http://localhost:8787") ||
-		strings.HasPrefix(trimmed, "http://0.0.0.0:8787")
+	if trimmed == "" {
+		return false
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port != "8787" {
+		return false
+	}
+	return host == "127.0.0.1" || host == "localhost" || host == "0.0.0.0"
 }
 
 // isAmuxOwnedEnv returns true if key/value was configured by amux.
@@ -57,31 +71,48 @@ func isAmuxOwnedEnv(key, val string) bool {
 	return false
 }
 
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+func stageFile(path string, data []byte, perm os.FileMode) (string, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	tmp, err := os.CreateTemp(dir, "hook-*.tmp")
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpName := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpName)
-	}()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return err
+		_ = os.Remove(tmpName)
+		return "", err
 	}
 	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		return err
+		_ = os.Remove(tmpName)
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	return tmpName, nil
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp, err := stageFile(path, data, perm)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	defer func() {
+		if tmp != "" {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	tmp = ""
+	return nil
 }
 
 func setLaunchEnv(key, val string) {
@@ -274,17 +305,47 @@ func HookCodex(baseURL string) error {
 		return err
 	}
 
-	if err := atomicWriteFile(p, newJSON, 0o600); err != nil {
+	// Stage both files atomically before committing either
+	tmpJSON, err := stageFile(p, newJSON, 0o600)
+	if err != nil {
 		return err
 	}
-	if err := atomicWriteFile(tomlPath, []byte(newTOML), 0o600); err != nil {
+	defer func() {
+		if tmpJSON != "" {
+			_ = os.Remove(tmpJSON)
+		}
+	}()
+
+	tmpTOML, err := stageFile(tomlPath, []byte(newTOML), 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if tmpTOML != "" {
+			_ = os.Remove(tmpTOML)
+		}
+	}()
+
+	// Commit JSON
+	if err := os.Rename(tmpJSON, p); err != nil {
+		return err
+	}
+	tmpJSON = ""
+
+	// Commit TOML; if rename fails, rollback JSON
+	if err := os.Rename(tmpTOML, tomlPath); err != nil {
+		var rollbackErr error
 		if jsonExisted {
-			_ = atomicWriteFile(p, origJSON, 0o600)
+			rollbackErr = atomicWriteFile(p, origJSON, 0o600)
 		} else {
-			_ = os.Remove(p)
+			rollbackErr = os.Remove(p)
+		}
+		if rollbackErr != nil {
+			return fmt.Errorf("write %s: %w (rollback %s failed: %v)", tomlPath, err, p, rollbackErr)
 		}
 		return fmt.Errorf("write %s: %w (rolled back %s)", tomlPath, err, p)
 	}
+	tmpTOML = ""
 
 	// 3. Update environment for session / launchctl
 	setLaunchEnv("OPENAI_BASE_URL", baseURL)
@@ -503,6 +564,9 @@ func HookAgy(baseURL string) error {
 	if envMap == nil {
 		envMap = make(map[string]any)
 	}
+	if existingURL, ok := envMap["GOOGLE_GEMINI_BASE_URL"].(string); ok && existingURL != "" && !isGatewayURL(existingURL) {
+		return fmt.Errorf("refusing to overwrite existing GOOGLE_GEMINI_BASE_URL (%s) not managed by amux", existingURL)
+	}
 	envMap["GOOGLE_GEMINI_BASE_URL"] = baseURL
 	if existingKey, ok := envMap["GEMINI_API_KEY"].(string); !ok || existingKey == "" || isAmuxOwnedEnv("GEMINI_API_KEY", existingKey) {
 		envMap["GEMINI_API_KEY"] = "amux-local"
@@ -517,6 +581,9 @@ func HookAgy(baseURL string) error {
 		return err
 	}
 
+	if existingLaunchURL := getLaunchEnv("GOOGLE_GEMINI_BASE_URL"); existingLaunchURL != "" && !isGatewayURL(existingLaunchURL) {
+		return fmt.Errorf("refusing to overwrite existing launchctl GOOGLE_GEMINI_BASE_URL (%s) not managed by amux", existingLaunchURL)
+	}
 	setLaunchEnv("GOOGLE_GEMINI_BASE_URL", baseURL)
 	if existingKey := getLaunchEnv("GEMINI_API_KEY"); existingKey == "" || isAmuxOwnedEnv("GEMINI_API_KEY", existingKey) {
 		setLaunchEnv("GEMINI_API_KEY", "amux-local")
