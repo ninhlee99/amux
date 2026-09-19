@@ -344,6 +344,14 @@ func isWebToolRefusal(text string) bool {
 		"open-pr:fix in this", "tools required by that command", "mutation tools",
 		"can’t execute `/open-pr", "can't execute `/open-pr", "cannot execute `/open-pr",
 		"to execute `/open-pr", "to execute /open-pr", "cannot execute `/open-pr:fix`",
+		"does not currently have access", "do not currently have access", "doesn't currently have access",
+		"does not have access to the", "do not have access to the", "not currently have access",
+		"working tree or the pr worktree", "pr worktree needed", "working tree or the",
+		"safely edit files, commit, and push", "safely edit files", "edit files, commit, and push",
+		"to continue the actual /open-pr:fix", "to continue the actual /open-pr", "to continue the actual open-pr",
+		"session that has the repository mounted", "that has the repository mounted", "has the repository mounted",
+		"this chat context does not", "chat context does not currently", "chat context does not",
+		"the review findings to apply are", "review findings to apply are",
 		// Vietnamese refusal & missing data patterns
 		"chỉ chứa phần catalog", "chỉ chứa catalog", "catalog/tool schema", "không có nội dung",
 		"không có dữ liệu", "vui lòng gửi lại", "gửi lại một trong", "kèm phần output",
@@ -478,7 +486,23 @@ func shouldForceWebTools(text string, hist ...[]types.ChatMessage) bool {
 		}
 		return true
 	}
-	return isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebFakeExecution(text, h)
+	if isWebToolRefusal(text) || isWebWorkIncomplete(text) || isWebFakeExecution(text, h) {
+		return true
+	}
+	// If the user's latest command is an explicit PR fix command (/open-pr:fix)
+	// and the response does NOT contain any tool call markup, it is refusing/failing to execute.
+	for i := len(h) - 1; i >= 0; i-- {
+		if strings.EqualFold(h[i].Role, "user") {
+			low := strings.ToLower(h[i].Content)
+			if (strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
+				strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix")) &&
+				!hasExplicitWebToolMarkup(text) {
+				return true
+			}
+			break
+		}
+	}
+	return false
 }
 
 func filesFromHistory(hist []types.ChatMessage) map[string]bool {
@@ -661,73 +685,101 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		searchText = sb.String()
 	}
 
-	var userSearch strings.Builder
-	for _, m := range hist {
-		if strings.EqualFold(m.Role, "user") {
-			userSearch.WriteString(" ")
-			userSearch.WriteString(m.Content)
+	var lastUserMsg string
+	for i := len(hist) - 1; i >= 0; i-- {
+		if strings.EqualFold(hist[i].Role, "user") {
+			lastUserMsg = hist[i].Content
+			break
 		}
 	}
-	lowUser := strings.ToLower(userSearch.String())
-	lowSearch := strings.ToLower(searchText)
+	lowLastUser := strings.ToLower(lastUserMsg)
 
-	isPRFixIntent := strings.Contains(lowUser, "open-pr:fix") || strings.Contains(lowUser, "/open-pr:fix") ||
-		strings.Contains(lowUser, "fix pr") || strings.Contains(lowUser, "pr fix")
+	// LATEST user message decides the current intent (fix overrides previous review turns)
+	isPRFixIntent := strings.Contains(lowLastUser, "open-pr:fix") || strings.Contains(lowLastUser, "/open-pr:fix") ||
+		strings.Contains(lowLastUser, "fix pr") || strings.Contains(lowLastUser, "pr fix")
 
-	isPRReviewIntent := !isPRFixIntent && (strings.Contains(lowUser, "open-pr:review") || strings.Contains(lowUser, "/open-pr:review") ||
-		strings.Contains(lowUser, "review pr") || strings.Contains(lowUser, "pr review") ||
-		strings.Contains(lowUser, "open-pr") || strings.Contains(lowUser, "/open-pr") ||
-		strings.Contains(lowUser, "/pull/") || strings.Contains(lowUser, "pull request") ||
-		strings.Contains(lowSearch, "open-pr:review") || strings.Contains(lowSearch, "/open-pr:review"))
+	isPRReviewIntent := !isPRFixIntent && (strings.Contains(lowLastUser, "open-pr:review") || strings.Contains(lowLastUser, "/open-pr:review") ||
+		strings.Contains(lowLastUser, "review pr") || strings.Contains(lowLastUser, "pr review") ||
+		strings.Contains(lowLastUser, "open-pr") || strings.Contains(lowLastUser, "/open-pr") ||
+		strings.Contains(lowLastUser, "/pull/") || strings.Contains(lowLastUser, "pull request"))
+
+	// Fallback to scanning user history backwards if the last message was short/confirmation
+	if !isPRFixIntent && !isPRReviewIntent {
+		for i := len(hist) - 1; i >= 0; i-- {
+			if strings.EqualFold(hist[i].Role, "user") {
+				low := strings.ToLower(hist[i].Content)
+				if strings.Contains(low, "open-pr:fix") || strings.Contains(low, "/open-pr:fix") ||
+					strings.Contains(low, "fix pr") || strings.Contains(low, "pr fix") {
+					isPRFixIntent = true
+					break
+				}
+				if strings.Contains(low, "open-pr:review") || strings.Contains(low, "/open-pr:review") ||
+					strings.Contains(low, "review pr") || strings.Contains(low, "pr review") ||
+					strings.Contains(low, "/pull/") {
+					isPRReviewIntent = true
+					break
+				}
+			}
+		}
+	}
+
 	isPRIntent := isPRFixIntent || isPRReviewIntent
 
 	if isPRFixIntent {
 		var prNum string
-		if m := rePRNum.FindStringSubmatch(searchText); len(m) > 1 {
+		if m := rePRNum.FindStringSubmatch(lastUserMsg); len(m) > 1 {
 			prNum = m[1]
+		}
+		if prNum == "" {
+			if m := rePRNum.FindStringSubmatch(searchText); len(m) > 1 {
+				prNum = m[1]
+			}
 		}
 		if prNum == "" {
 			prNum = "39"
 		}
 		opScript := findOpenPRScript()
 		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
-			alreadyFetchedContext := historyHasBashCommand(hist, "open-pr.sh context") ||
-				historyHasBashCommand(hist, "gh pr view") ||
-				strings.Contains(searchText, "## Reviews") ||
-				strings.Contains(searchText, "HookCodex")
-
-			if !alreadyFetchedContext {
-				if opScript != "" {
-					addBash(fmt.Sprintf("sh %s context --vendor github --owner ninhlee99 --repo amux --pr %s --sections info,head,comments,reviews,account,threads", opScript, prNum))
+			// Find candidate files mentioned in this refusal response or in the latest review findings
+			candidateFiles := extractCandidateFiles(text)
+			if len(candidateFiles) == 0 {
+				for i := len(hist) - 1; i >= 0; i-- {
+					if strings.EqualFold(hist[i].Role, "assistant") {
+						candidateFiles = extractCandidateFiles(hist[i].Content)
+						if len(candidateFiles) > 0 {
+							break
+						}
+					}
 				}
-				addBash(fmt.Sprintf("gh pr view %s --json reviews,comments", prNum))
-				addBash("git remote -v && git branch --show-current")
-			} else {
-				candidateFiles := extractCandidateFiles(searchText)
-				targetFile := "pkg/gateway/hook.go"
-				foundTarget := false
+			}
+			if len(candidateFiles) == 0 {
+				candidateFiles = extractCandidateFiles(searchText)
+			}
+
+			if len(candidateFiles) > 0 {
 				for _, f := range candidateFiles {
-					if strings.Contains(f, "hook.go") {
-						targetFile = f
-						foundTarget = true
+					if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
+						addRead(f)
+					} else {
+						addBash("git diff main...HEAD -- " + f)
+					}
+					if len(out) >= 2 {
 						break
 					}
 				}
-				if !foundTarget && len(candidateFiles) > 0 {
-					targetFile = candidateFiles[0]
+			} else {
+				if opScript != "" {
+					addBash(fmt.Sprintf("sh %s context --vendor github --owner ninhlee99 --repo amux --pr %s --sections info,head,comments,reviews", opScript, prNum))
 				}
-
-				if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
-					addRead(targetFile)
-				} else {
-					addBash("git diff main...HEAD -- " + targetFile)
-				}
+				addBash("git status && git diff main...HEAD --stat")
 			}
 		} else {
-			home, _ := os.UserHomeDir()
-			fixFile := filepath.Join(home, ".claude/plugins/marketplaces/open-pr/src/commands/fix.md")
-			if _, err := os.Stat(fixFile); err == nil {
-				addRead(fixFile)
+			candidateFiles := extractCandidateFiles(text)
+			if len(candidateFiles) == 0 {
+				candidateFiles = extractCandidateFiles(searchText)
+			}
+			if len(candidateFiles) > 0 {
+				addRead(candidateFiles[0])
 			}
 		}
 

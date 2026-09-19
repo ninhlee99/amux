@@ -451,3 +451,64 @@ func TestParseWebTools_UnescapedQuotesInsideBashCommand(t *testing.T) {
 		t.Fatalf("command not preserved byte-for-byte:\nwant=%q\ngot =%q", cmd, got.Command)
 	}
 }
+
+func TestFinalizeWebToolCalls_MultiTurnReviewThenFix_InterceptsRefusal(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
+		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+	}
+
+	hist := []types.ChatMessage{
+		{
+			Role:    "user",
+			Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/39\nbạn hãy review PR này giúp tôi nhé",
+		},
+		{
+			Role: "assistant",
+			Content: `🤖【AI REVIEW】Overview
+🙏 Đã xem các thay đổi hiện có trong PR và tập trung vào các khu vực có khả năng gây regression/runtime issue.
+
+🟠 SHOULD FIX
+🟠 pkg/tools/capabilities.go:26-35 — Detection of reasoning models is too broad.
+if strings.Contains(m, "o1") || strings.Contains(m, "r1") {
+    caps.SupportsTemperature = false
+    caps.SupportsReasoningEffort = true
+}
+
+Fix — Restrict matching to known model families instead of substring matching.`,
+		},
+		{
+			Role:    "user",
+			Content: "/open-pr:fix https://github.com/ninhlee99/amux/pull/39\nhãy fix các comment của review trên",
+		},
+	}
+
+	refusalText := "I can continue the PR fix, but this chat context does not currently have access to the amux working tree or the PR worktree needed to safely edit files, commit, and push."
+
+	calls, forced := FinalizeWebToolCalls(refusalText, defs, hist)
+	if !forced {
+		t.Fatalf("expected refusal to be intercepted and forced into tool calls")
+	}
+	if len(calls) == 0 {
+		t.Fatalf("expected at least 1 forced tool call, got 0")
+	}
+
+	// Must target pkg/tools/capabilities.go from the review findings, NOT hardcoded hook.go
+	foundTarget := false
+	for _, c := range calls {
+		if strings.Contains(c.Arguments, "capabilities.go") {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		t.Fatalf("expected tool call to target pkg/tools/capabilities.go from review findings, got: %+v", calls)
+	}
+
+	// Ensure hook.go was NOT forced
+	for _, c := range calls {
+		if strings.Contains(c.Arguments, "hook.go") {
+			t.Fatalf("hook.go must NOT be hardcoded when review targeted capabilities.go: %+v", calls)
+		}
+	}
+}
