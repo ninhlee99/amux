@@ -278,3 +278,110 @@ func TestGateway_IsHooked_IgnoresExternalURLs(t *testing.T) {
 		t.Fatalf("UnhookCodex deleted non-amux URL in TOML: %s", string(bt))
 	}
 }
+
+func TestGateway_HookAgy_PreservesUserCredentials(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-agy-user-creds-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	origEnv, _ := exec.Command("launchctl", "getenv", "GOOGLE_GEMINI_BASE_URL").Output()
+	_ = exec.Command("launchctl", "unsetenv", "GOOGLE_GEMINI_BASE_URL").Run()
+	origKeyEnv, _ := exec.Command("launchctl", "getenv", "GEMINI_API_KEY").Output()
+	_ = exec.Command("launchctl", "unsetenv", "GEMINI_API_KEY").Run()
+	defer func() {
+		if strings.TrimSpace(string(origEnv)) != "" {
+			_ = exec.Command("launchctl", "setenv", "GOOGLE_GEMINI_BASE_URL", strings.TrimSpace(string(origEnv))).Run()
+		}
+		if strings.TrimSpace(string(origKeyEnv)) != "" {
+			_ = exec.Command("launchctl", "setenv", "GEMINI_API_KEY", strings.TrimSpace(string(origKeyEnv))).Run()
+		}
+	}()
+
+	// Pre-create ~/.gemini/antigravity-cli/settings.json with user credentials
+	agyDir := tmpDir + "/.gemini/antigravity-cli"
+	_ = os.MkdirAll(agyDir, 0o755)
+	userSettings := `{
+  "modelProvider": "custom-provider",
+  "env": {
+    "GEMINI_API_KEY": "user-preexisting-secret-key",
+    "OTHER_VAR": "keep-me"
+  }
+}`
+	_ = os.WriteFile(agyDir+"/settings.json", []byte(userSettings), 0o600)
+
+	testURL := "http://127.0.0.1:8787"
+	if err := gateway.HookAgy(testURL); err != nil {
+		t.Fatalf("HookAgy error: %v", err)
+	}
+
+	// Verify user's modelProvider and GEMINI_API_KEY are NOT overwritten
+	b, err := os.ReadFile(agyDir + "/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(b)
+	if !strings.Contains(content, `"modelProvider": "custom-provider"`) {
+		t.Fatalf("expected custom modelProvider preserved, got: %s", content)
+	}
+	if !strings.Contains(content, `"GEMINI_API_KEY": "user-preexisting-secret-key"`) {
+		t.Fatalf("expected user GEMINI_API_KEY preserved, got: %s", content)
+	}
+	if !strings.Contains(content, `"GOOGLE_GEMINI_BASE_URL": "http://127.0.0.1:8787"`) {
+		t.Fatalf("expected GOOGLE_GEMINI_BASE_URL added, got: %s", content)
+	}
+
+	// Unhook AGY
+	if err := gateway.UnhookAgy(); err != nil {
+		t.Fatalf("UnhookAgy error: %v", err)
+	}
+
+	// Verify user credentials remain intact after unhook
+	bAfter, err := os.ReadFile(agyDir + "/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterContent := string(bAfter)
+	if strings.Contains(afterContent, "GOOGLE_GEMINI_BASE_URL") {
+		t.Fatalf("expected GOOGLE_GEMINI_BASE_URL removed, got: %s", afterContent)
+	}
+	if !strings.Contains(afterContent, `"GEMINI_API_KEY": "user-preexisting-secret-key"`) {
+		t.Fatalf("expected user GEMINI_API_KEY preserved after unhook, got: %s", afterContent)
+	}
+	if !strings.Contains(afterContent, `"modelProvider": "custom-provider"`) {
+		t.Fatalf("expected custom modelProvider preserved after unhook, got: %s", afterContent)
+	}
+	if !strings.Contains(afterContent, `"OTHER_VAR": "keep-me"`) {
+		t.Fatalf("expected OTHER_VAR preserved after unhook, got: %s", afterContent)
+	}
+}
+
+func TestGateway_UnhookCodex_PropagatesMalformedJSON(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "amux-codex-malformed-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	_ = os.Setenv("HOME", tmpDir)
+
+	codexDir := tmpDir + "/.codex"
+	_ = os.MkdirAll(codexDir, 0o755)
+	_ = os.WriteFile(codexDir+"/config.json", []byte(`{invalid-json`), 0o600)
+
+	err = gateway.UnhookCodex()
+	if err == nil {
+		t.Fatalf("expected UnhookCodex to return an error for malformed config.json, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal") {
+		t.Fatalf("expected unmarshal error message, got: %v", err)
+	}
+}
+

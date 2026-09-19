@@ -40,6 +40,23 @@ func isGatewayURL(v string) bool {
 		strings.HasPrefix(trimmed, "http://0.0.0.0:8787")
 }
 
+// isAmuxOwnedEnv returns true if key/value was configured by amux.
+// For base URLs, it checks if the value points to the amux gateway.
+// For API keys, it checks for amux placeholder credentials ("amux-local", "amux").
+func isAmuxOwnedEnv(key, val string) bool {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return false
+	}
+	if strings.HasSuffix(key, "_BASE_URL") || strings.HasSuffix(key, "BaseUrl") || strings.HasSuffix(key, "base_url") {
+		return isGatewayURL(val)
+	}
+	if strings.HasSuffix(key, "_API_KEY") || strings.HasSuffix(key, "ApiKey") || strings.HasSuffix(key, "api_key") {
+		return val == "amux-local" || val == "amux"
+	}
+	return false
+}
+
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -199,28 +216,33 @@ func HookCodex(baseURL string) error {
 		baseURL = GatewayDefaultURL + "/v1"
 	}
 
-	// 1. Update ~/.codex/config.json
+	// 1. Prepare ~/.codex/config.json
 	p := CodexConfigPath()
+	var origJSON []byte
+	var jsonExisted bool
 	m := make(map[string]any)
 	if b, err := os.ReadFile(p); err == nil {
+		origJSON = b
+		jsonExisted = true
 		if len(bytes.TrimSpace(b)) > 0 {
 			if err := json.Unmarshal(b, &m); err != nil {
 				return fmt.Errorf("unmarshal %s: %w", p, err)
 			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	m["openai_base_url"] = baseURL
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := atomicWriteFile(p, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
+	newJSON := append(b, '\n')
 
-	// 2. Update ~/.codex/config.toml
+	// 2. Prepare ~/.codex/config.toml
 	tomlPath := CodexTomlPath()
 	line := fmt.Sprintf("openai_base_url = %q", baseURL)
+	var newTOML string
 	if tomlBytes, err := os.ReadFile(tomlPath); err == nil {
 		tomlStr := string(tomlBytes)
 		loc := reFirstTOMLTable.FindStringIndex(tomlStr)
@@ -235,26 +257,33 @@ func HookCodex(baseURL string) error {
 				}
 				rootSection += line + "\n\n"
 			}
-			tomlStr = rootSection + rest
+			newTOML = rootSection + rest
 		} else {
 			if reCodexBaseURL.MatchString(tomlStr) {
-				tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, line)
+				newTOML = reCodexBaseURL.ReplaceAllString(tomlStr, line)
 			} else {
 				if tomlStr != "" && !strings.HasSuffix(tomlStr, "\n") {
 					tomlStr += "\n"
 				}
-				tomlStr += line + "\n"
+				newTOML = tomlStr + line + "\n"
 			}
 		}
-		if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
-			return err
-		}
 	} else if os.IsNotExist(err) {
-		if err := atomicWriteFile(tomlPath, []byte(line+"\n"), 0o600); err != nil {
-			return err
-		}
+		newTOML = line + "\n"
 	} else {
 		return err
+	}
+
+	if err := atomicWriteFile(p, newJSON, 0o600); err != nil {
+		return err
+	}
+	if err := atomicWriteFile(tomlPath, []byte(newTOML), 0o600); err != nil {
+		if jsonExisted {
+			_ = atomicWriteFile(p, origJSON, 0o600)
+		} else {
+			_ = os.Remove(p)
+		}
+		return fmt.Errorf("write %s: %w (rolled back %s)", tomlPath, err, p)
 	}
 
 	// 3. Update environment for session / launchctl
@@ -269,19 +298,22 @@ func UnhookCodex() error {
 	if b, err := os.ReadFile(p); err == nil {
 		var m map[string]any
 		if len(bytes.TrimSpace(b)) > 0 {
-			if err := json.Unmarshal(b, &m); err == nil {
-				if val, exists := m["openai_base_url"].(string); exists && isGatewayURL(val) {
-					delete(m, "openai_base_url")
-					data, err := json.MarshalIndent(m, "", "  ")
-					if err != nil {
-						return err
-					}
-					if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
-						return err
-					}
+			if err := json.Unmarshal(b, &m); err != nil {
+				return fmt.Errorf("unmarshal %s: %w", p, err)
+			}
+			if val, exists := m["openai_base_url"].(string); exists && isGatewayURL(val) {
+				delete(m, "openai_base_url")
+				data, err := json.MarshalIndent(m, "", "  ")
+				if err != nil {
+					return err
+				}
+				if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
+					return err
 				}
 			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
 	// 2. Remove from ~/.codex/config.toml
@@ -315,6 +347,8 @@ func UnhookCodex() error {
 				}
 			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
 	// 3. Remove launchctl env if pointed to gateway
@@ -458,15 +492,21 @@ func HookAgy(baseURL string) error {
 				return fmt.Errorf("unmarshal %s: %w", p, err)
 			}
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	m["modelProvider"] = "gemini"
+	if mp, ok := m["modelProvider"].(string); !ok || mp == "" {
+		m["modelProvider"] = "gemini"
+	}
 
 	envMap, _ := m["env"].(map[string]any)
 	if envMap == nil {
 		envMap = make(map[string]any)
 	}
 	envMap["GOOGLE_GEMINI_BASE_URL"] = baseURL
-	envMap["GEMINI_API_KEY"] = "amux-local"
+	if existingKey, ok := envMap["GEMINI_API_KEY"].(string); !ok || existingKey == "" || isAmuxOwnedEnv("GEMINI_API_KEY", existingKey) {
+		envMap["GEMINI_API_KEY"] = "amux-local"
+	}
 	m["env"] = envMap
 
 	b, err := json.MarshalIndent(m, "", "  ")
@@ -478,7 +518,9 @@ func HookAgy(baseURL string) error {
 	}
 
 	setLaunchEnv("GOOGLE_GEMINI_BASE_URL", baseURL)
-	setLaunchEnv("GEMINI_API_KEY", "amux-local")
+	if existingKey := getLaunchEnv("GEMINI_API_KEY"); existingKey == "" || isAmuxOwnedEnv("GEMINI_API_KEY", existingKey) {
+		setLaunchEnv("GEMINI_API_KEY", "amux-local")
+	}
 	return nil
 }
 
@@ -492,10 +534,16 @@ func UnhookAgy() error {
 				return fmt.Errorf("unmarshal %s: %w", p, err)
 			}
 		}
-		delete(m, "modelProvider")
 		if envMap, ok := m["env"].(map[string]any); ok {
-			delete(envMap, "GOOGLE_GEMINI_BASE_URL")
-			delete(envMap, "GEMINI_API_KEY")
+			if val, exists := envMap["GOOGLE_GEMINI_BASE_URL"].(string); exists && isGatewayURL(val) {
+				delete(envMap, "GOOGLE_GEMINI_BASE_URL")
+				if k, ok := envMap["GEMINI_API_KEY"].(string); ok && isAmuxOwnedEnv("GEMINI_API_KEY", k) {
+					delete(envMap, "GEMINI_API_KEY")
+				}
+				if mp, ok := m["modelProvider"].(string); ok && mp == "gemini" {
+					delete(m, "modelProvider")
+				}
+			}
 			if len(envMap) == 0 {
 				delete(m, "env")
 			} else {
@@ -509,10 +557,14 @@ func UnhookAgy() error {
 		if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
 			return err
 		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	if isGatewayURL(getLaunchEnv("GOOGLE_GEMINI_BASE_URL")) {
 		unsetLaunchEnv("GOOGLE_GEMINI_BASE_URL")
-		unsetLaunchEnv("GEMINI_API_KEY")
+		if isAmuxOwnedEnv("GEMINI_API_KEY", getLaunchEnv("GEMINI_API_KEY")) {
+			unsetLaunchEnv("GEMINI_API_KEY")
+		}
 	}
 	return nil
 }
