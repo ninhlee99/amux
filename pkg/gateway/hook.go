@@ -110,7 +110,10 @@ func IsClaudeHooked() (bool, string) {
 	return false, ""
 }
 
-var reCodexBaseURL = regexp.MustCompile(`(?m)^[ \t]*openai_base_url[ \t]*=.*$`)
+var (
+	reCodexBaseURL   = regexp.MustCompile(`(?m)^[ \t]*openai_base_url[ \t]*=.*$`)
+	reFirstTOMLTable = regexp.MustCompile(`(?m)^\[.+\]`)
+)
 
 // CodexConfigPath returns ~/.codex/config.json.
 func CodexConfigPath() string {
@@ -156,10 +159,19 @@ func HookCodex(baseURL string) error {
 		if reCodexBaseURL.MatchString(tomlStr) {
 			tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, line)
 		} else {
-			if tomlStr != "" && !strings.HasSuffix(tomlStr, "\n") {
-				tomlStr += "\n"
+			// Place at root table scope before any [section] header
+			if loc := reFirstTOMLTable.FindStringIndex(tomlStr); loc != nil {
+				prefix := tomlStr[:loc[0]]
+				if prefix != "" && !strings.HasSuffix(prefix, "\n") {
+					prefix += "\n"
+				}
+				tomlStr = prefix + line + "\n\n" + tomlStr[loc[0]:]
+			} else {
+				if tomlStr != "" && !strings.HasSuffix(tomlStr, "\n") {
+					tomlStr += "\n"
+				}
+				tomlStr += line + "\n"
 			}
-			tomlStr += line + "\n"
 		}
 		if err := os.WriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
 			return err
@@ -399,9 +411,6 @@ func IsAgyHooked() (bool, string) {
 					return true, val
 				}
 			}
-			if prov, ok := m["modelProvider"].(string); ok && prov == "gemini" {
-				return true, GatewayDefaultURL
-			}
 		}
 	}
 	out, err := exec.Command("launchctl", "getenv", "GOOGLE_GEMINI_BASE_URL").Output()
@@ -473,27 +482,45 @@ func CheckAndConditionalHook(identities []identity.Identity, threshold float64) 
 			hooked, _ := IsClaudeHooked()
 			if exhausted && !hooked {
 				// All subscriptions exhausted -> Inject gateway hook!
-				_ = HookClaude("")
+				if err := HookClaude(""); err != nil {
+					return fmt.Errorf("hook claude: %w", err)
+				}
 			} else if hasAvail && hooked {
 				// Quota reset or subscription available -> Auto-detach hook and restore direct Keychain!
-				_ = UnhookClaude()
-				_ = identity.SyncIdentityToNativeKeychain(available)
+				if err := UnhookClaude(); err != nil {
+					return fmt.Errorf("unhook claude: %w", err)
+				}
+				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
+					return fmt.Errorf("sync claude keychain: %w", err)
+				}
 			}
 		case "openai":
 			hooked, _ := IsCodexHooked()
 			if exhausted && !hooked {
-				_ = HookCodex("")
+				if err := HookCodex(""); err != nil {
+					return fmt.Errorf("hook codex: %w", err)
+				}
 			} else if hasAvail && hooked {
-				_ = UnhookCodex()
-				_ = identity.SyncIdentityToNativeKeychain(available)
+				if err := UnhookCodex(); err != nil {
+					return fmt.Errorf("unhook codex: %w", err)
+				}
+				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
+					return fmt.Errorf("sync codex keychain: %w", err)
+				}
 			}
 		case "gemini":
 			hooked, _ := IsAgyHooked()
 			if exhausted && !hooked {
-				_ = HookAgy("")
+				if err := HookAgy(""); err != nil {
+					return fmt.Errorf("hook agy: %w", err)
+				}
 			} else if hasAvail && hooked {
-				_ = UnhookAgy()
-				_ = identity.SyncIdentityToNativeKeychain(available)
+				if err := UnhookAgy(); err != nil {
+					return fmt.Errorf("unhook agy: %w", err)
+				}
+				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
+					return fmt.Errorf("sync agy keychain: %w", err)
+				}
 			}
 		}
 	}

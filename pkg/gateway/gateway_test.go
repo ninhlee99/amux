@@ -172,6 +172,12 @@ func TestGateway_HookCodex_ErrorAndFormatting(t *testing.T) {
 	if !strings.Contains(tomlContent, `openai_base_url = "http://127.0.0.1:8787/v1"`) {
 		t.Fatalf("expected TOML to contain openai_base_url, got: %s", tomlContent)
 	}
+	// Semantic root-table assertion: openai_base_url MUST precede [model] so it is not scoped to a child table
+	modelIdx := strings.Index(tomlContent, "[model]")
+	baseIdx := strings.Index(tomlContent, `openai_base_url = "http://127.0.0.1:8787/v1"`)
+	if modelIdx < 0 || baseIdx < 0 || baseIdx >= modelIdx {
+		t.Fatalf("openai_base_url must reside at root table scope before [model], got baseIdx=%d, modelIdx=%d", baseIdx, modelIdx)
+	}
 
 	// Verify JSON config
 	bj, err := os.ReadFile(codexDir + "/config.json")
