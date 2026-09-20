@@ -60,6 +60,7 @@ func TestPace_ZeroLatencyForSubscriptions(t *testing.T) {
 func TestPace_WebAndAPIInterval(t *testing.T) {
 	ResetAll()
 	t.Cleanup(ResetAll)
+	t.Setenv("AMUX_ENABLE_PACER", "true")
 
 	origBase, origJitter := PaceBaseMs, PaceJitterMs
 	PaceBaseMs = 1000

@@ -782,8 +782,12 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		}
 
 		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
-			if targetURL != "" && inspectJS != "" {
-				addBash(fmt.Sprintf("node %s %s", inspectJS, targetURL))
+			if targetURL != "" {
+				if inspectJS != "" {
+					addBash(fmt.Sprintf("node %s %s", inspectJS, targetURL))
+				} else {
+					addBash(fmt.Sprintf("node scripts/inspect.js %s", targetURL))
+				}
 			} else {
 				if _, err := os.Stat("evidence.config.js"); err == nil {
 					addBash("cat evidence.config.js")
@@ -792,9 +796,13 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 				}
 			}
 		}
-		if len(out) < maxForcedWebTools && skillMD != "" {
+		if len(out) < maxForcedWebTools {
 			if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
-				addRead(skillMD)
+				if skillMD != "" {
+					addRead(skillMD)
+				} else {
+					addRead("skills/recording/SKILL.md")
+				}
 			}
 		}
 		if len(out) > 0 {
@@ -811,15 +819,23 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 		}
 
 		if _, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command"); hasBash {
-			if targetMP4 != "" && contactSheetJS != "" {
-				addBash(fmt.Sprintf("node %s %s --every 2", contactSheetJS, targetMP4))
+			if targetMP4 != "" {
+				if contactSheetJS != "" {
+					addBash(fmt.Sprintf("node %s %s --every 2", contactSheetJS, targetMP4))
+				} else {
+					addBash(fmt.Sprintf("node scripts/contact-sheet.js %s --every 2", targetMP4))
+				}
 			} else {
 				addBash("find . -name \"*.mp4\" -o -name \"*.png\" | head -n 20")
 			}
 		}
-		if len(out) < maxForcedWebTools && skillMD != "" {
+		if len(out) < maxForcedWebTools {
 			if _, hasRead := findToolDef(by, "read", "view_file", "read_file", "fileread"); hasRead {
-				addRead(skillMD)
+				if skillMD != "" {
+					addRead(skillMD)
+				} else {
+					addRead("skills/vision/SKILL.md")
+				}
 			}
 		}
 		if len(out) > 0 {

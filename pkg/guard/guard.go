@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"math/big"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -51,21 +53,28 @@ func Sanitize(req *http.Request) {
 }
 
 // Pace coordinates request cadence: for web and API accounts, enforces a minimum
-// spacing of 10-15 seconds per account between outgoing requests to prevent 429 rate limits.
-// Subscription accounts (Claude / Codex CLI) bypass this pacing for zero-latency interactive execution.
+// spacing only when explicitly enabled (via AMUX_ENABLE_PACER=true or AMUX_PACER_INTERVAL_MS).
+// By default, AMUX operates in zero-latency mode for maximum performance.
 func Pace(ctx context.Context, accountID string, isPaced bool) error {
 	if !isPaced || accountID == "" {
-		return nil
+		return ctx.Err()
+	}
+	if os.Getenv("AMUX_ENABLE_PACER") != "true" && os.Getenv("AMUX_PACER_INTERVAL_MS") == "" {
+		return ctx.Err()
 	}
 
 	pacerMu.Lock()
 	last := accountLastReq[accountID]
 	var wait time.Duration
 	if !last.IsZero() {
-		// Random interval between PaceBaseMs and PaceBaseMs+PaceJitterMs to add
-		// jitter and avoid robotic bursts (defaults: 10-15s).
 		base := PaceBaseMs
 		jitter := PaceJitterMs
+		if msStr := os.Getenv("AMUX_PACER_INTERVAL_MS"); msStr != "" {
+			if ms, err := strconv.ParseInt(msStr, 10, 64); err == nil && ms > 0 {
+				base = ms
+				jitter = 0
+			}
+		}
 		if base < 0 {
 			base = 0
 		}
