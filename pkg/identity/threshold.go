@@ -56,7 +56,7 @@ func AllSubscriptionsExhausted(provider string, identities []Identity, baseThres
 	subCount := 0
 	exhaustedCount := 0
 	for _, id := range identities {
-		if CanonicalProvider(id.Provider) == canon && id.IsSubscription() && id.CanAutoRotate() {
+		if CanonicalProvider(id.Provider) == canon && id.IsSubscription() && IsEnabled(id) && id.CanAutoRotate() {
 			subCount++
 			if ShouldFailover(id, identities, baseThreshold) {
 				exhaustedCount++
@@ -70,12 +70,12 @@ func AllSubscriptionsExhausted(provider string, identities []Identity, baseThres
 }
 
 // HasAvailableSubscription finds an active subscription account under threshold for the provider.
-// Accounts marked as manual-only (CanAutoRotate() == false) are excluded from automatic rotation.
+// Accounts marked as manual-only (CanAutoRotate() == false) or disabled are excluded from automatic rotation.
 func HasAvailableSubscription(provider string, identities []Identity, baseThreshold float64) (*Identity, bool) {
 	canon := CanonicalProvider(provider)
 	for i := range identities {
 		id := &identities[i]
-		if CanonicalProvider(id.Provider) == canon && id.IsSubscription() && id.CanAutoRotate() && !ShouldFailover(*id, identities, baseThreshold) {
+		if CanonicalProvider(id.Provider) == canon && id.IsSubscription() && IsEnabled(*id) && id.CanAutoRotate() && !ShouldFailover(*id, identities, baseThreshold) {
 			return id, true
 		}
 	}

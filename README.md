@@ -1,227 +1,203 @@
-# AMUX — AI Development Runtime & Universal AI Gateway
+# AMUX — Thin AI Gateway & AI Developer Infrastructure
 
-AMUX is an AI-native development infrastructure layer for modern engineering environments:
+[![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/ninhlee99/amux)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**AMUX** is a high-performance, thin AI Gateway and developer runtime infrastructure layer. It connects any AI client interface (Claude Code, Cursor, Codex CLI, Antigravity/AGY, ChatGPT Web, Claude Web, Custom Agents) to native execution capabilities (IDE tools, MCP tools, filesystem, terminal) through dynamic capability discovery, strict host-aware contracts, and seamless multi-account lifecycle management.
 
 ```
-Human Developer
-      ↓
-AI Applications (Claude Code, Codex CLI, Cursor, Gemini/AGY, Autonomous Agents)
-      ↓
-AMUX Runtime Layer (Identity Layer, Context Layer, Universal AI Gateway, Universal Tool Engine)
-      ↓
-Providers & Models (Anthropic, OpenAI, Gemini, Local, Custom Endpoints)
+AI Clients & Interfaces
+  (Claude Code, Cursor, Codex CLI, AGY, ChatGPT Web, Claude Web, Custom Agents)
+                           │
+                           ▼
+                    AMUX AI Gateway
+  ┌─────────────────────────────────────────────────────────────┐
+  │  • 1:1 Bitwise Streaming Passthrough (Zero-deserialization) │
+  │  • Host-Aware Capability Contracts (No tool hallucinations) │
+  │  • Silent OS Keychain Rotation & Quota Failover Engine      │
+  │  • Dynamic Tool Registry & Native Execution Engine          │
+  └──────────────────────────────┬──────────────────────────────┘
+                                 │
+                                 ▼
+                     Native Capabilities & Upstreams
+  (Native IDE Tools, MCP Servers, OS Keychain, Filesystem, Terminal, APIs)
 ```
 
 ---
 
 ## ⚡ Core Architectural Principles
 
-1. **Zero-Touch & Non-Invasive by Default**:
-   - AMUX operates strictly detached in the background.
-   - It never mutates shell configuration (`.zshrc`, `.bashrc`) or exports global proxy environment variables.
-   - Client IDEs (`claude`, `codex`, `cursor`) communicate directly with official upstreams using credentials loaded natively from the system OS Keychain.
+1. **Thin Gateway, Not an Agent Framework**:
+   - AMUX is an AI Gateway and execution bridge, **not** an agent runtime or workflow engine.
+   - It connects AI clients to native capabilities without heavy abstractions or fragile point-to-point translation layers.
 
-2. **Silent Keychain Rotation & Conditional Gateway Injection**:
-   - **Threshold Rules**:
-     - *Multi-Account Pool*: Failover triggers when the active subscription reaches `threshold_pct` (default: 95.0%).
-     - *Single-Account Pool*: A provider pool with exactly 1 subscription account is permitted to reach 100.0% capacity before fallback triggers.
-   - **Silent Keychain Rotation**: When Subscription Account $N$ hits its threshold, AMUX silently updates the OS Keychain credential entry (`Claude Code-credentials`, etc.) with Subscription Account $N+1$. The IDE continues native upstream execution without gateway interception.
-   - **Conditional Gateway Injection**: ONLY when **ALL** subscription accounts of a provider reach their threshold does AMUX hook the gateway URL (`http://127.0.0.1:8787`) into the IDE settings.
-   - **Auto-Detachment**: As soon as any subscription account resets its quota (`usage_percent < threshold_pct`), AMUX automatically detaches the gateway hook from the IDE settings and restores direct native Keychain execution.
+2. **Host-Aware Capability Contracts & Zero Tool Hallucination**:
+   - Every client communicates in its native IDE tool format (Claude Code tools, Codex functions, Gemini declarations, or MCP tools).
+   - Strict gateway contracts explicitly forbid models from hallucinating unsupported or cross-IDE tools.
 
-3. **Absolute Account Tier Parity**:
-   - Subscriptions (OAuth), Web Sessions (Cookies/CDP), and Metered API Keys are first-class peers with full support for multi-turn conversations and tool execution.
-   - Routing priority is governed strictly by **Availability & Cost** (never by whether a request contains tools):
-     1. Active Subscription (maximize fixed cost).
-     2. Free / Web Session (leverage free quota upon subscription exhaustion).
-     3. Metered API Key (last-resort safety net).
+3. **Zero-Touch OS Keychain & Multi-Account Lifecycle**:
+   - **Scenario `Login A → Login B → Switch A` requires ZERO re-authentication.**
+   - AMUX safely snapshots active credentials and rotates native macOS Keychain entries (`Claude Code-credentials`, `gemini`, etc.) and IDE configuration files on demand.
 
-4. **Transparent 1:1 Bitwise Passthrough**:
-   - When `ClientDialect == TargetDialect` (e.g., Claude Code -> Anthropic API, Codex CLI -> OpenAI API), the gateway operates as a pure transparent streaming reverse proxy.
-   - Bypasses intermediate JSON deserialization, streaming raw byte streams verbatim to preserve exact Server-Sent Event (SSE) chunk boundaries, headers, multi-turn messages, custom tool parameters, and tool results.
+4. **Automated Quota Failover (95% Multi-Account / 100% Single-Account)**:
+   - When an active subscription reaches `threshold_pct` (default: 95.0%), AMUX silently rotates native credentials to the next available healthy subscription in the pool.
+   - Single-account setups run up to 100.0% capacity before fallback triggers.
 
-5. **No Application Launcher Responsibility**:
-   - AMUX never launches client applications (`amux run <app>` is eliminated). Developers run `claude`, `codex`, `cursor` natively.
+5. **1:1 Bitwise Passthrough**:
+   - Matching dialects (Claude Code → Anthropic API, Codex → OpenAI API) operate as transparent reverse proxies, preserving exact Server-Sent Event (SSE) chunk boundaries, headers, multi-turn messages, and custom tool parameters without unnecessary JSON round-tripping.
 
 ---
 
-## 🚀 Quickstart
+## 🚀 2-Minute Quickstart
 
-### 1. Installation (macOS)
+### 1. Installation (macOS & Linux)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
-```
-*Builds the single binary `amux` into `~/.local/bin` (or `/usr/local/bin`).*
-
-### 2. Guided Setup
-```bash
-amux setup
+# Clone and build binary
+git clone https://github.com/ninhlee99/amux.git
+cd amux
+go build -o amux .
+sudo cp amux /usr/local/bin/amux
 ```
 
-### 3. Add Identities
+### 2. Authenticate Your Accounts
 ```bash
-amux id add claude    # OAuth, CLI snapshot, or CDP browser login
-amux id add codex     # OpenAI Codex CLI or standalone OAuth
-amux id add api       # Any OpenAI-compatible endpoint (Ollama, vLLM, DeepSeek, Together, etc.)
+amux login claude       # Claude Code OAuth PKCE or browser login
+amux login codex        # OpenAI Codex CLI authentication
+amux login antigravity  # Antigravity / Google account snapshot
+amux login chatgpt      # ChatGPT Web session pool
+amux login api          # Custom OpenAI-compatible endpoints (DeepSeek, Ollama, vLLM)
 ```
 
-### 4. Inspect Runtime & Quotas
+### 3. Start the AMUX Gateway Daemon
 ```bash
+amux start              # Starts background daemon on http://127.0.0.1:8787
+```
+
+### 4. Direct Your IDE / Tools to the Gateway
+```bash
+amux hook --all         # Automatically hooks detected IDEs (Claude Code, Cursor, Codex)
+```
+*Run your tools natively! For example, run `claude` or `codex` — AMUX silently provides multi-account failover, quota pooling, and capability management in the background.*
+
+---
+
+## 🛠️ CLI Command Reference
+
+### Gateway Daemon Management
+| Command | Description |
+| :--- | :--- |
+| `amux start [-f] [-p]` | Start gateway daemon (`-f` foreground, `-p` public `0.0.0.0:8787`) |
+| `amux stop` | Gracefully stop background daemon |
+| `amux restart` | Stop and restart background daemon |
+| `amux status` | Real-time dashboard of accounts, active hooks, quotas & daemon state |
+| `amux hook [flags]` | Hook IDE configurations (`--claude`, `--cursor`, `--codex`, `--agy`, `--all`) |
+| `amux unhook [flags]` | Restore IDE configurations to direct upstream connections |
+
+### Account Lifecycle Management
+| Command | Description |
+| :--- | :--- |
+| `amux login [provider]` | Interactive or direct authentication for a provider |
+| `amux account list` (or `amux account`) | Display all accounts, emails, quotas, active state & auto-switch |
+| `amux switch <id>` | Instantly switch active account (updates OS Keychain & IDE configs) |
+| `amux account logout <id>` | Remove account and safely purge its credentials |
+| `amux account on <id>` | Re-enable an account in failover rotation pool |
+| `amux account off <id>` | Temporarily disable an account from failover rotation |
+| `amux account auto <id> [on\|off]` | Toggle auto-failover eligibility (set `off` for manual-only accounts) |
+| `amux account threshold [id] [val]` | Get or set account failover quota threshold (default: 95.0%) |
+| `amux account health` | Probe token validity and quota limits across all configured accounts |
+
+### Diagnostics & Configuration
+| Command | Description |
+| :--- | :--- |
+| `amux doctor` | Deep system diagnostics: network, keychain access, tools & daemon socket |
+| `amux usage [day\|week\|month]` | Token usage analytics, cost estimates & request history |
+| `amux setup` | Guided interactive setup wizard |
+| `amux config [property]` | Inspect or modify configuration values |
+| `amux migrate` | Non-destructive migration to flat Identity model |
+| `amux update [--force]` | In-place update to latest GitHub release |
+| `amux uninstall [--purge]` | Uninstall AMUX binary and hooks (`--purge` wipes `~/.amux`) |
+
+---
+
+## 🔄 Account Lifecycle & Failover Workflow
+
+### Switching Between Multiple Accounts
+When working with multiple subscriptions (e.g. personal and company Claude Code accounts):
+
+```bash
+# List all accounts
+$ amux account list
+ID                   EMAIL                      MODEL              THRESHOLD      USAGE    ACTIVE   AUTO-SWITCH  RESETS IN
+claude:code:01       alice@company.com          claude-3-7-sonnet  90.0%          12.4%    YES      ON           unknown
+claude:code:02       alice.personal@gmail.com   claude-3-7-sonnet  90.0%          0.0%     NO       ON           unknown
+
+# Switch to personal account
+$ amux switch claude:code:02
+✓ Current active account credentials snapshotted
+✓ Native credentials updated for anthropic execution
+✓ Account "claude:code:02" is now ACTIVE.
+```
+**No browser re-login is ever required.** Your single-use refresh tokens and session states are safely preserved.
+
+### Silent Quota Failover
+When an active subscription hits its quota threshold:
+1. **Detection**: AMUX detects rate limit or capacity warning (`usage >= threshold_pct`).
+2. **Keychain Rotation**: AMUX locates the next healthy subscription in the pool and silently updates the native OS Keychain.
+3. **Transparent Continuation**: The developer's CLI or IDE continues running seamlessly.
+4. **Gateway Fallback**: If all subscriptions for a provider are exhausted, the gateway routes overflow traffic to web session pools or metered API keys as a safety net.
+
+---
+
+## 🧰 Native Capability Registry & Runtime Engine
+
+AMUX features an integrated **Capability Registry** (`pkg/runtime/`):
+
+- **Dynamic Manifest Discovery**: Discovers native tools from active IDE environments and local MCP configuration (`~/.gemini/antigravity-cli/mcp`, `~/.claude/mcp.json`).
+- **Host-Aware Contracts**: Generates precise system contracts tailored to the client interface:
+  - *Claude Code*: Native `tool_use` blocks with ephemeral prompt caching.
+  - *Cursor / Codex*: Standard `tool_calls` with function schemas.
+  - *Gemini / AGY*: Structured `functionDeclarations`.
+  - *MCP Protocol*: Standard JSON-RPC 2.0 `tools/list` and `tools/call`.
+- **Native Execution Runtime**: Safely executes commands, filesystem operations, and MCP queries with process isolation, timeout enforcement, working directory confinement, and structured telemetry.
+
+---
+
+## 🛡️ Security & Privacy Architecture
+
+- **OS Keychain Vault**: Credentials never sit unencrypted on disk. macOS Keychain and platform-native secret vaults store tokens.
+- **Local-Only Gateway by Default**: Gateway binds strictly to loopback (`127.0.0.1:8787`).
+- **Optional Public Mode**: When started with `--public`, access requires an ephemeral 24-byte bearer token (`amux-...`) verified with constant-time comparison, backed by IP rate limiting against brute-force attacks.
+- **Secret Isolation**: AMUX guarantees that authorization headers, API keys, and sensitive tokens are never echoed in logs or error traces.
+
+---
+
+## ❓ Troubleshooting & FAQ
+
+### Port 8787 is already in use
+```bash
+# Check running gateway or conflicting process
 amux status
+# Or stop the conflicting process and restart
+amux restart
+```
+
+### Claude Code reports expired token after machine sleep
+```bash
+# Run doctor to verify keychain tokens
+amux doctor
+# Or force refresh via account switch
+amux switch claude:code:01
+```
+
+### Checking Daemon Logs
+Logs and execution traces are stored in `~/.amux/`:
+```bash
+tail -f ~/.amux/amux.log
 ```
 
 ---
 
-## 🛠️ Minimal Command Surface
+## 📄 License
 
-### 1. Setup & Diagnostics
-```bash
-amux setup                          # Guided setup wizard
-amux status                         # Real-time dashboard of identities, quotas, and gateway state
-amux usage day [YYYY-MM-DD]         # Per-account breakdown for a specific date
-amux usage week [YYYY-MM-DD]        # Daily token breakdown for all accounts across the week
-amux usage month [YYYY-MM]          # Weekly summary & daily breakdown for the month
-amux doctor                         # Probes OS Keychain access, upstream network, tools, and daemon
-```
-
-### 2. Identity Management (`amux id`)
-```bash
-amux id list                        # Display flat accounts, tier, credentials status, usage % & auto-switch
-amux id add [provider]              # Add identity: claude, agy, gemini, codex, api, cursor
-amux id select [id]                 # Manual account switch (interactive picker; updates OS Keychain)
-amux id auto <id> [on|off]          # Toggle auto-rotation (off = MANUAL ONLY; excluded from auto-switch)
-amux id health                      # Probe token lifetimes and quota limits
-amux id remove <id>                 # Delete identity from persistence
-```
-
-### 3. Universal Gateway (`amux gateway`)
-```bash
-amux gateway start [-d] [--public]  # Start gateway service (:8787 or 0.0.0.0:8787 in public mode)
-amux gateway stop [--public]        # Stop gateway daemon
-amux gateway status                 # Inspect socket status, active IDE hooks, and public mode status
-amux gateway token [new|clear]      # Manage gateway bearer access token for external/remote clients
-
-# IDE Hook Injection (Routes IDE requests through gateway for live failover & switch):
-amux gateway hook claude            # Hook Claude Code (sets ANTHROPIC_BASE_URL in ~/.claude/settings.json)
-amux gateway hook cursor            # Hook Cursor IDE
-amux gateway hook codex             # Hook Codex CLI
-amux gateway hook all               # Hook all detected IDEs
-amux gateway unhook [target]        # Restore direct native execution (claude, cursor, codex, all)
-```
-
-### 4. Configuration & Migration
-```bash
-amux config                         # Inspect active JSON configuration
-amux config threshold <percent>     # Update multi-account failover threshold (default: 95.0)
-amux migrate                        # Non-destructive auto-migration from legacy accounts
-```
-
-### 5. System
-```bash
-amux update [--force]               # In-place update to latest GitHub release
-amux uninstall [--purge]            # Remove hooks and binaries (--purge also wipes ~/.amux)
-```
-
----
-
-## 🧰 The Universal Tool Engine & Protocols
-
-Tools and function calls never undergo fragile point-to-point conversions. All requests and responses pass through the **Canonical Tool Model**:
-
-```
-Inbound Wire Format
-       ↓
-Input Dialect Adapter (Anthropic / OpenAI / Gemini / MCP)
-       ↓
-Canonical UniversalTool IR (100% JSON Schema Constraint Preserved)
-       ↓
-Security & Privacy Layer (Protected XML & Secret Isolation)
-       ↓
-Output Dialect Adapter / Web-Loop Emulator
-       ↓
-Target Wire Format
-```
-
-### 1. Canonical Intermediate Representation (IR)
-- **`UniversalTool`**: ID, Name, Description, InputSchema (`map[string]interface{}`), Source, Metadata.
-- **`UniversalToolCall`**: ID, Name, Arguments (`map[string]interface{}`), RawJSON.
-- **`UniversalToolResult`**: ToolCallID, Success, Output string, Error (`*UniversalToolError`), Metadata.
-- **`UniversalToolError`**: Code, Message, Retryable, Provider.
-
-### 2. Supported Tool Formats & Dialects
-- **Anthropic Claude Code (`DialectClaude`)**:
-  - Declaration: `tools[]` with `name`, `description`, `input_schema`, and `cache_control: {"type": "ephemeral"}`.
-  - Invocations: Content block `type: "tool_use"` (`id`, `name`, `input`).
-  - Responses: Content block `type: "tool_result"` (`tool_use_id`, `content`, `is_error`).
-  - CoT Preservation: Preserves Anthropic `thinking` blocks (`budget_tokens`, `signature`) across turns.
-- **OpenAI / Cursor / Codex CLI (`DialectCursor`, `DialectCodex`)**:
-  - Declaration: `tools[]` with `type: "function"`, `function: {name, description, parameters}`.
-  - Invocations: `tool_calls[]` (`id`, `type: "function"`, `function: {name, arguments: string}`).
-  - Responses: Message with `role: "tool"`, `tool_call_id`, `content`.
-  - CoT Preservation: Reasoning effort (`low`, `medium`, `high`) for o1 / o3-mini / Codex.
-- **Google Gemini / Antigravity (`DialectGemini`)**:
-  - Declaration: `functionDeclarations[]` with `name`, `description`, `parameters`.
-  - Invocations: `functionCall` (`name`, `args`).
-  - Responses: `functionResponse` (`name`, `response`).
-  - CoT Preservation: Gemini Thought Signatures (`thought: true`, `parts: [{thought: "..."}]`).
-
-### 3. Model Context Protocol (MCP) Support
-- Fully compliant with the Anthropic Model Context Protocol specification:
-  - Manifest discovery: `tools/list` returns schema definitions.
-  - Tool invocation: `tools/call` with `params: {name, arguments}`.
-  - Result schema: `mcpResult` with `content: [{type: "text", text}], isError`.
-- **Automatic Namespacing Resolution**: Intelligently normalizes namespaced MCP tools (e.g. `mcp__server__tool`, `mcp_server_tool`, `server_tool`) across all client IDEs and backend providers.
-
-### 4. Claude Code Skills & Protected Syntax (`pkg/tools/protect.go`)
-- **Skill Tool Preservation**: The Claude Code `Skill` tool (e.g. `Skill(skill="review")`, `load_skill`, `run_skill`) is recognized and mapped bidirectionally.
-- **Protected Tags**: AMUX guarantees that syntax markers including `<skills>`, `<available_skills>`, `<skill_definition>`, `<thinking>`, and `<context>` are **never truncated, redacted, or mutated**.
-- **Privacy Redactor**: Targets strictly secret authorization headers (`Authorization: Bearer ...`, `x-api-key: ...`, `Cookie: session=...`) and standalone API keys (`sk-ant-`, `sk-proj-`, `AIzaSy`). Code diffs, file trees, and skill definitions remain 100% intact.
-
-### 5. Universal Web-Loop Tool Emulation (`webloop.go`)
-For Web Session accounts (Claude Web, ChatGPT Web, Gemini Web) lacking native API function calling:
-1. Serializes `UniversalTool` definitions into the system prompt with strict schema specifications.
-2. Intercepts streaming chunks matching `<tool_call>...</tool_call>` or ````tool_call ...````.
-3. Emits native client tool events (`content_block_start` for Claude, `delta.tool_calls` for OpenAI).
-4. Injects client `tool_result` back as user turns for uninterrupted multi-turn loops.
-
----
-
-## 🛡️ Public Gateway Security & Rate Limiting
-
-When running in public mode (`amux gateway start --public`):
-- **Ephemeral Bearer Token**: Generates a 24-byte cryptographically random token `amux-<48 hex chars>` persisted at `~/.amux/proxy.token` (`0600`).
-- **Zero-Touch Local Bypass**: Loopback traffic (`127.0.0.1`, `::1`) bypasses auth challenges so local developer CLI workflows never break.
-- **Constant-Time Verification**: Remote requests require `Authorization: Bearer amux-...`, verified via `subtle.ConstantTimeCompare` to prevent timing attacks.
-- **Anti-Brute-Force Rate Limiting**: Max **10 failed authentication attempts per minute**. Violating IPs receive `HTTP 429 Too Many Requests`.
-- **Memory DoS Protection**: Bounded sliding-window tracking (max 50,000 IPs, 20 timestamps per IP) with automatic expired entry eviction.
-
----
-
-## ⚖️ Architectural Comparison: AMUX vs Other Open-Source Tools
-
-| Dimension | LiteLLM / LiteLLM Proxy | One-API / New-API | Ad-hoc CLI Proxies | **AMUX** |
-| :--- | :--- | :--- | :--- | :--- |
-| **Primary Architecture** | Cloud API Gateway / Proxy | Multi-tenant Token Reseller | Shell Wrapper / Hook Hack | **AI Development Runtime & Universal Gateway** |
-| **Zero-Touch OS Keychain** | ❌ None (Requires base URL) | ❌ None (Manual API keys) | ❌ None (Overwrites `.zshrc`) | ✅ **Silent macOS Keychain Swapping** |
-| **Account Tier Parity** | ❌ API Keys only | ❌ API Keys only | ⚠️ Single Account / Flaky | ✅ **Subscription (OAuth) → Web (CDP) → API Key** |
-| **Web Account Support** | ❌ No browser/web support | ❌ No browser/web support | ⚠️ Fragile session cookies | ✅ **Headless Chromium CDP + Cookie Auto-sync** |
-| **Tool Calling Matrix** | ⚠️ OpenAI format biased | ⚠️ Partial API translation | ❌ Passthrough only (Breaks) | ✅ **Canonical IR (Claude ↔ OpenAI ↔ Gemini ↔ MCP)** |
-| **MCP Protocol Support** | ❌ No native MCP mapping | ❌ None | ❌ None | ✅ **Bidirectional MCP (`tools/list`, `tools/call`)** |
-| **Prompt Cache Protection**| ❌ Unaware of prompt cache | ❌ Incompatible | ❌ Re-hashes entire history | ✅ **Preserves Cache Prefix (Up to 90% Cost Saving)** |
-| **Conditional Hooking** | ❌ Always proxies | ❌ Always proxies | ⚠️ Permanent environment var | ✅ **Hooks only when ALL subs hit 95%; Auto-detaches** |
-| **Footprint & Runtime** | Heavy Python / Node service | Heavy Go + MySQL + Redis | Bash / Python scripts | ✅ **Single Native Go Binary (<25MB, 0 DB)** |
-
----
-
-## 🧪 Verification & Test Matrix
-
-Run the test suite across all subsystems:
-```bash
-go test -v ./...
-```
-Verification includes:
-- **Cross-Dialect Matrix**: Claude ↔ OpenAI, Claude ↔ Gemini, MCP ↔ Claude, Web Emulation ↔ Client Tool Calls.
-- **Payload Integrity**: `<merchant_data>`, `gid://shopify/...`, git diffs, and terminal invocations round-trip verification.
-- **Keychain Rotation**: Multi-account 95% threshold failover and single-account 100% capacity rule.
-- **Auto-Switch OFF Exclusion**: Strict exclusion of manual-only accounts across Subscription and Web tiers.
-- **Passthrough Fidelity**: 1:1 bitwise streaming verification for matching dialects.
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.

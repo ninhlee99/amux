@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"amux-accounts/pkg/types"
@@ -18,23 +21,66 @@ const (
 
 	DefaultGeminiFlashModel = "gemini-3.8-flash"
 	DefaultGeminiProModel   = "gemini-3.8-flash"
+	// GeminiFreeRPMLimitPerKey is the Google AI Studio free tier limit of 15 RPM per key.
+	GeminiFreeRPMLimitPerKey = 15
 )
 
 // googleAIStudioModelsURL is a var (not const) so tests can point it at an
 // httptest server instead of the real Google endpoint.
 var googleAIStudioModelsURL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-// GeminiAdapter wraps Google AI Studio's OpenAI-compatible endpoint.
+// GeminiAdapter wraps Google AI Studio's OpenAI-compatible endpoint with multi-key rotation.
 type GeminiAdapter struct {
 	AdapterID   string
 	PriorityLvl int
 	APIKey      string
+	APIKeys     []string
 	FlashModel  string
 	ProModel    string
 	TargetModel string
 	HTTPClient  *http.Client
 
-	wrapped types.ProviderAdapter
+	keyIndex  uint64
+	keyLimits sync.Map // map[string]time.Time (cooldown per key)
+	wrapped   types.ProviderAdapter
+}
+
+func parseGeminiKeys(apiKey string) []string {
+	var keys []string
+	addKey := func(k string) {
+		k = strings.TrimSpace(k)
+		if k != "" && !strings.HasPrefix(k, "env:") {
+			for _, existing := range keys {
+				if existing == k {
+					return
+				}
+			}
+			keys = append(keys, k)
+		}
+	}
+
+	if apiKey != "" {
+		for _, part := range strings.FieldsFunc(apiKey, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r'
+		}) {
+			addKey(part)
+		}
+	}
+
+	// Also check environment variables for multi-key rotation
+	if envKeys := os.Getenv("GEMINI_API_KEYS"); envKeys != "" {
+		for _, part := range strings.FieldsFunc(envKeys, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r'
+		}) {
+			addKey(part)
+		}
+	}
+	for i := 1; i <= 10; i++ {
+		if k := os.Getenv(fmt.Sprintf("GEMINI_API_KEY_%d", i)); k != "" {
+			addKey(k)
+		}
+	}
+	return keys
 }
 
 func NewGeminiAdapter(id string, priority int, apiKey, model string) *GeminiAdapter {
@@ -54,10 +100,17 @@ func NewGeminiAdapter(id string, priority int, apiKey, model string) *GeminiAdap
 		model = flash
 	}
 
+	keys := parseGeminiKeys(apiKey)
+	firstKey := apiKey
+	if len(keys) > 0 {
+		firstKey = keys[0]
+	}
+
 	return &GeminiAdapter{
 		AdapterID:   id,
 		PriorityLvl: priority,
-		APIKey:      apiKey,
+		APIKey:      firstKey,
+		APIKeys:     keys,
 		FlashModel:  flash,
 		ProModel:    pro,
 		TargetModel: model,
@@ -68,8 +121,47 @@ func NewGeminiAdapter(id string, priority int, apiKey, model string) *GeminiAdap
 func (a *GeminiAdapter) ID() string    { return a.AdapterID }
 func (a *GeminiAdapter) Priority() int { return a.PriorityLvl }
 
+func (a *GeminiAdapter) getNextAPIKey() (string, int) {
+	keys := a.APIKeys
+	if len(keys) == 0 {
+		return a.APIKey, 0
+	}
+	if len(keys) == 1 {
+		return keys[0], 0
+	}
+	idx := int(atomic.AddUint64(&a.keyIndex, 1)-1) % len(keys)
+	now := time.Now()
+	// Pick first key that is not in cooldown
+	for step := 0; step < len(keys); step++ {
+		candidateIdx := (idx + step) % len(keys)
+		candidate := keys[candidateIdx]
+		if cdVal, ok := a.keyLimits.Load(candidate); ok {
+			if cd, ok := cdVal.(time.Time); ok && now.Before(cd) {
+				continue
+			}
+		}
+		return candidate, candidateIdx
+	}
+	// All in cooldown, return candidate by round-robin
+	return keys[idx], idx
+}
+
+func (a *GeminiAdapter) markKeyCooldown(key string, d time.Duration) {
+	if key == "" {
+		return
+	}
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	a.keyLimits.Store(key, time.Now().Add(d))
+}
+
 func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
-	if a.APIKey == "" {
+	keys := a.APIKeys
+	if len(keys) == 0 && a.APIKey != "" {
+		keys = []string{a.APIKey}
+	}
+	if len(keys) == 0 {
 		return nil, fmt.Errorf("%s: %w: empty API key", a.AdapterID, types.ErrAuthentication)
 	}
 
@@ -86,33 +178,58 @@ func (a *GeminiAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 	clonedReq.ThinkingBudget = 0
 	clonedReq.ReasoningEffort = "none"
 
-	adapter := &OpenAICompatibleAdapter{
-		AdapterID:   a.AdapterID,
-		PriorityLvl: a.PriorityLvl,
-		BaseURL:     googleAIStudioBaseURL,
-		APIKey:      a.APIKey,
-		TargetModel: selectedModel,
-		HTTPClient:  a.HTTPClient,
+	maxAttempts := len(keys)
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
-	ch, err := adapter.SendMessageStream(ctx, &clonedReq)
-	if err != nil && (errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "thought_signature")) {
-		fallbackModel := a.FlashModel
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		currentKey, _ := a.getNextAPIKey()
+		if currentKey == "" {
+			continue
+		}
+
+		adapter := &OpenAICompatibleAdapter{
+			AdapterID:   a.AdapterID,
+			PriorityLvl: a.PriorityLvl,
+			BaseURL:     googleAIStudioBaseURL,
+			APIKey:      currentKey,
+			TargetModel: selectedModel,
+			HTTPClient:  a.HTTPClient,
+		}
+		ch, err := adapter.SendMessageStream(ctx, &clonedReq)
+		if err == nil {
+			return ch, nil
+		}
+
+		lastErr = err
+		if errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "quota") {
+			// Mark this specific key in cooldown and try next key in pool
+			a.markKeyCooldown(currentKey, 15*time.Second)
+			continue
+		}
+
 		if strings.Contains(err.Error(), "thought_signature") {
-			fallbackModel = "gemini-2.5-flash"
-		}
-		if fallbackModel != "" && fallbackModel != selectedModel {
-			fallbackAdapter := &OpenAICompatibleAdapter{
-				AdapterID:   a.AdapterID,
-				PriorityLvl: a.PriorityLvl,
-				BaseURL:     googleAIStudioBaseURL,
-				APIKey:      a.APIKey,
-				TargetModel: fallbackModel,
-				HTTPClient:  a.HTTPClient,
+			fallbackModel := "gemini-2.5-flash"
+			if fallbackModel != selectedModel {
+				fallbackAdapter := &OpenAICompatibleAdapter{
+					AdapterID:   a.AdapterID,
+					PriorityLvl: a.PriorityLvl,
+					BaseURL:     googleAIStudioBaseURL,
+					APIKey:      currentKey,
+					TargetModel: fallbackModel,
+					HTTPClient:  a.HTTPClient,
+				}
+				return fallbackAdapter.SendMessageStream(ctx, req)
 			}
-			return fallbackAdapter.SendMessageStream(ctx, req)
 		}
+		return nil, err
 	}
-	return ch, err
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("%s: all gemini API keys exhausted", a.AdapterID)
 }
 
 // geminiModelsResponse is the subset of v1beta/models we need to pick a

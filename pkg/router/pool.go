@@ -686,7 +686,7 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 			"preferred":     a.ID() == r.preferred,
 			"manual_pin":    a.ID() == r.preferred && r.manualPin,
 			"last_used":     a.ID() == r.lastUsed,
-			"in_pool":       true,
+			"in_pool":       r.canAutoRotate(a.ID()),
 			"health_score":  report.Score,
 			"health_status": report.Status,
 		}

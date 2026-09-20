@@ -8,28 +8,10 @@ project: amux
 module: amux-accounts
 entrypoint: main.go → pkg/cli/cli.go
 
-workspace_map:
-  doc: docs/WORKSPACE_MAP.md
-  cli_init: am map init          # FULL — lần đầu only
-  cli_update: am map update      # FULL cấu trúc
-  cli_check: am map recent --needs-learn   # HẸP git∪touched
-  cli_touch: am map touch --file F [--func N]
-  cli_get: am map get --file F --func N
-  cli_learn: am map learn --file F --func N --summary S
-  cli_show: am map show
-  proxy_api: GET /_am/map?root=<git-root>   # paths-only; ?full=1 dump; ?mode=recent narrow
-  cli_json: am map json [--full] [dir]      # paths-only default
-  token_rule: "init=full; check/update/learn=recent+touched only; never dump MODULES.md/GRAPH to LLM; map json paths-only; /_am/map?mode=recent"
-  client_files:
-    - docs/AI_CODEBASE_MAP.md
-    - docs/ai-locate.yaml
-    - AGENTS.md
-  workspace_store: ~/.am/workspaces/<project-name>/
-
 layers:
   - id: cli
     path: pkg/cli/
-    role: "Lệnh am/amux, dispatch subcommands"
+    role: "Lệnh amux, dispatch subcommands"
   - id: ui
     path: pkg/ui/
     role: "Hiển thị accounts/status/pool/login wizard"
@@ -54,18 +36,22 @@ layers:
   - id: guard
     path: pkg/guard/
     role: "Anti-ban, affinity, pacer, health, quarantine"
+  - id: identity
+    path: pkg/identity/
+    role: "Flat identities.json, keychain, credential migration"
   - id: profile
     path: pkg/profile/
-    role: "Claude/codex/agy CLI profile snapshots ~/.am"
+    role: "Claude/codex/agy CLI profile snapshots ~/.amux"
   - id: types
     path: pkg/types/
     role: "Contracts — no internal pkg imports"
 
 data_paths:
-  config_dir: "~/.am"
-  accounts: "~/.am/accounts.json"
-  profiles: "~/.am/profiles/"
-  logs: ["~/.am/events.log", "~/.am/requests.log", "~/.am/errors.log"]
+  config_dir: "~/.amux"
+  accounts: "~/.amux/accounts.json"
+  identities: "~/.amux/identities.json"
+  profiles: "~/.amux/profiles/"
+  logs: ["~/.amux/events.log", "~/.amux/requests.log", "~/.amux/errors.log"]
 
 http:
   openai: ["/v1/chat/completions", "/v1/responses", "/v1/models"]
@@ -168,7 +154,7 @@ tasks:
     tests: [pkg/provider/config_test.go]
 
   - id: env-hooks-launchctl
-    keywords: [am env, hook install, launchctl, ANTHROPIC_BASE_URL, GOOGLE_API_KEY]
+    keywords: [amux env, hook install, launchctl, ANTHROPIC_BASE_URL, GOOGLE_API_KEY]
     read_first:
       - pkg/env/env.go
       - pkg/hook/hook.go
@@ -241,6 +227,4 @@ invariants:
   - "Pool skip web/Codex text-only khi có native tool backend (skipTextOnly)"
   - "Claude subscription group không làm pool proxy cho Claude IDE client"
   - "pkg/types không import pkg nội bộ khác"
-  - "Sau đọc sâu function: am map learn — annotations sống qua am map update"
-  - "Check/update map chỉ recent∪touched (am map recent); init vẫn full scan"
-  - "Không dump full MODULES.md / full map vào context LLM khi chỉ check/update"
+  - "Toàn bộ lệnh CLI sử dụng amux binary thay cho am cũ"

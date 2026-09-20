@@ -67,6 +67,9 @@ func LiveKeychainToken() *types.Token {
 
 // TokenExpiryNeedsRefresh reports whether an access token is expired or close to expiry.
 func TokenExpiryNeedsRefresh(expAtMillis int64) bool {
+	if expAtMillis <= 0 {
+		return false
+	}
 	return time.Now().Add(RefreshLead).After(time.UnixMilli(expAtMillis))
 }
 

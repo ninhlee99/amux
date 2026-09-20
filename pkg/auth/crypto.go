@@ -8,7 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"amux-accounts/pkg/types"
 	"github.com/zalando/go-keyring"
 )
 
@@ -18,12 +22,15 @@ const (
 )
 
 // MasterKey returns the 32-byte AES key, creating and storing one in the
-// system keychain on first use. A transient keychain error (locked,
-// daemon unreachable, ...) is returned as an error instead of silently
-// minting a fresh key — doing the latter would orphan any data already
-// encrypted under the real key (see the git history for the incident this
-// was written to prevent).
+// system keychain (or ~/.amux/master.key file fallback when keychain/D-Bus is unavailable) on first use.
 func MasterKey() ([]byte, error) {
+	if envKey := os.Getenv("AMUX_MASTER_KEY"); envKey != "" {
+		if k, err := base64.StdEncoding.DecodeString(strings.TrimSpace(envKey)); err == nil && len(k) == 32 {
+			return k, nil
+		}
+	}
+
+	// 1. Try system keyring
 	s, err := keyring.Get(keyringService, keyringUser)
 	if err == nil {
 		k, decErr := base64.StdEncoding.DecodeString(s)
@@ -32,16 +39,38 @@ func MasterKey() ([]byte, error) {
 		}
 		return nil, fmt.Errorf("stored master key is corrupt: %w", decErr)
 	}
-	if !errors.Is(err, keyring.ErrNotFound) {
-		return nil, fmt.Errorf("read master key from keychain: %w", err)
+
+	// 2. Check local fallback file
+	keyFilePath := filepath.Join(types.BaseDir(), "master.key")
+	if fileBytes, errFile := os.ReadFile(keyFilePath); errFile == nil {
+		k, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(fileBytes)))
+		if decErr == nil && len(k) == 32 {
+			return k, nil
+		}
 	}
+
+	// If keyring errored with something other than ErrNotFound, but file also doesn't exist,
+	// we will generate a key and persist to file or keyring.
 	k := make([]byte, 32)
 	if _, err := rand.Read(k); err != nil {
 		return nil, fmt.Errorf("rand: %w", err)
 	}
-	if err := keyring.Set(keyringService, keyringUser, base64.StdEncoding.EncodeToString(k)); err != nil {
-		return nil, fmt.Errorf("store master key in keychain: %w", err)
+	encoded := base64.StdEncoding.EncodeToString(k)
+
+	// Try keyring first
+	if setErr := keyring.Set(keyringService, keyringUser, encoded); setErr == nil {
+		return k, nil
 	}
+
+	// Fallback to file storage if keyring is not available
+	_ = os.MkdirAll(types.BaseDir(), 0o700)
+	if errFile := os.WriteFile(keyFilePath, []byte(encoded+"\n"), 0o600); errFile != nil {
+		if !errors.Is(err, keyring.ErrNotFound) {
+			return nil, fmt.Errorf("store master key in keychain failed (%v) and fallback file failed: %w", err, errFile)
+		}
+		return nil, fmt.Errorf("store master key: %w", errFile)
+	}
+
 	return k, nil
 }
 

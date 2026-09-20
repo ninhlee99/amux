@@ -12,9 +12,27 @@ import (
 	"testing"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
 )
+
+// fastPacingForTest shrinks guard's anti-ban pacing window (normally 10-15s per
+// account) down to single-digit milliseconds so these tests still exercise the
+// real Pace() spacing logic without paying real wall-clock seconds per turn,
+// and resets any pacer state left over from other tests/subtests sharing the
+// same mock account IDs (e.g. "chatgpt:01").
+func fastPacingForTest(t *testing.T) {
+	t.Helper()
+	origBase, origJitter := guard.PaceBaseMs, guard.PaceJitterMs
+	guard.PaceBaseMs = 1
+	guard.PaceJitterMs = 1
+	guard.ResetAll()
+	t.Cleanup(func() {
+		guard.PaceBaseMs, guard.PaceJitterMs = origBase, origJitter
+		guard.ResetAll()
+	})
+}
 
 // mockAGYBackend simulates an upstream LLM (ChatGPT / Claude / Gemini API) that
 // can respond with multiple tool calls, handle sequential loops, and finish.
@@ -52,6 +70,7 @@ func (m *mockAGYBackend) SendMessageStream(ctx context.Context, req *types.ChatR
 // Turn 3: AGY returns result -> Model calls `write_to_file`
 // Turn 4: AGY returns result -> Model concludes with final text response
 func TestAGY_MultiLoopAgent(t *testing.T) {
+	fastPacingForTest(t)
 	backend := &mockAGYBackend{
 		onTurn: func(turn int, req *types.ChatRequest) []types.StreamChunk {
 			switch turn {
@@ -169,6 +188,7 @@ func TestAGY_MultiLoopAgent(t *testing.T) {
 // ----------------------------------------------------------------------------
 // Verifies concurrent independent AGY agent sessions running through proxy.
 func TestAGY_MultiAgent(t *testing.T) {
+	fastPacingForTest(t)
 	backend := &mockAGYBackend{
 		onTurn: func(turn int, req *types.ChatRequest) []types.StreamChunk {
 			var respText string
@@ -225,6 +245,7 @@ func TestAGY_MultiAgent(t *testing.T) {
 // ----------------------------------------------------------------------------
 // Model issues 3 tools simultaneously in 1 turn; AGY client responds with 3 functionResponses.
 func TestAGY_MultiTools(t *testing.T) {
+	fastPacingForTest(t)
 	backend := &mockAGYBackend{
 		onTurn: func(turn int, req *types.ChatRequest) []types.StreamChunk {
 			if turn == 1 {
@@ -354,6 +375,7 @@ func TestAGY_MultiTools(t *testing.T) {
 // ----------------------------------------------------------------------------
 // Simulates AGY's invoke_subagent mechanism invoking 2 subagents concurrently.
 func TestAGY_MultiSubAgent(t *testing.T) {
+	fastPacingForTest(t)
 	backend := &mockAGYBackend{
 		onTurn: func(turn int, req *types.ChatRequest) []types.StreamChunk {
 			if turn == 1 {
@@ -443,6 +465,7 @@ func TestAGY_MultiSubAgent(t *testing.T) {
 // Turn 4: Subagent completes, Parent agent invokes write_to_file to persist results
 // Turn 5: Parent finishes with final report
 func TestAGY_Combo_SubAgent_MultiLoop_MultiTools(t *testing.T) {
+	fastPacingForTest(t)
 	backend := &mockAGYBackend{
 		onTurn: func(turn int, req *types.ChatRequest) []types.StreamChunk {
 			switch turn {

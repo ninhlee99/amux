@@ -50,11 +50,11 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
 
 | Phân Tầng | Package | Trách Nhiệm Vận Hành |
 | :--- | :--- | :--- |
-| **Runtime Entry** | `pkg/cli` | Tiếp nhận và điều phối bộ lệnh CLI tối giản (`setup`, `status`, `usage`, `id`, `gateway`, `config`, `doctor`). |
-| **Domain Contracts** | `pkg/types` | Hạt nhân độc lập: Định nghĩa `ChatRequest`, `ChatMessage`, `StreamChunk`, `ProviderAdapter`, `UniversalTool`, và `BaseDir()` (`~/.amux`). Tuyệt đối không import package nội bộ khác. |
+| **Runtime Entry** | `pkg/cli` | Tiếp nhận và điều phối bộ lệnh CLI: `start`, `stop`, `restart`, `status`, `login`, `account` (`list`, `switch`, `logout`), `hook`, `doctor`. |
+| **Capability Registry & Runtime** | `pkg/runtime` | Dynamic discovery (`manifest.go`), Schema-first registry (`registry.go`), Host-aware strict contracts (`contract.go`), Native validation (`validate.go`), Native Command & Filesystem Executor (`executor.go`). |
+| **Domain Contracts** | `pkg/types` | Hạt nhân độc lập: Định nghĩa `ChatRequest`, `ChatMessage`, `StreamChunk`, `ProviderAdapter`, và `BaseDir()` (`~/.amux`). Tuyệt đối không import package nội bộ khác. |
 | **Security & Identity** | `pkg/identity` & `pkg/auth` | Quản lý danh tính phẳng (`identities.json`), đọc/ghi an toàn qua macOS Keychain, mã hóa AES-256-GCM, quản lý vòng đời OAuth PKCE token và tính toán ngưỡng failover. |
-| **Universal Gateway** | `pkg/proxy` | Máy chủ Reverse Proxy HTTP tại cổng `:8787`, cơ chế bảo mật Public Gateway bằng Ephemeral Bearer Token (`amux-<hex>`), bộ đệm chống brute-force (10 lỗi/phút), và chuyển tiếp bitwise 1:1. |
-| **Universal Tool Engine** | `pkg/tools` | Mô hình công cụ chuẩn mực (`UniversalTool` IR), bộ chuyển đổi hai chiều Anthropic ↔ OpenAI ↔ Gemini ↔ MCP, bảo toàn cú pháp (`pkg/tools/protect.go`), và bộ giả lập Web-Loop (`webloop.go`). |
+| **Universal Gateway** | `pkg/proxy` & `pkg/gateway` | Máy chủ Reverse Proxy HTTP tại cổng `:8787`, cơ chế bảo mật Public Gateway bằng Ephemeral Bearer Token (`amux-<hex>`), bộ đệm chống brute-force (10 lỗi/phút), và chuyển tiếp bitwise 1:1. |
 | **Multi-Tier Router** | `pkg/router` | Điều phối thứ tự ưu tiên 3 tầng (Subscription → Web → API Key), quản lý cooldown tự thích ứng theo header `Retry-After`, phân loại tác vụ (`classifier.go`), và loại trừ tài khoản `AUTO-SWITCH: OFF`. |
 | **Protocol Bridges** | `pkg/bridge` | Cầu nối đa giao thức: OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini `/v1beta/models/...`, bảo toàn CoT Thinking và Gemini Thought Signatures. |
 | **Anti-Ban Defense** | `pkg/guard` | Lớp phòng vệ 5 tầng: Header Sanitizer, Micro-jitter Pacing, Circuit Breaker, Session Affinity, và Egress Proxy riêng biệt. |

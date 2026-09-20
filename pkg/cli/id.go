@@ -14,8 +14,8 @@ import (
 	"amux-accounts/pkg/ui"
 )
 
-// CmdID handles identity management subcommands.
-func CmdID(args []string) {
+// CmdAccount handles account and identity management subcommands.
+func CmdAccount(args []string) {
 	if len(args) == 0 {
 		cmdIDList()
 		return
@@ -25,27 +25,59 @@ func CmdID(args []string) {
 	subArgs := args[1:]
 
 	switch sub {
+	case "help", "-h", "--help":
+		cmdAccountHelp()
 	case "off", "disable":
 		cmdIDOff(subArgs)
 	case "on", "enable":
 		cmdIDOn(subArgs)
-	case "list":
+	case "list", "ls":
 		cmdIDList()
-	case "add":
+	case "add", "login":
 		cmdIDAdd(subArgs)
-	case "remove":
+	case "remove", "rm", "delete", "logout":
 		cmdIDRemove(subArgs)
 	case "health":
 		cmdIDHealth()
-	case "select":
+	case "select", "switch", "use":
 		cmdIDSelect(subArgs)
 	case "auto":
 		cmdIDAutoRotate(subArgs)
 	case "threshold":
 		cmdIDThreshold(subArgs)
 	default:
-		die("unknown id command: %s (valid: list, add, remove, select, off, on, auto, threshold, health)", sub)
+		die("unknown account command: %s (valid: list, switch, add, remove, logout, on, off, auto, threshold, health)", sub)
 	}
+}
+
+// CmdID is an alias for CmdAccount for backward compatibility.
+func CmdID(args []string) {
+	CmdAccount(args)
+}
+
+func cmdAccountHelp() {
+	fmt.Print(`Usage: amux account <subcommand> [arguments]
+
+Manage accounts, identities, and session credentials across AI providers.
+
+Subcommands:
+  list, ls                   List all accounts, emails, tiers, active status, and quotas
+  switch, select <id>        Switch active account (updates native Keychain & IDE configs)
+  login, add [provider]      Add / authenticate a new account (claude, agy, gemini, codex, api)
+  logout, remove <id>        Remove an account and delete its profile bundle
+  on, enable <id>            Re-enable a previously disabled account
+  off, disable <id>          Temporarily disable an account from failover rotation
+  auto <id> [on|off]         Toggle automatic rotation eligibility for an account
+  threshold [id] [val]       Get or set failover threshold percentage
+  health                     Probe token validity and quota health across all accounts
+
+Examples:
+  amux account list
+  amux account switch claude:code:01
+  amux account login claude
+  amux account auto antigravity:01 on
+  amux account threshold 90.0
+`)
 }
 
 func cmdIDList() {
@@ -56,8 +88,8 @@ func cmdIDList() {
 		return
 	}
 
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------", "------------")
+	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "MODEL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
+	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "------------------", "--------------", "--------", "--------", "------------", "------------")
 
 	for _, id := range cfg.Identities {
 		activeStr := "NO"
@@ -81,8 +113,8 @@ func cmdIDList() {
 		if id.ResetAt > 0 {
 			resetStr = id.FormatResetTime()
 		}
-		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s %-12s\n",
-			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr, resetStr)
+		fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n",
+			id.ID, id.Email(), id.ModelName(), threshStr, usageStr, activeStr, autoStr, resetStr)
 	}
 }
 
@@ -220,18 +252,6 @@ func cmdIDSelect(args []string) {
 		die("identity %q not found", targetID)
 	}
 
-	if err := identity.SetActive("", target.ID); err != nil {
-		die("failed to activate identity: %v", err)
-	}
-
-	// 1. Instantly update target IDE native Keychain & configs
-	if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
-		fmt.Printf("Notice: could not sync to native credentials: %v\n", err)
-	} else {
-		fmt.Printf("✓ Native credentials updated for %s execution.\n", target.Provider)
-	}
-
-	// 2. If backed by an amux profile bundle, switch the profile so active pointer and artifacts match
 	tool := ""
 	switch {
 	case strings.HasPrefix(target.ID, "antigravity"):
@@ -244,6 +264,11 @@ func cmdIDSelect(args []string) {
 		tool = "codex"
 	}
 
+	// 1. Snapshot the CURRENT active account BEFORE touching keychain or config files
+	if tool != "" {
+		profile.SyncActiveFromSystem(tool)
+	}
+
 	pName := ""
 	if target.Metadata != nil {
 		if s, ok := target.Metadata["profile_name"].(string); ok && s != "" {
@@ -254,23 +279,38 @@ func cmdIDSelect(args []string) {
 		pName = target.Email()
 	}
 
+	// 2. If backed by an amux profile bundle, restore it (refreshes expired token if needed & installs)
 	if tool != "" && pName != "" {
 		if _, err := os.Stat(profile.BundlePath(tool, pName)); err == nil {
-			_ = profile.CmdUse(tool, pName)
+			if err := profile.CmdUse(tool, pName); err != nil {
+				fmt.Printf("Notice: profile restore: %v\n", err)
+			}
 		}
 	}
 
-	// 3. Notify proxy daemon
+	// 3. Update target IDE native Keychain & configs
+	if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
+		fmt.Printf("Notice: could not sync to native credentials: %v\n", err)
+	} else {
+		fmt.Printf("✓ Native credentials updated for %s execution.\n", target.Provider)
+	}
+
+	// 4. Update active pointer in identity store
+	if err := identity.SetActive("", target.ID); err != nil {
+		die("failed to activate identity: %v", err)
+	}
+
+	// 5. Notify proxy daemon
 	if proxy.ProxyUp() {
+		proxy.Sync()
 		if tool == "claude" && pName != "" {
 			proxy.CmdSwitch("claude", pName)
 		} else {
 			proxy.CmdSwitchProvider(target.ID)
 		}
-		proxy.Sync()
 	}
 
-	fmt.Printf("✓ Identity %q is now ACTIVE.\n", target.ID)
+	fmt.Printf("✓ Account %q is now ACTIVE.\n", target.ID)
 }
 
 func cmdIDThreshold(args []string) {

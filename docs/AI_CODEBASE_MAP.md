@@ -1,8 +1,7 @@
 # Bản đồ codebase cho AI — **repo amux** (tool gateway)
 
-> **Scope:** Chỉ dùng khi sửa **amux-accounts** (CLI + proxy).  
-> Client qua proxy → [`WORKSPACE_MAP.md`](./WORKSPACE_MAP.md) + `am map init` → `~/.am/workspaces/<name>/`.
-
+> **Scope:** Chỉ dùng khi phát triển hoặc sửa đổi **amux-accounts** (CLI + Universal AI Gateway).  
+> **Lưu trữ & Cấu hình:** `~/.amux/` (`identities.json`, `accounts.json`, `config.json`).
 > **Mục đích:** Trước khi quét cả repo amux, AI đọc file này (và `docs/ai-locate.yaml`) để biết **đi đâu trước**, **grep gì**, **test nào xác nhận**.  
 > Kiến trúc sâu: [`STRUCT.md`](../STRUCT.md).
 
@@ -74,21 +73,21 @@ flowchart TB
 
 | Bạn cần… | Đọc trước | Symbol / grep | Test |
 |----------|-----------|---------------|------|
-| Sửa hiển thị `am accounts` / `status` / `pool` theo group | `pkg/ui/account_groups.go`, `login.go`, `status.go` | `forEachAccountGroup`, `ResolveAccountGroup` | `pkg/ui/account_groups_test.go` |
+| Sửa hiển thị `amux account list` / `status` / `pool` theo group | `pkg/ui/account_groups.go`, `login.go`, `status.go` | `forEachAccountGroup`, `ResolveAccountGroup` | `pkg/ui/account_groups_test.go` |
 | Session A/B/C mỗi tab một account pool | `pool.go` (Send), `guard/affinity.go`, `session_lb.go` | `ExtractSessionKey`, `pickSessionAdapter`, `Pin` | `session_lb_test.go` |
 | Thứ tự failover Codex → AGY → web → API | `router/group.go`, `pool.go`, `task_prefer.go` | `GroupPriority`, `GroupOrderForRequest`, `Send` | `group_test.go`, `pool_test.go` |
 | Phân loại task / thinking / Pro | `classifier.go`, `task_prefer.go` | `ClassifyTask`, `TaskKind`, `applyTaskClassification` | `classifier_test.go`, `task_prefer_test.go` |
 | Claude Code tools (Bash, Read, MCP) | `bridge/claude.go`, `tools/claude.go` | `HandleClaudeMessages` | `claude_test.go`, `dialect_loop_test.go` |
 | Codex tools (exec_command, Responses) | `bridge/responses.go`, `openai.go`, `tools/codex.go` | `HandleOpenAIResponses`, `DialectCodex` | `codex_loop_test.go` |
-| AGY qua proxy | `bridge/gemini.go`, `cli.go` (`am run agy`) | `GOOGLE_GEMINI_BASE_URL` | `agy_loop_test.go` |
+| AGY qua proxy | `bridge/gemini.go`, `cli.go` (`amux hook --agy`) | `GOOGLE_GEMINI_BASE_URL` | `agy_loop_test.go` |
 | Web backend + `<tool_call>` | `tools/webloop.go`, `provider/*_web.go` | `MaybeWrapWebStream`, `skipTextOnly` | `webloop_*_test.go` |
 | Xoay Claude OAuth 5h/7d | `proxy/rotator.go`, `auth/token.go` | `Rotator`, `ForceSwitch` | `rotator_test.go` |
 | Thêm/sửa provider trong pool | `provider/config.go`, `accounts.example.json` | `ProviderConfig`, `BuildAdapters` | `config_test.go` |
-| `am env` / hook / launchctl | `env/env.go`, `hook/hook.go`, `launchctl.go` | `PrintEnvExports`, `SyncLaunchctlEnv` | `env_test.go`, `settings_env_test.go` |
+| `amux env` / hook / launchctl | `env/env.go`, `hook/hook.go`, `launchctl.go` | `PrintEnvExports`, `SyncLaunchctlEnv` | `env_test.go`, `settings_env_test.go` |
 | Guard / quarantine / 429 | `guard/*.go` | `Pace`, `IsQuarantined`, `RecordError` | `guard_test.go` |
 | Nén token context (20k budget / 85k runes) | `pkg/ctxshrink/shrink.go`, `bridge/responses.go` | `ShrinkConversation`, `MaxWebRunesLimit` | `pkg/ctxshrink/shrink_test.go` |
 | Ma trận tool chéo (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP) | `bridge/cross_tool_matrix_test.go`, `tools/dialect.go` | `TranslateToolCall`, `CanonicalTool` | `cross_tool_matrix_test.go` |
-| Public proxy down (`am proxy down --public`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `CmdProxyDownPublic`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
+| Dừng gateway (`amux stop`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `cmdGatewayStop`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
 | Endpoint `/_am/status` | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus` | `server_test.go` |
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
 
@@ -115,8 +114,9 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 
 | Vị trí | Nội dung |
 |--------|----------|
-| `~/.am/accounts.json` | Providers (có thể `AMENC1:` encrypted) — schema `accounts.example.json` |
-| `~/.am/profiles/` | Snapshot CLI (`claude`, `codex`, `antigravity`) |
+| `~/.amux/accounts.json` | Providers (có thể `AMENC1:` encrypted) — schema `accounts.example.json` |
+| `~/.amux/identities.json` | Danh tính phẳng (`IdentityStore`) với trạng thái `Active`, `AutoSwitch`, `Threshold` |
+| `~/.amux/profiles/` | Snapshot CLI (`claude`, `codex`, `antigravity`) |
 | ID chuẩn | `brand[:method]:NN` — `types.ParseID`, `types.FormatID` |
 | Group rotate (logic) | `router/group.go` — `claude_sub`, `codex_sub`, `api_other`, `*_web` |
 | UI group API | Tách `API · GEMINI` / `GROQ` từ prefix ID — `ui/apiProviderBrand` |
@@ -127,16 +127,16 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 
 | Package | Vào khi… |
 |---------|----------|
-| `pkg/cli` | Lệnh mới, flag, `am run`, help text |
-| `pkg/ui` | Terminal output, không đổi routing |
+| `pkg/cli` | Lệnh mới, flag, subcommands, help text |
+| `pkg/ui` | Terminal output, status dashboard, không đổi routing |
 | `pkg/proxy` | Route HTTP, rotator, `/_am`, lifecycle daemon |
-| `pkg/bridge` | Đổi format request/response theo client |
-| `pkg/router` | Ai được gọi tiếp theo, cooldown, session, task |
+| `pkg/bridge` | Đổi format request/response theo client (Claude, Gemini, OpenAI) |
+| `pkg/router` | Ai được gọi tiếp theo, cooldown, session, task classifier |
 | `pkg/provider` | Gọi upstream cụ thể (API key, web cookie, codex token) |
-| `pkg/tools` | Tên/schema tool giữa dialect |
+| `pkg/tools` | Tên/schema tool giữa dialect (Claude, Codex, AGY, Cursor) |
 | `pkg/ctxshrink` | Giới hạn token context (20k budget), cắt tỉa tool results, nén body hội thoại |
-| `pkg/guard` | Rate limit, affinity, header sanitizer |
-| `pkg/profile` | Profile Claude/Codex file trên disk |
+| `pkg/guard` | Rate limit pacing, affinity, header sanitizer, quarantine |
+| `pkg/identity` | Quản lý danh tính phẳng, keychain macOS, migration |
 | `pkg/types` | Struct dùng chung — **không** import pkg khác |
 
 ---
@@ -144,34 +144,18 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 ## 7. Ràng buộc sản phẩm (đừng phá)
 
 1. **Tool chạy trên máy client** (Claude Code / Codex / AGY) — proxy không exec.
-2. **`/_am/*` = admin amux** — không thêm endpoint theo từng slash command Claude.
+2. **`/_am/*` = admin amux** — JSON admin endpoints.
 3. **Có native tool API** → bỏ qua web/Codex text-only trong pool (`skipTextOnly`).
 4. **Claude IDE + pool** → không dùng `claude_sub` làm proxy backend (`IsClaudeSubscriptionGroup`).
-5. **`GOOGLE_API_KEY=am-proxy`** không export global trong `am env` (tránh gcloud/Maps).
+5. **Chỉ dùng Web accounts** cho proxy routing khi có yêu cầu không dùng Subscription account.
+6. **`GOOGLE_API_KEY=am-proxy`** không export global trong `amux env` (tránh xung đột gcloud/Maps).
 
 ---
 
 ## 8. Test nhanh theo vùng
 
 ```bash
-go test ./pkg/router/ ./pkg/ui/ ./pkg/bridge/ ./pkg/provider/ -count=1
-go test -tags live ./pkg/live -count=1 -timeout 15m   # cần ~/.am thật
+go test ./pkg/router/ ./pkg/ui/ ./pkg/bridge/ ./pkg/provider/ ./pkg/guard/ -count=1
+go test ./... -count=1
 ```
 
----
-
-## 9. Cập nhật bản đồ
-
-**Inventory amux (commit git):** `am map update` → `docs/GRAPH.md` + stub `MODULES.md` + `MAP_GENERATED.txt` — clone máy khác dùng luôn, không bắt buộc generate lại.  
-**Client projects:** chỉ `~/.am/workspaces/<name>/` — không commit vào repo client.
-
-Khi thêm **package mới**, **route HTTP**, **lệnh CLI**, hoặc **khái niệm group/task** — cập nhật:
-
-1. Một dòng trong bảng §3  
-2. Một entry `tasks:` trong `docs/ai-locate.yaml`  
-3. Chạy `am map update` (refresh GRAPH)  
-4. (Tuỳ chọn) §2 diagram nếu luồng runtime đổi  
-
----
-
-*Tài liệu này là **navigation layer**; chi tiết implementation: [`STRUCT.md`](../STRUCT.md).*

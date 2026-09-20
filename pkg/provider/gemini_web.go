@@ -94,7 +94,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	for attempt := 0; attempt < 2; attempt++ {
 		activeConv, hasActive := cm.GetActive(project)
 		var meta []string
-		if hasActive && activeConv != nil && !rotated {
+		if !req.FullContext && hasActive && activeConv != nil && !rotated {
 			meta = activeConv.Metadata
 		}
 		if rotated {
@@ -130,7 +130,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			}
 			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 		}
-		if len(newMeta) > 0 && newMeta[0] != "" {
+		if !req.FullContext && len(newMeta) > 0 && newMeta[0] != "" {
 			cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
 		}
 		out := make(chan types.StreamChunk, 2)

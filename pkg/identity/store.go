@@ -123,7 +123,9 @@ func Get(path string, id string) (*Identity, error) {
 	return nil, nil
 }
 
-// Upsert adds or updates an identity by ID.
+// Upsert adds or updates an identity by ID, strictly enforcing that each email
+// has at most 1 account per canonical provider, where Subscription strictly
+// supersedes and replaces Web accounts.
 func Upsert(path string, id Identity) error {
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -131,6 +133,7 @@ func Upsert(path string, id Identity) error {
 	}
 
 	found := false
+	// 1. Match by exact ID
 	for i, existing := range cfg.Identities {
 		if existing.ID == id.ID {
 			cfg.Identities[i] = id
@@ -138,11 +141,171 @@ func Upsert(path string, id Identity) error {
 			break
 		}
 	}
+
+	// 2. Match by email + canonical provider (1 email per provider boundary)
+	email := id.Email()
+	if !found && email != "" && email != "-" {
+		for i, existing := range cfg.Identities {
+			if CanonicalProvider(existing.Provider) == CanonicalProvider(id.Provider) && strings.EqualFold(existing.Email(), email) {
+				// Subscription strictly supersedes Web
+				if id.IsSubscription() && !existing.IsSubscription() {
+					cfg.Identities[i] = id
+					found = true
+					break
+				}
+				if !id.IsSubscription() && existing.IsSubscription() {
+					// Existing subscription cannot be downgraded or duplicated by web
+					found = true
+					break
+				}
+				// Same tier: update existing in place
+				cfg.Identities[i] = id
+				found = true
+				break
+			}
+		}
+	}
+
 	if !found {
 		cfg.Identities = append(cfg.Identities, id)
 	}
 
+	cfg.Identities = DeduplicateIdentities(cfg.Identities)
 	return SaveConfig(path, cfg)
+}
+
+// DeduplicateIdentities eliminates ghost entries and enforces the invariant:
+// 1 account per email per canonical provider. If an email has both a Subscription
+// and a Web account, the Subscription account is preserved and the Web duplicate is pruned.
+func DeduplicateIdentities(list []Identity) []Identity {
+	if len(list) == 0 {
+		return list
+	}
+
+	// First pass: remove ghosts (empty credentials and no account email)
+	var nonGhosts []Identity
+	for _, item := range list {
+		if len(item.Credentials) == 0 && item.Email() == "-" {
+			continue
+		}
+		nonGhosts = append(nonGhosts, item)
+	}
+
+	// Second pass: group by canonical provider + email
+	// For API keys or missing emails ("-"), group by exact ID
+	type groupKey struct {
+		provider string
+		email    string
+		id       string
+	}
+
+	groups := make(map[groupKey][]Identity)
+	var order []groupKey
+
+	for _, item := range nonGhosts {
+		em := strings.ToLower(item.Email())
+		k := groupKey{
+			provider: CanonicalProvider(item.Provider),
+		}
+		if em != "" && em != "-" {
+			k.email = em
+		} else {
+			k.id = item.ID
+		}
+
+		if _, exists := groups[k]; !exists {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], item)
+	}
+
+	var result []Identity
+	for _, k := range order {
+		candidates := groups[k]
+		if len(candidates) == 1 {
+			winner := candidates[0]
+			if winner.Metadata != nil {
+				if v, ok := winner.Metadata["disabled"].(bool); ok && v {
+					winner.Active = false
+				}
+			}
+			result = append(result, winner)
+			continue
+		}
+
+		best := candidates[0]
+		for _, cand := range candidates[1:] {
+			if isBetterIdentity(cand, best) {
+				mergeIdentityInfo(&cand, best)
+				best = cand
+			} else {
+				mergeIdentityInfo(&best, cand)
+			}
+		}
+		if best.Metadata != nil {
+			if v, ok := best.Metadata["disabled"].(bool); ok && v {
+				best.Active = false
+			}
+		}
+		result = append(result, best)
+	}
+
+	return result
+}
+
+func mergeIdentityInfo(target *Identity, source Identity) {
+	if target.Credentials == nil {
+		target.Credentials = make(map[string]string)
+	}
+	for k, v := range source.Credentials {
+		if target.Credentials[k] == "" && v != "" {
+			target.Credentials[k] = v
+		}
+	}
+	if target.Metadata == nil {
+		target.Metadata = make(map[string]interface{})
+	}
+	for k, v := range source.Metadata {
+		if target.Metadata[k] == nil && v != nil {
+			target.Metadata[k] = v
+		}
+	}
+	if target.Metadata != nil {
+		if v, ok := target.Metadata["disabled"].(bool); ok && v {
+			target.Active = false
+		}
+	}
+}
+
+func isBetterIdentity(cand, best Identity) bool {
+	// 1. Subscription beats Web
+	if cand.IsSubscription() != best.IsSubscription() {
+		return cand.IsSubscription()
+	}
+	// 2. Active beats Inactive
+	if cand.Active != best.Active {
+		return cand.Active
+	}
+	// 3. More credentials
+	if len(cand.Credentials) != len(best.Credentials) {
+		return len(cand.Credentials) > len(best.Credentials)
+	}
+	// 4. Non-numeric ID preferred
+	candLegacy := isLegacyNumericIdentityID(cand.ID)
+	bestLegacy := isLegacyNumericIdentityID(best.ID)
+	if candLegacy != bestLegacy {
+		return !candLegacy
+	}
+	return false
+}
+
+func isLegacyNumericIdentityID(id string) bool {
+	parts := strings.Split(id, ":")
+	last := parts[len(parts)-1]
+	if len(last) == 2 && last[0] >= '0' && last[0] <= '9' && last[1] >= '0' && last[1] <= '9' {
+		return true
+	}
+	return false
 }
 
 // Remove deletes an identity by ID.
@@ -286,8 +449,10 @@ func SetEnabled(path string, id string, enabled bool) error {
 		}
 		if enabled {
 			delete(item.Metadata, "disabled")
+			item.Active = true
 		} else {
 			item.Metadata["disabled"] = true
+			item.Active = false
 		}
 		found = true
 		break
@@ -319,10 +484,13 @@ func AutoRotateFilter(path string) func(id string) bool {
 		if err != nil {
 			return true
 		}
-		for _, ident := range cfg.Identities {
-			if ident.ID == id {
-				return IsEnabled(ident) && ident.CanAutoRotate()
+		if len(cfg.Identities) > 0 {
+			for _, ident := range cfg.Identities {
+				if ident.ID == id {
+					return IsEnabled(ident) && ident.CanAutoRotate()
+				}
 			}
+			return false
 		}
 		return true
 	}

@@ -60,6 +60,14 @@ func TestPace_ZeroLatencyForSubscriptions(t *testing.T) {
 func TestPace_WebAndAPIInterval(t *testing.T) {
 	ResetAll()
 	t.Cleanup(ResetAll)
+	t.Setenv("AMUX_ENABLE_PACER", "true")
+
+	origBase, origJitter := PaceBaseMs, PaceJitterMs
+	PaceBaseMs = 1000
+	PaceJitterMs = 500
+	t.Cleanup(func() {
+		PaceBaseMs, PaceJitterMs = origBase, origJitter
+	})
 
 	// First request on an account should proceed immediately
 	ctx := context.Background()

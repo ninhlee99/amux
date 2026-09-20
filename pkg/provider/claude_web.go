@@ -210,9 +210,10 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	rotatedConv := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		activeConv, hasActive := cm.GetActive(project)
-		hasValidThread := hasActive && activeConv.ID != ""
+		hasValidThread := !req.FullContext && hasActive && activeConv.ID != ""
 
-		// After rotate, server thread is empty → force full flatten (not delta).
+		// When FullContext is true (Claude Code / API coding agents), execute statelessly
+		// like a true API: evaluate the clean flattened transcript without server-side drift.
 		prompt := WebBackendPrompt(req, hasValidThread && !rotatedConv)
 
 		payloadMap := map[string]any{
@@ -227,7 +228,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
 		}
 
-		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID)
+		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, req.FullContext)
 		if err != nil {
 			return nil, err
 		}
@@ -317,10 +318,12 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 }
 
 // ensureConversation reuses the server-side Claude conversation for the specific project if within turn limits.
-func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string) (orgID, convUUID string, err error) {
+func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, fullContext bool) (orgID, convUUID string, err error) {
 	a.mu.Lock()
 	if a.orgID == "" {
+		a.mu.Unlock()
 		id, e := a.getOrganizationID(ctx)
+		a.mu.Lock()
 		if e != nil {
 			a.mu.Unlock()
 			return "", "", e
@@ -331,16 +334,20 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	a.mu.Unlock()
 
 	cm := a.convs()
-	if c, ok := cm.GetActive(project); ok && c.ID != "" {
-		cm.Register(project, sessionID, c.ID, "", nil)
-		return orgID, c.ID, nil
+	if !fullContext {
+		if c, ok := cm.GetActive(project); ok && c.ID != "" {
+			cm.Register(project, sessionID, c.ID, "", nil)
+			return orgID, c.ID, nil
+		}
 	}
 
 	id, e := a.createConversation(ctx, orgID, model)
 	if e != nil {
 		return "", "", e
 	}
-	cm.Register(project, sessionID, id, "", nil)
+	if !fullContext {
+		cm.Register(project, sessionID, id, "", nil)
+	}
 	return orgID, id, nil
 }
 

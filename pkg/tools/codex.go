@@ -117,9 +117,9 @@ func MarshalCodexResponsesRequest(req *types.ChatRequest) ([]byte, error) {
 	if !req.Stream {
 		payload["stream"] = false
 	}
-	if req.Temperature > 0 {
-		payload["temperature"] = req.Temperature
-	}
+	// NOTE: Codex Responses API (chatgpt.com/backend-api/codex/responses)
+	// rejects temperature with HTTP 400 "Unsupported parameter: temperature".
+	// Do not forward it regardless of the value in req.Temperature.
 	if len(req.Tools) > 0 {
 		payload["tools"] = ToCodexResponsesTools(req.Tools)
 		payload["parallel_tool_calls"] = true

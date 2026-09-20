@@ -277,7 +277,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 	var initialFlusher http.Flusher
 	if req.Stream {
 		var ok bool
-		initialFlusher, ok = beginSSE(w)
+		initialFlusher, ok = beginGeminiSSE(w)
 		if !ok {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
@@ -288,7 +288,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 	started := time.Now()
 	var streamChan <-chan types.StreamChunk
 	if req.Stream {
-		streamChan, err = poolSendStreaming(w, r, pool, req, initialFlusher, nil)
+		streamChan, err = poolSendStreaming(w, r, pool, req, initialFlusher, func() {})
 	} else {
 		streamChan, err = poolSend(r, pool, req)
 	}
@@ -313,7 +313,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		defer ping.Stop()
 
 		for {
-			chunk, ok, recvErr := recvStreamChunk(ctx, streamChan, ping.C, commentKeepalive(w, flusher))
+			chunk, ok, recvErr := recvStreamChunk(ctx, streamChan, ping.C, nil)
 			if recvErr != nil {
 				return
 			}
@@ -369,6 +369,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 					}
 				}
 				if len(toolCalls) > 0 {
+					toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectGemini)
 					geminiCalls := tools.ToGeminiFunctionCalls(toolCalls)
 					parts := make([]geminiPart, 0, len(geminiCalls))
 					for _, gc := range geminiCalls {
@@ -439,6 +440,9 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
 		}
+	}
+	if len(toolCalls) > 0 {
+		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectGemini)
 	}
 	if fullContent.Len() > 0 {
 		text := fullContent.String()
@@ -567,3 +571,19 @@ func writeGeminiStreamError(w http.ResponseWriter, flusher http.Flusher, err err
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 }
+
+// beginGeminiSSE commits the SSE response headers without emitting SSE comments.
+// google.golang.org/genai (used by agy) does not support SSE comment lines (e.g. ": ...")
+// and fails with "iterateResponseStream: invalid stream chunk: : <comment>".
+func beginGeminiSSE(w http.ResponseWriter) (http.Flusher, bool) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	flusher.Flush()
+	return flusher, true
+}
+

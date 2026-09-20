@@ -35,6 +35,7 @@ type Identity struct {
 	Tier         IdentityTier           `json:"tier"`          // subscription, web, api_key
 	AuthType     string                 `json:"auth_type"`     // oauth, cdp, api_key, session_cookie
 	Credentials  map[string]string      `json:"credentials"`   // access_token, refresh_token, api_key, cookies, etc.
+	Model        string                 `json:"model,omitempty"`
 	UsagePercent float64                `json:"usage_percent"` // 0.0 to 100.0
 	ResetAt      int64                  `json:"reset_at,omitempty"`
 	Active       bool                   `json:"active"`
@@ -50,18 +51,22 @@ type Config struct {
 }
 
 // CanAutoRotate reports whether this identity is eligible for automatic rotation/failover.
-// Defaults to true unless explicitly set to false in AutoRotate or Metadata["manual_only"].
+// Defaults to true unless explicitly set to false in AutoRotate, Metadata["manual_only"],
+// or hard-disabled via Metadata["disabled"].
 func (id Identity) CanAutoRotate() bool {
-	if id.AutoRotate != nil {
-		return *id.AutoRotate
-	}
 	if id.Metadata != nil {
+		if v, ok := id.Metadata["disabled"].(bool); ok && v {
+			return false
+		}
+		if v, ok := id.Metadata["manual_only"].(bool); ok && v {
+			return false
+		}
 		if v, ok := id.Metadata["auto_rotate"].(bool); ok {
 			return v
 		}
-		if v, ok := id.Metadata["manual_only"].(bool); ok {
-			return !v
-		}
+	}
+	if id.AutoRotate != nil {
+		return *id.AutoRotate
 	}
 	return true
 }
@@ -97,6 +102,12 @@ func (id Identity) Email() string {
 		if em, ok := id.Metadata["email"].(string); ok && strings.TrimSpace(em) != "" {
 			return strings.TrimSpace(em)
 		}
+		if em, ok := id.Metadata["account"].(string); ok && strings.TrimSpace(em) != "" {
+			return strings.TrimSpace(em)
+		}
+		if em, ok := id.Metadata["profile_name"].(string); ok && strings.Contains(em, "@") {
+			return strings.TrimSpace(em)
+		}
 	}
 	if em, ok := id.Credentials["account"]; ok && strings.TrimSpace(em) != "" {
 		return strings.TrimSpace(em)
@@ -119,6 +130,35 @@ func (id Identity) FormatResetTime() string {
 	}
 	rem = rem.Round(time.Minute)
 	return strings.TrimSpace(strings.ReplaceAll(rem.String(), "0s", ""))
+}
+
+// ModelName returns the configured model name or sensible default for the identity.
+func (id Identity) ModelName() string {
+	if strings.TrimSpace(id.Model) != "" {
+		return strings.TrimSpace(id.Model)
+	}
+	if id.Metadata != nil {
+		if m, ok := id.Metadata["model"].(string); ok && strings.TrimSpace(m) != "" {
+			return strings.TrimSpace(m)
+		}
+	}
+	p := strings.ToLower(id.ID)
+	switch {
+	case strings.HasPrefix(p, "claude") || strings.HasPrefix(p, "anthropic"):
+		return "claude-3-7-sonnet"
+	case strings.HasPrefix(p, "chatgpt"):
+		return "gpt-4o"
+	case strings.HasPrefix(p, "codex"):
+		return "gpt-5.6-terra"
+	case strings.HasPrefix(p, "gemini") || strings.HasPrefix(p, "antigravity") || strings.HasPrefix(p, "agy"):
+		return "gemini-2.5-flash"
+	case strings.HasPrefix(p, "openai"):
+		return "gpt-4o"
+	case strings.HasPrefix(p, "openrouter"):
+		return "openrouter/auto"
+	default:
+		return "-"
+	}
 }
 
 // GetThreshold returns the effective failover threshold percentage for this identity.

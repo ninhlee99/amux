@@ -323,7 +323,7 @@ func CmdSwitchProvider(name string) {
 		fmt.Fprintf(os.Stderr, "amux: proxy switch failed: %s\n", strings.TrimSpace(string(b)))
 		return
 	}
-	fmt.Printf("switched Claude Code traffic to provider %q (no restart needed)\n", name)
+	fmt.Printf("switched active provider to %q (no restart needed)\n", name)
 }
 
 // CmdBtw sends a "by-the-way" message to be injected into the next LLM request

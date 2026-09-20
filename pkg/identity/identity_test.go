@@ -208,3 +208,68 @@ func TestIdentity_PerAccountThreshold(t *testing.T) {
 	}
 }
 
+func TestIdentity_SubBeatsWebForSameEmail(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "identities.json")
+
+	// 1. Add Claude Web identity
+	err := identity.Upsert(cfgPath, identity.Identity{
+		ID:          "claude:web:01",
+		Provider:    "anthropic",
+		Tier:        identity.TierWeb,
+		AuthType:    string(identity.AuthSessionCookie),
+		Credentials: map[string]string{"account": "user@example.com", "cookie": "cookie123"},
+		Active:      true,
+	})
+	if err != nil {
+		t.Fatalf("upsert web: %v", err)
+	}
+
+	// 2. Add Claude Subscription with same email -> upgrades existing
+	err = identity.Upsert(cfgPath, identity.Identity{
+		ID:          "claude:code:01",
+		Provider:    "anthropic",
+		Tier:        identity.TierSubscription,
+		AuthType:    string(identity.AuthOAuth),
+		Credentials: map[string]string{"account": "user@example.com", "access_token": "oauth456"},
+		Active:      true,
+	})
+	if err != nil {
+		t.Fatalf("upsert sub: %v", err)
+	}
+
+	list, err := identity.List(cfgPath)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected exactly 1 identity remaining, got %d: %+v", len(list), list)
+	}
+	if list[0].ID != "claude:code:01" || list[0].Tier != identity.TierSubscription {
+		t.Errorf("expected subscription claude:code:01 to win, got %+v", list[0])
+	}
+
+	// 3. Attempting to add Claude Web again with same email -> does not downgrade or duplicate
+	err = identity.Upsert(cfgPath, identity.Identity{
+		ID:          "claude:web:02",
+		Provider:    "anthropic",
+		Tier:        identity.TierWeb,
+		AuthType:    string(identity.AuthSessionCookie),
+		Credentials: map[string]string{"account": "user@example.com", "cookie": "cookie789"},
+	})
+	if err != nil {
+		t.Fatalf("upsert web attempt: %v", err)
+	}
+
+	list, err = identity.List(cfgPath)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected still 1 identity, got %d: %+v", len(list), list)
+	}
+	if list[0].ID != "claude:code:01" || list[0].Tier != identity.TierSubscription {
+		t.Errorf("expected subscription to be preserved, got %+v", list[0])
+	}
+}
+

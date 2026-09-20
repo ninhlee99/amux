@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
 )
@@ -22,6 +23,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	_ = os.Setenv("AM_HOME", dir)
+	guard.PaceBaseMs = 1
+	guard.PaceJitterMs = 1
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
