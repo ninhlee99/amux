@@ -64,7 +64,10 @@ func BuildRuntimeContract(m *RuntimeManifest) string {
 		sb.WriteString(fmt.Sprintf("   - %s\n", g))
 	}
 	sb.WriteString("   - NEVER invent, synthesize, or hallucinate tool names. Calling an unlisted tool causes an immediate FATAL failure.\n")
-	sb.WriteString("   - If a tool is not in the CATALOG, it DOES NOT EXIST.\n\n")
+	sb.WriteString("   - If a tool is not in the CATALOG, it DOES NOT EXIST.\n")
+	sb.WriteString("   - WORKFLOWS, SKILLS & EXTENSIONS:\n")
+	sb.WriteString("     * High-level workflows, slash commands, and skills (e.g. /webapp-evidence:recording, /webapp-evidence:vision, /open-pr:review, /open-pr:fix, Playwright, MCP commands) are EXECUTED using terminal tools ('Bash' / 'run_command') and file tools ('Read' / 'view_file', 'Write', 'Edit').\n")
+	sb.WriteString("     * NEVER claim a skill or workflow is missing or unavailable. Immediately emit <tool_call> using 'Bash'/'run_command' or 'Read'/'view_file' to inspect the workspace, run scripts, and execute the workflow.\n\n")
 
 	sb.WriteString(`2. STRICT PARAMETER & SCHEMA COMPLIANCE:
    - Every parameter name, casing, and type MUST match the schema EXACTLY.

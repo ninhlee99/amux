@@ -241,7 +241,10 @@ func cleanSystemReminders(s string) string {
 		outer := strings.TrimSpace(reSysReminder.ReplaceAllString(s, ""))
 		if outer != "" && !strings.EqualFold(outer, "(no content)") {
 			low := strings.ToLower(inner)
-			if !strings.Contains(low, "open-pr") && !strings.Contains(low, "<op>") && !strings.Contains(low, "review.md") {
+			if !strings.Contains(low, "open-pr") && !strings.Contains(low, "<op>") && !strings.Contains(low, "review.md") &&
+				!strings.Contains(low, "webapp-evidence") && !strings.Contains(low, "recording") && !strings.Contains(low, "vision") &&
+				!strings.Contains(low, "playwright") && !strings.Contains(low, "evidence") && !strings.Contains(low, "skill") &&
+				!strings.Contains(low, "test") && !strings.Contains(low, "fix") {
 				return ""
 			}
 		}

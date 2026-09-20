@@ -338,13 +338,18 @@ func isWebToolRefusal(text string) bool {
 		"không có bash", "không hỗ trợ tool", "chưa hỗ trợ tool",
 		// Plugin / Skill / PR runtime refusals (e.g. ChatGPT claims open-pr runtime or plugin files not available)
 		"not available to me", "not available in this", "is not available", "not available here",
-		"could not access", "couldn't access", "can’t complete", "can't complete", "cannot complete",
+		"not available in the active tool set", "active tool set for this chat", "active tool set",
+		"tool set for this chat", "tool/skill is not available", "tool/skill is not", "skill is not available",
+		"is not available in the active tool set", "could not access", "couldn't access", "can’t complete", "can't complete", "cannot complete",
 		"don’t have the execution context", "don't have the execution context", "do not have the execution context",
 		"in this chat", "in this environment", "plugin is installed", "required plugin files",
 		"provide the pr diff", "provide the diff", "provide the context", "alternatively, provide",
 		"without posting to github", "safely perform the review", "open-pr runtime",
-		// Live PR fix / repair refusals
+		// Live PR fix / repair / webapp-evidence refusals
 		"can’t execute", "can't execute", "cannot execute", "unable to execute",
+		"webapp-evidence:recording in this", "webapp-evidence:vision in this",
+		"cannot execute the webapp-evidence", "can’t execute the webapp-evidence", "can't execute the webapp-evidence",
+		"playwright recording scripts in this", "playwright recording in this", "playwright recording khả dụng",
 		"open-pr:fix in this", "tools required by that command", "mutation tools",
 		"can’t execute `/open-pr", "can't execute `/open-pr", "cannot execute `/open-pr",
 		"to execute `/open-pr", "to execute /open-pr", "cannot execute `/open-pr:fix`",
@@ -791,8 +796,10 @@ func extractForcedTools(text string, defs []types.ToolDef, hist []types.ChatMess
 			} else {
 				if _, err := os.Stat("evidence.config.js"); err == nil {
 					addBash("cat evidence.config.js")
+				} else if inspectJS != "" {
+					addBash(fmt.Sprintf("node %s --help || ls -la", inspectJS))
 				} else {
-					addBash("git status && ls -la")
+					addBash("ls -la && (node -v || true)")
 				}
 			}
 		}

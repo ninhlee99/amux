@@ -102,9 +102,9 @@ func resolveUserTaskIntent(content string, allMessages []types.ChatMessage) stri
 
 	task := ""
 	if isWebappRecording {
-		task = "Record web application evidence (video, screenshots, runbook) for the target flow using Playwright/webapp-evidence scripts. Inspect the screen, prepare steps.js, and execute the recording."
+		task = "Record web application evidence (video, screenshots, runbook) for the target flow. Emit <tool_call> using terminal tools (Bash / run_command) and file tools (Read / view_file) to inspect the screen, prepare steps.js, and execute the recording workflow."
 	} else if isWebappVision {
-		task = "Analyze the recorded evidence video and screenshots via contact sheets to inspect UI rendering, visual defects, and timeline anomalies."
+		task = "Analyze the recorded evidence video and screenshots via contact sheets. Emit <tool_call> using terminal tools (Bash / run_command) to inspect UI rendering, visual defects, and timeline anomalies."
 	} else if isFix {
 		task = "Fix the review comments on the Pull Request. Inspect the review findings and target files, apply the fixes directly, and ensure tests pass."
 	} else if isReview {

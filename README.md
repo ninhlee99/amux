@@ -128,9 +128,9 @@ When working with multiple subscriptions (e.g. personal and company Claude Code 
 ```bash
 # List all accounts
 $ amux account list
-ID                   EMAIL                      THRESHOLD      USAGE    ACTIVE   AUTO-SWITCH
-claude:code:01       alice@company.com          90.0%          12.4%    YES      ON
-claude:code:02       alice.personal@gmail.com   90.0%          0.0%     NO       ON
+ID                   EMAIL                      MODEL              THRESHOLD      USAGE    ACTIVE   AUTO-SWITCH  RESETS IN
+claude:code:01       alice@company.com          claude-3-7-sonnet  90.0%          12.4%    YES      ON           unknown
+claude:code:02       alice.personal@gmail.com   claude-3-7-sonnet  90.0%          0.0%     NO       ON           unknown
 
 # Switch to personal account
 $ amux switch claude:code:02

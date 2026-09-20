@@ -106,28 +106,43 @@ func CmdLogin(args []string) {
 	var flags loginFlags
 	if len(args) == 0 {
 		fmt.Println("Select provider to login:")
-		fmt.Println("  [1] claude      (Claude Code OAuth / Device / Web)")
-		fmt.Println("  [2] agy         (Google Antigravity / AGY OAuth Subscription)")
-		fmt.Println("  [3] gemini      (Gemini Web - gemini.google.com)")
-		fmt.Println("  [4] codex       (OpenAI Codex OAuth)")
-		fmt.Println("  [5] api         (OpenAI-compatible API: OpenAI, DeepSeek, Ollama, Gemini API, ...)")
-		fmt.Println("  [6] cursor      (Cursor API Key / Token)")
-		ans := strings.TrimSpace(term.ReadLine("Select [1-6] (claude/agy/gemini/codex/api/cursor): "))
+		fmt.Println("  [1] claude         (Claude Code OAuth / Device / Web Session)")
+		fmt.Println("  [2] chatgpt        (ChatGPT Web - chatgpt.com Session Pool)")
+		fmt.Println("  [3] codex          (OpenAI Codex CLI / OAuth)")
+		fmt.Println("  [4] gemini         (Gemini Web - gemini.google.com)")
+		fmt.Println("  [5] agy            (Google Antigravity / AGY OAuth Subscription)")
+		fmt.Println("  [6] gemini-api     (Google AI Studio Gemini API Key)")
+		fmt.Println("  [7] openai         (OpenAI API Key - api.openai.com)")
+		fmt.Println("  [8] anthropic      (Anthropic API Key - api.anthropic.com)")
+		fmt.Println("  [9] openrouter     (OpenRouter API Key - openrouter.ai)")
+		fmt.Println("  [10] api           (Custom OpenAI-compatible API: DeepSeek, Ollama, Groq, Kimi, etc.)")
+		fmt.Println("  [11] cursor        (Cursor API Key / Token)")
+		ans := strings.TrimSpace(term.ReadLine("Select [1-11] (claude/chatgpt/codex/gemini/agy/gemini-api/openai/anthropic/openrouter/api/cursor): "))
 		switch strings.ToLower(ans) {
 		case "1", "claude":
 			target = "claude"
-		case "2", "agy", "antigravity":
-			target = "antigravity"
-		case "3", "gemini", "gemini-web", "geminiweb":
-			target = "gemini"
-		case "4", "codex":
+		case "2", "chatgpt":
+			target = "chatgpt"
+		case "3", "codex":
 			target = "codex"
-		case "5", "api":
+		case "4", "gemini", "gemini-web", "geminiweb":
+			target = "gemini"
+		case "5", "agy", "antigravity":
+			target = "antigravity"
+		case "6", "gemini-api", "google-ai-studio", "geminiapi":
+			target = "gemini-api"
+		case "7", "openai", "openai-api":
+			target = "openai"
+		case "8", "anthropic", "anthropic-api":
+			target = "anthropic"
+		case "9", "openrouter", "openrouter-api":
+			target = "openrouter"
+		case "10", "api", "other", "deepseek", "ollama":
 			target = "api"
-		case "6", "cursor":
+		case "11", "cursor":
 			target = "cursor"
 		default:
-			fmt.Println("Invalid selection. Supported providers: claude, agy, gemini, codex, api, cursor")
+			fmt.Println("Invalid selection. Supported: claude, chatgpt, codex, gemini, agy, gemini-api, openai, anthropic, openrouter, api, cursor")
 			return
 		}
 	} else {
@@ -227,6 +242,12 @@ func CmdLogin(args []string) {
 			flags.baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 		}
 		loginAPI("gemini", flags)
+	case "openai", "openai-api":
+		loginOpenAI(flags)
+	case "anthropic", "anthropic-api":
+		loginAnthropic(flags)
+	case "openrouter", "openrouter-api":
+		loginOpenRouter(flags)
 	case "github", "github-models":
 		loginGitHubModels(flags)
 	case "groq":
@@ -256,7 +277,7 @@ func CmdLogin(args []string) {
 	case "api":
 		loginAPI("api", flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: claude, agy, gemini, codex, api, cursor (or run: amux id add)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, chatgpt, codex, gemini, agy, gemini-api, openai, anthropic, openrouter, api, cursor (or run: amux login)\n", target)
 	}
 }
 
@@ -781,26 +802,74 @@ func loginGeminiWeb(f loginFlags) {
 		return
 	}
 
-	id, priorityFloor, multi := nextPoolID(provider.PoolIDPrefix("gemini_web"))
-	priority := provider.PriorityWebGemini
+	savePoolLogin("gemini_web", "", func(slot provider.PoolSlot) provider.ProviderConfig {
+		return provider.ProviderConfig{
+			ID:         slot.ID,
+			Type:       "gemini_web",
+			Priority:   slot.Priority,
+			Enabled:    slot.Enabled,
+			SessionKey: key,
+			Cookies:    cookieHeader,
+			Model:      f.model,
+		}
+	})
+}
+
+func loginOpenAI(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "OpenAI API",
+		EnvVar:       "OPENAI_API_KEY",
+		DefaultURL:   "https://api.openai.com/v1",
+		DefaultModel: "gpt-4o",
+		IDPrefix:     "openai:api",
+		Priority:     provider.PriorityAPICustom,
+	}, f)
+}
+
+func loginAnthropic(f loginFlags) {
+	fmt.Println("== Login: Anthropic API ==")
+	key := strings.TrimSpace(f.token)
+	if key == "" {
+		key = readLinePrompt("Anthropic API key (Enter = $ANTHROPIC_API_KEY): ")
+	}
+	if key == "" {
+		key = "env:ANTHROPIC_API_KEY"
+	}
+	model := f.model
+	if model == "" {
+		model = "claude-3-7-sonnet-20250219"
+	}
+	id, priorityFloor, multi := nextPoolID("anthropic:api")
+	priority := provider.PriorityAPICustom
 	if multi {
 		priority = priorityFloor
 	}
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
-		ID:         id,
-		Type:       "gemini_web",
-		Priority:   priority,
-		SessionKey: key,
-		Cookies:    cookieHeader,
-		Model:      f.model,
-	})
+	cfg := provider.ProviderConfig{
+		ID:       id,
+		Type:     "claude",
+		Priority: priority,
+		APIKey:   key,
+		Model:    model,
+	}
+	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
 	if err != nil {
-		fmt.Printf("Error saving: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("Saved Gemini Web as %s.\n", id)
+	fmt.Printf("✓ Saved Anthropic API as %s (model: %s).\n", id, model)
 	CmdAccounts()
+}
+
+func loginOpenRouter(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "OpenRouter",
+		EnvVar:       "OPENROUTER_API_KEY",
+		DefaultURL:   "https://openrouter.ai/api/v1",
+		DefaultModel: "anthropic/claude-3.7-sonnet",
+		IDPrefix:     "openrouter:api",
+		Priority:     provider.PriorityAPICustom,
+	}, f)
 }
 
 func loginGitHubModels(f loginFlags) {
@@ -1110,8 +1179,8 @@ func CmdAccountsFilter(filter string) {
 	}
 
 	filter = strings.ToLower(strings.TrimSpace(filter))
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "ID", "EMAIL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH")
-	fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n", "--------------------", "--------------------------", "--------------", "--------", "--------", "------------")
+	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "MODEL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
+	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "------------------", "--------------", "--------", "--------", "------------", "------------")
 
 	for _, id := range cfg.Identities {
 		if filter != "" && !strings.Contains(strings.ToLower(id.ID), filter) && !strings.Contains(strings.ToLower(id.Email()), filter) && !strings.Contains(strings.ToLower(id.Provider), filter) {
@@ -1121,15 +1190,22 @@ func CmdAccountsFilter(filter string) {
 		if id.Active {
 			activeStr = "YES"
 		}
+		if !identity.IsEnabled(id) {
+			activeStr = "DISABLED"
+		}
 		autoStr := "ON"
 		if !id.CanAutoRotate() {
 			autoStr = "OFF"
 		}
+		if !identity.IsEnabled(id) {
+			autoStr = "-"
+		}
 		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
 		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
 		threshStr := fmt.Sprintf("%.1f%%", thresh)
-		fmt.Printf("%-20s %-26s %-14s %-8s %-8s %-12s\n",
-			id.ID, id.Email(), threshStr, usageStr, activeStr, autoStr)
+		resetStr := id.FormatResetTime()
+		fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n",
+			id.ID, id.Email(), id.ModelName(), threshStr, usageStr, activeStr, autoStr, resetStr)
 	}
 }
 

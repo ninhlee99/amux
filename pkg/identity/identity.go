@@ -35,6 +35,7 @@ type Identity struct {
 	Tier         IdentityTier           `json:"tier"`          // subscription, web, api_key
 	AuthType     string                 `json:"auth_type"`     // oauth, cdp, api_key, session_cookie
 	Credentials  map[string]string      `json:"credentials"`   // access_token, refresh_token, api_key, cookies, etc.
+	Model        string                 `json:"model,omitempty"`
 	UsagePercent float64                `json:"usage_percent"` // 0.0 to 100.0
 	ResetAt      int64                  `json:"reset_at,omitempty"`
 	Active       bool                   `json:"active"`
@@ -129,6 +130,35 @@ func (id Identity) FormatResetTime() string {
 	}
 	rem = rem.Round(time.Minute)
 	return strings.TrimSpace(strings.ReplaceAll(rem.String(), "0s", ""))
+}
+
+// ModelName returns the configured model name or sensible default for the identity.
+func (id Identity) ModelName() string {
+	if strings.TrimSpace(id.Model) != "" {
+		return strings.TrimSpace(id.Model)
+	}
+	if id.Metadata != nil {
+		if m, ok := id.Metadata["model"].(string); ok && strings.TrimSpace(m) != "" {
+			return strings.TrimSpace(m)
+		}
+	}
+	p := strings.ToLower(id.ID)
+	switch {
+	case strings.HasPrefix(p, "claude") || strings.HasPrefix(p, "anthropic"):
+		return "claude-3-7-sonnet"
+	case strings.HasPrefix(p, "chatgpt"):
+		return "gpt-4o"
+	case strings.HasPrefix(p, "codex"):
+		return "gpt-5.6-terra"
+	case strings.HasPrefix(p, "gemini") || strings.HasPrefix(p, "antigravity") || strings.HasPrefix(p, "agy"):
+		return "gemini-2.5-flash"
+	case strings.HasPrefix(p, "openai"):
+		return "gpt-4o"
+	case strings.HasPrefix(p, "openrouter"):
+		return "openrouter/auto"
+	default:
+		return "-"
+	}
 }
 
 // GetThreshold returns the effective failover threshold percentage for this identity.
