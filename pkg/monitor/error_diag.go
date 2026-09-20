@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"amux-accounts/pkg/types"
@@ -227,6 +228,9 @@ func GetLatestErrorLog() (string, bool) {
 }
 
 func maybeAutoPrune(retention time.Duration) {
+	if testing.Testing() {
+		return
+	}
 	pruneMu.Lock()
 	defer pruneMu.Unlock()
 	if time.Since(lastPruneTime) < 6*time.Hour {
