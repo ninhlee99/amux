@@ -321,6 +321,7 @@ func cmdIDSelect(args []string) {
 	}
 
 	fmt.Printf("✓ Account %q is now ACTIVE.\n", target.ID)
+	fmt.Println("  💡 Active terminal sessions or IDEs will pick up this identity on their next command or restart.")
 }
 
 func cmdIDThreshold(args []string) {

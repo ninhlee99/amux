@@ -92,10 +92,21 @@ func TransparentPassthrough(w http.ResponseWriter, r *http.Request, upstreamURL 
 	buf := make([]byte, 4096)
 	totalBytes := 0
 	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected - cancel upstream immediately
+			dur := time.Since(start)
+			telemetry.LogPassthrough(clientDialect, targetDialect, accountID, totalBytes, 499, dur)
+			return ctx.Err()
+		default:
+		}
+
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			totalBytes += n
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				// Client write error (socket closed)
+				cancel()
 				break
 			}
 			if isFlusher {
