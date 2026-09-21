@@ -215,12 +215,18 @@ func cmdIDHealth() {
 func cmdIDSelect(args []string) {
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
-		die("no identities configured")
+		die("no identities configured.\n  Run 'amux login [claude|codex|antigravity|gemini]' to authenticate an account.")
 	}
 
 	var targetID string
 	if len(args) > 0 {
-		targetID = args[0]
+		arg := strings.TrimSpace(args[0])
+		// Check if user specified 1-based index (e.g. 'amux switch 1')
+		if num, err := strconv.Atoi(arg); err == nil && num >= 1 && num <= len(cfg.Identities) {
+			targetID = cfg.Identities[num-1].ID
+		} else {
+			targetID = arg
+		}
 	} else {
 		// Interactive picker
 		fmt.Println("Select an identity to activate:")
@@ -243,13 +249,17 @@ func cmdIDSelect(args []string) {
 		if _, err := fmt.Sscanf(input, "%d", &choice); err == nil && choice >= 1 && choice <= len(cfg.Identities) {
 			targetID = cfg.Identities[choice-1].ID
 		} else {
-			die("invalid selection")
+			die("invalid selection. Please enter a valid number from the list above.")
 		}
 	}
 
 	target, err := identity.Get("", targetID)
 	if err != nil || target == nil {
-		die("identity %q not found", targetID)
+		var available []string
+		for _, id := range cfg.Identities {
+			available = append(available, id.ID)
+		}
+		die("identity %q not found.\n  Available identities: %s\n  (Run 'amux account list' to inspect all accounts)", targetID, strings.Join(available, ", "))
 	}
 
 	tool := ""

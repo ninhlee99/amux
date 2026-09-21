@@ -39,7 +39,9 @@ Account Management:
 Diagnostics & Security:
   doctor [--security]        Run diagnostics on keychain, network, tools & gateway
   audit                      Verify security posture, AES-256-GCM encryption & permissions
+  vault [export|import|info] Passphrase-encrypted backup & multi-machine account sync
   usage [day|week|month]     Token usage & request analytics (day, week, month)
+  completion [bash|zsh|fish] Generate shell autocompletion script
   setup                      Guided configuration wizard
   config [property]          Inspect or edit configuration (e.g. amux config threshold 85)
   threshold [percent]        Get or set global multi-account failover threshold

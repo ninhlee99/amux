@@ -218,6 +218,10 @@ func cmdGatewayHook(args []string) {
 		die("hook error: %v", err)
 	}
 	fmt.Printf("✓ Injected gateway hook into %s settings.\n", target)
+	if !gateway.IsRunning() {
+		fmt.Println("Notice: AMUX Gateway daemon is currently STOPPED.")
+		fmt.Println("  Run 'amux start' to start the gateway background daemon, or run 'amux unhook' to restore direct upstream connection.")
+	}
 }
 
 func cmdGatewayUnhook(args []string) {
