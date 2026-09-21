@@ -1,13 +1,17 @@
 package guard
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"hash/fnv"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"amux-accounts/pkg/types"
@@ -30,14 +34,17 @@ type sessionShard struct {
 
 // SessionAffinity pins conversations to a single account to avoid ping-ponging
 // between multiple accounts during multi-turn developer workflows.
-// Implements concurrent sharding across 64 shards and a bounded worker pool
-// to eliminate latency and prevent resource exhaustion during high-load terminal multiplexing.
+// Implements concurrent sharding across 64 shards, a bounded worker pool,
+// and signal handling (SIGINT, SIGTERM) to ensure safe session and task cleanup during shutdown.
 type SessionAffinity struct {
-	ttl    time.Duration
-	shards [numSessionShards]sessionShard
-	pool   *WorkerPool
-	closed atomic.Bool
-	stopCh chan struct{}
+	ttl       time.Duration
+	shards    [numSessionShards]sessionShard
+	pool      *WorkerPool
+	closed    atomic.Bool
+	stopCh    chan struct{}
+	sigCh     chan os.Signal
+	onCloseMu sync.Mutex
+	onClose   []func()
 }
 
 // NewSessionAffinity creates a new high-concurrency sharded SessionAffinity manager.
@@ -49,6 +56,7 @@ func NewSessionAffinity(ttl time.Duration) *SessionAffinity {
 		ttl:    ttl,
 		pool:   NewWorkerPool(8, 256),
 		stopCh: make(chan struct{}),
+		sigCh:  make(chan os.Signal, 2),
 	}
 	for i := 0; i < numSessionShards; i++ {
 		sa.shards[i].pinned = make(map[string]affinityEntry)
@@ -57,6 +65,31 @@ func NewSessionAffinity(ttl time.Duration) *SessionAffinity {
 	// Start concurrent non-blocking background cleanup
 	go sa.backgroundCleaner()
 	return sa
+}
+
+// EnableSignalHandling listens for OS interrupt signals (SIGINT, SIGTERM)
+// and performs graceful cleanup of all active sessions and worker pool tasks.
+func (sa *SessionAffinity) EnableSignalHandling() {
+	signal.Notify(sa.sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sa.sigCh:
+			sa.Close()
+		case <-sa.stopCh:
+			signal.Stop(sa.sigCh)
+			return
+		}
+	}()
+}
+
+// RegisterOnClose registers a callback to be invoked safely during shutdown.
+func (sa *SessionAffinity) RegisterOnClose(fn func()) {
+	if fn == nil {
+		return
+	}
+	sa.onCloseMu.Lock()
+	defer sa.onCloseMu.Unlock()
+	sa.onClose = append(sa.onClose, fn)
 }
 
 func (sa *SessionAffinity) getShard(sessionKey string) *sessionShard {
@@ -100,11 +133,43 @@ func (sa *SessionAffinity) cleanupExpired() {
 	sa.pool.ExecuteBatch(tasks)
 }
 
-// Close gracefully stops the background cleaner and worker pool.
+// Close gracefully stops the background cleaner, executes registered close callbacks,
+// and drains the worker pool.
 func (sa *SessionAffinity) Close() {
 	if sa.closed.CompareAndSwap(false, true) {
 		close(sa.stopCh)
+
+		// Execute registered cleanup callbacks safely
+		sa.onCloseMu.Lock()
+		callbacks := append([]func(){}, sa.onClose...)
+		sa.onClose = nil
+		sa.onCloseMu.Unlock()
+
+		for _, cb := range callbacks {
+			func() {
+				defer func() { _ = recover() }()
+				cb()
+			}()
+		}
+
+		// Drain and shut down worker pool
 		sa.pool.Close()
+	}
+}
+
+// DrainAndClose drains worker pool tasks and cleans up all session shards within a deadline context.
+func (sa *SessionAffinity) DrainAndClose(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		sa.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

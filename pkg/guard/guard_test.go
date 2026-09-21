@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,3 +332,36 @@ func TestSessionAffinity_HighConcurrencyMultiplexing(t *testing.T) {
 		t.Errorf("expected %d active pinned sessions, got %d", numWorkers, count)
 	}
 }
+
+func TestSessionAffinity_SignalHandlingAndDrain(t *testing.T) {
+	sa := NewSessionAffinity(time.Hour)
+	sa.EnableSignalHandling()
+
+	// Register on close callback
+	var closedCallbackInvoked atomic.Bool
+	sa.RegisterOnClose(func() {
+		closedCallbackInvoked.Store(true)
+	})
+
+	// Pin sessions
+	sa.Pin("session-sig-1", "account-1")
+	sa.Pin("session-sig-2", "account-2")
+
+	// Trigger simulated OS interrupt signal
+	sa.sigCh <- os.Interrupt
+
+	// Allow a brief moment for the signal goroutine to process Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if !closedCallbackInvoked.Load() {
+		t.Error("expected registered close callback to be executed on signal interruption")
+	}
+
+	// Verify DrainAndClose context works
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sa.DrainAndClose(ctx); err != nil {
+		t.Errorf("unexpected error on DrainAndClose: %v", err)
+	}
+}
+
