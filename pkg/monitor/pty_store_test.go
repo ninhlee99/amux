@@ -123,3 +123,125 @@ func TestPTYHeartbeatMonitor_DaemonCrashRecovery(t *testing.T) {
 		t.Errorf("expected active state, got %s", sess.State)
 	}
 }
+
+func TestPTYSessionStore_RotationCascadeAndMaxBackups(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "test_rot_sessions.json")
+
+	rotCfg := PTYStoreRotationConfig{
+		MaxSizeBytes: 200, // Very small to trigger rotation easily
+		MaxBackups:   3,
+		MaxAge:       24 * time.Hour,
+		AutoRotate:   true,
+	}
+	store := NewPTYSessionStoreWithConfig(storePath, rotCfg)
+
+	sess := map[string]*PTYSession{
+		"sess-rot-1": {
+			SessionID:     "sess-rot-1",
+			PID:           os.Getpid(),
+			Command:       "gemini-cli long session test command",
+			State:         PTYStateActive,
+			CreatedAt:     time.Now(),
+			LastHeartbeat: time.Now(),
+		},
+	}
+
+	// 1. First save creates main file
+	if err := store.SaveAll(sess); err != nil {
+		t.Fatalf("first SaveAll failed: %v", err)
+	}
+
+	// 2. Explicit rotate creates .1
+	if err := store.Rotate(); err != nil {
+		t.Fatalf("Rotate 1 failed: %v", err)
+	}
+	if _, err := os.Stat(storePath + ".1"); err != nil {
+		t.Errorf("expected %s.1 to exist", storePath)
+	}
+
+	// 3. Save again and rotate again -> .1 becomes .2, new file becomes .1
+	_ = store.SaveAll(sess)
+	_ = store.Rotate()
+	if _, err := os.Stat(storePath + ".2"); err != nil {
+		t.Errorf("expected %s.2 to exist", storePath)
+	}
+
+	// 4. Rotate multiple times to test MaxBackups cap (max 3 backups)
+	_ = store.SaveAll(sess)
+	_ = store.Rotate()
+	_ = store.SaveAll(sess)
+	_ = store.Rotate()
+
+	if _, err := os.Stat(storePath + ".3"); err != nil {
+		t.Errorf("expected %s.3 to exist", storePath)
+	}
+	if _, err := os.Stat(storePath + ".4"); !os.IsNotExist(err) {
+		t.Errorf("expected %s.4 to NOT exist because MaxBackups is 3", storePath)
+	}
+}
+
+func TestPTYSessionStore_PruneDeadSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "test_prune_sessions.json")
+	store := NewPTYSessionStore(storePath)
+
+	oldTime := time.Now().Add(-10 * 24 * time.Hour) // 10 days ago
+	recentTime := time.Now().Add(-1 * time.Hour)
+
+	sessions := map[string]*PTYSession{
+		"alive-recent": {
+			SessionID:     "alive-recent",
+			PID:           os.Getpid(),
+			State:         PTYStateActive,
+			CreatedAt:     recentTime,
+			LastHeartbeat: recentTime,
+		},
+		"dead-recent": {
+			SessionID:     "dead-recent",
+			PID:           99999999,
+			State:         PTYStateDead,
+			CreatedAt:     recentTime,
+			LastHeartbeat: recentTime,
+		},
+		"dead-ancient": {
+			SessionID:     "dead-ancient",
+			PID:           99999998,
+			State:         PTYStateDead,
+			CreatedAt:     oldTime,
+			LastHeartbeat: oldTime,
+		},
+	}
+
+	// Configure store with large initial MaxAge so raw records are written to disk
+	store.SetRotationConfig(PTYStoreRotationConfig{
+		MaxAge: 30 * 24 * time.Hour,
+	})
+	_ = store.SaveAll(sessions)
+
+	// Verify all 3 are on disk initially
+	initial, _ := store.LoadAll()
+	if len(initial) != 3 {
+		t.Fatalf("expected 3 initial sessions on disk, got %d", len(initial))
+	}
+
+	// Prune sessions older than 7 days
+	pruned, err := store.PruneDeadSessions(7 * 24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneDeadSessions failed: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("expected 1 pruned session (dead-ancient), got %d", pruned)
+	}
+
+	loaded, _ := store.LoadAll()
+	if _, exists := loaded["dead-ancient"]; exists {
+		t.Error("expected dead-ancient to be removed")
+	}
+	if _, exists := loaded["dead-recent"]; !exists {
+		t.Error("expected dead-recent to be retained")
+	}
+	if _, exists := loaded["alive-recent"]; !exists {
+		t.Error("expected alive-recent to be retained")
+	}
+}

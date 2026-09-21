@@ -42,6 +42,7 @@ type PTYHeartbeatConfig struct {
 	HungThreshold  time.Duration
 	AutoKillDead   bool
 	StorePath      string
+	Rotation       PTYStoreRotationConfig
 	OnStale        func(sess *PTYSession)
 	OnHung         func(sess *PTYSession)
 	OnDead         func(sess *PTYSession)
@@ -55,6 +56,7 @@ func DefaultPTYHeartbeatConfig() PTYHeartbeatConfig {
 		HungThreshold:  5 * time.Minute,
 		AutoKillDead:   true,
 		StorePath:      DefaultPTYStorePath(),
+		Rotation:       DefaultPTYStoreRotationConfig(),
 	}
 }
 
@@ -103,7 +105,7 @@ func NewPTYHeartbeatMonitor(cfg PTYHeartbeatConfig) *PTYHeartbeatMonitor {
 	return &PTYHeartbeatMonitor{
 		cfg:      cfg,
 		sessions: make(map[string]*PTYSession),
-		store:    NewPTYSessionStore(cfg.StorePath),
+		store:    NewPTYSessionStoreWithConfig(cfg.StorePath, cfg.Rotation),
 		stopCh:   make(chan struct{}),
 	}
 }
@@ -361,6 +363,13 @@ func (m *PTYHeartbeatMonitor) checkSessions() {
 			}
 		}
 	}
+
+	_ = m.store.SaveAll(m.sessions)
+}
+
+// Store returns the underlying persistent session store.
+func (m *PTYHeartbeatMonitor) Store() *PTYSessionStore {
+	return m.store
 }
 
 // isProcessAlive sends signal 0 to test process existence.
