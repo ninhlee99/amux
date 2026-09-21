@@ -34,6 +34,8 @@ func init() {
 	if testing.Testing() {
 		PaceBaseMs = 1
 		PaceJitterMs = 1
+	} else {
+		globalAffinity.EnableSignalHandling()
 	}
 }
 

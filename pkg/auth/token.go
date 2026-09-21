@@ -161,11 +161,7 @@ func RefreshedCredsJSON(original []byte, rr *OAuthRefreshResponse, oldRefresh st
 var refreshLiveClaudeMu sync.Mutex
 
 func acquireRefreshFileLock() (func(), error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = "."
-	}
-	dir := filepath.Join(home, ".am")
+	dir := types.BaseDir()
 	_ = os.MkdirAll(dir, 0700)
 	lockPath := filepath.Join(dir, "token_refresh.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)

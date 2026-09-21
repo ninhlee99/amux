@@ -30,6 +30,8 @@ Account Management:
   login [provider]           Interactive or CLI login (claude, codex, antigravity, gemini, chatgpt, api)
   account list               List all configured accounts, tiers, active status & quotas
   account switch [id]        Switch active account (updates native Keychain & IDE configs)
+  use <id>                   Bind current workspace/repo to a specific account (.amux)
+  project [status|set|clear] Manage per-project identity and settings
   account logout <id>        Remove account and purge its cached credentials
   account on / off <id>      Enable or temporarily disable an account from failover
   account auto <id> [on|off] Toggle automatic rotation eligibility for an account
@@ -39,7 +41,9 @@ Account Management:
 Diagnostics & Security:
   doctor [--security]        Run diagnostics on keychain, network, tools & gateway
   audit                      Verify security posture, AES-256-GCM encryption & permissions
+  vault [export|import|info] Passphrase-encrypted backup & multi-machine account sync
   usage [day|week|month]     Token usage & request analytics (day, week, month)
+  completion [bash|zsh|fish] Generate shell autocompletion script
   setup                      Guided configuration wizard
   config [property]          Inspect or edit configuration (e.g. amux config threshold 85)
   threshold [percent]        Get or set global multi-account failover threshold

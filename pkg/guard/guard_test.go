@@ -3,7 +3,11 @@ package guard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -291,3 +295,73 @@ func TestHealthTracker_RealAuthStillQuarantines(t *testing.T) {
 		t.Fatal("real 401/403 must still quarantine")
 	}
 }
+
+func TestSessionAffinity_HighConcurrencyMultiplexing(t *testing.T) {
+	sa := NewSessionAffinity(time.Hour)
+	defer sa.Close()
+
+	const numWorkers = 50
+	const opsPerWorker = 200
+
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		go func(workerID int) {
+			defer wg.Done()
+			sessKey := fmt.Sprintf("terminal-session-%d", workerID)
+			account := fmt.Sprintf("claude:pro:%d", workerID%5)
+
+			for i := 0; i < opsPerWorker; i++ {
+				sa.Pin(sessKey, account)
+				got, ok := sa.GetPinned(sessKey)
+				if !ok || got != account {
+					t.Errorf("worker %d: expected %s, got %s", workerID, account, got)
+				}
+				if i%50 == 0 {
+					_ = sa.ActivePinsCount()
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	count := sa.ActivePinsCount()
+	if count != numWorkers {
+		t.Errorf("expected %d active pinned sessions, got %d", numWorkers, count)
+	}
+}
+
+func TestSessionAffinity_SignalHandlingAndDrain(t *testing.T) {
+	sa := NewSessionAffinity(time.Hour)
+	sa.EnableSignalHandling()
+
+	// Register on close callback
+	var closedCallbackInvoked atomic.Bool
+	sa.RegisterOnClose(func() {
+		closedCallbackInvoked.Store(true)
+	})
+
+	// Pin sessions
+	sa.Pin("session-sig-1", "account-1")
+	sa.Pin("session-sig-2", "account-2")
+
+	// Trigger simulated OS interrupt signal
+	sa.sigCh <- os.Interrupt
+
+	// Allow a brief moment for the signal goroutine to process Close()
+	time.Sleep(50 * time.Millisecond)
+
+	if !closedCallbackInvoked.Load() {
+		t.Error("expected registered close callback to be executed on signal interruption")
+	}
+
+	// Verify DrainAndClose context works
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sa.DrainAndClose(ctx); err != nil {
+		t.Errorf("unexpected error on DrainAndClose: %v", err)
+	}
+}
+
