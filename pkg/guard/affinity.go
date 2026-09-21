@@ -30,11 +30,12 @@ type sessionShard struct {
 
 // SessionAffinity pins conversations to a single account to avoid ping-ponging
 // between multiple accounts during multi-turn developer workflows.
-// Implements concurrent sharding across 64 shards to reduce lock contention
-// and eliminate latency during concurrent terminal multiplexing tasks.
+// Implements concurrent sharding across 64 shards and a bounded worker pool
+// to eliminate latency and prevent resource exhaustion during high-load terminal multiplexing.
 type SessionAffinity struct {
 	ttl    time.Duration
 	shards [numSessionShards]sessionShard
+	pool   *WorkerPool
 	closed atomic.Bool
 	stopCh chan struct{}
 }
@@ -46,6 +47,7 @@ func NewSessionAffinity(ttl time.Duration) *SessionAffinity {
 	}
 	sa := &SessionAffinity{
 		ttl:    ttl,
+		pool:   NewWorkerPool(8, 256),
 		stopCh: make(chan struct{}),
 	}
 	for i := 0; i < numSessionShards; i++ {
@@ -79,14 +81,13 @@ func (sa *SessionAffinity) backgroundCleaner() {
 	}
 }
 
-// cleanupExpired performs non-blocking concurrent eviction across all shards.
+// cleanupExpired performs non-blocking concurrent eviction across all shards using the bounded worker pool.
 func (sa *SessionAffinity) cleanupExpired() {
 	now := time.Now()
-	var wg sync.WaitGroup
-	wg.Add(numSessionShards)
+	tasks := make([]Task, numSessionShards)
 	for i := 0; i < numSessionShards; i++ {
-		go func(shard *sessionShard) {
-			defer wg.Done()
+		shard := &sa.shards[i]
+		tasks[i] = func() {
 			shard.mu.Lock()
 			for k, v := range shard.pinned {
 				if now.After(v.expiresAt) {
@@ -94,15 +95,16 @@ func (sa *SessionAffinity) cleanupExpired() {
 				}
 			}
 			shard.mu.Unlock()
-		}(&sa.shards[i])
+		}
 	}
-	wg.Wait()
+	sa.pool.ExecuteBatch(tasks)
 }
 
-// Close gracefully stops the background cleaner.
+// Close gracefully stops the background cleaner and worker pool.
 func (sa *SessionAffinity) Close() {
 	if sa.closed.CompareAndSwap(false, true) {
 		close(sa.stopCh)
+		sa.pool.Close()
 	}
 }
 
@@ -242,16 +244,15 @@ func (sa *SessionAffinity) Unpin(sessionKey string) {
 	delete(shard.pinned, sessionKey)
 }
 
-// UnpinAccount removes all sessions pinned to an account concurrently across all shards.
+// UnpinAccount removes all sessions pinned to an account concurrently across all shards via WorkerPool.
 func (sa *SessionAffinity) UnpinAccount(accountID string) {
 	if accountID == "" {
 		return
 	}
-	var wg sync.WaitGroup
-	wg.Add(numSessionShards)
+	tasks := make([]Task, numSessionShards)
 	for i := 0; i < numSessionShards; i++ {
-		go func(shard *sessionShard) {
-			defer wg.Done()
+		shard := &sa.shards[i]
+		tasks[i] = func() {
 			shard.mu.Lock()
 			for k, v := range shard.pinned {
 				if v.accountID == accountID {
@@ -259,20 +260,19 @@ func (sa *SessionAffinity) UnpinAccount(accountID string) {
 				}
 			}
 			shard.mu.Unlock()
-		}(&sa.shards[i])
+		}
 	}
-	wg.Wait()
+	sa.pool.ExecuteBatch(tasks)
 }
 
-// ActivePinsCount returns the number of active pinned sessions counted concurrently.
+// ActivePinsCount returns the number of active pinned sessions counted concurrently via WorkerPool.
 func (sa *SessionAffinity) ActivePinsCount() int {
 	now := time.Now()
 	var total int64
-	var wg sync.WaitGroup
-	wg.Add(numSessionShards)
+	tasks := make([]Task, numSessionShards)
 	for i := 0; i < numSessionShards; i++ {
-		go func(shard *sessionShard) {
-			defer wg.Done()
+		shard := &sa.shards[i]
+		tasks[i] = func() {
 			shard.mu.RLock()
 			var cnt int64
 			for _, v := range shard.pinned {
@@ -282,8 +282,8 @@ func (sa *SessionAffinity) ActivePinsCount() int {
 			}
 			shard.mu.RUnlock()
 			atomic.AddInt64(&total, cnt)
-		}(&sa.shards[i])
+		}
 	}
-	wg.Wait()
+	sa.pool.ExecuteBatch(tasks)
 	return int(total)
 }
