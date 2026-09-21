@@ -133,6 +133,22 @@ func (r *AccountPoolRouter) SetDirectory(adapters []types.ProviderAdapter) {
 	r.directory = dir
 }
 
+// SetAutoRotateFilter sets a predicate that determines if an adapter ID can be auto-rotated.
+func (r *AccountPoolRouter) SetAutoRotateFilter(fn func(id string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoRotateFilter = fn
+}
+
+func (r *AccountPoolRouter) canAutoRotate(id string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.autoRotateFilter != nil {
+		return r.autoRotateFilter(id)
+	}
+	return true
+}
+
 // applyTaskClassification inspects the request and dynamically enables thinking
 // mode or escalates to Pro tier when heavy analytical reasoning is required.
 // This only tunes model behavior (thinking budget / tier hint) — it never
@@ -227,8 +243,7 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	if a == nil {
 		return nil, fmt.Errorf("provider %q not addressable (see: am accounts)", id)
 	}
-	isPaced := AdapterAccountType(a) == types.AccountTypeWeb || AdapterAccountType(a) == types.AccountTypeAPIKey
-	if err := guard.Pace(ctx, id, isPaced); err != nil {
+	if err := guard.Pace(ctx, id, AdapterAccountType(a) == types.AccountTypeWeb); err != nil {
 		return nil, err
 	}
 	ch, err := a.SendMessageStream(ctx, req)
@@ -271,35 +286,12 @@ func (r *AccountPoolRouter) ManualPin() bool {
 	return r.manualPin
 }
 
-// SetAutoRotateFilter configures an optional predicate to check if an adapter
-// is eligible for automatic rotation/failover. If the filter returns false,
-// the adapter will ONLY be used if manually pinned as preferred, and will
-// never be selected by auto-rotation or auto-failover.
-func (r *AccountPoolRouter) SetAutoRotateFilter(fn func(id string) bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.autoRotateFilter = fn
-}
-
-func (r *AccountPoolRouter) canAutoRotate(id string) bool {
-	r.mu.RLock()
-	filter := r.autoRotateFilter
-	r.mu.RUnlock()
-	if filter != nil {
-		return filter(id)
-	}
-	return true
-}
-
 // HasLivingAccounts reports whether at least one pool adapter is configured
-// and not currently cooling down, quarantined, or excluded from auto-rotation.
+// and not currently cooling down or quarantined.
 func (r *AccountPoolRouter) HasLivingAccounts() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, a := range r.adapters {
-		if !r.canAutoRotate(a.ID()) {
-			continue
-		}
 		if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
 			continue
 		}
@@ -452,8 +444,8 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				errs = append(errs, fmt.Errorf("%s: cooling down", a.ID()))
 				break
 			}
-			isPaced := AdapterAccountType(a) == types.AccountTypeWeb || AdapterAccountType(a) == types.AccountTypeAPIKey
-			if err := guard.Pace(ctx, a.ID(), isPaced); err != nil {
+			isWeb := AdapterAccountType(a) == types.AccountTypeWeb
+			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
 				skippedPreferred = true
 				errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 				break
@@ -527,27 +519,20 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 			if preferredID != "" && a.ID() == preferredID {
 				continue
 			}
-			// Skip adapters marked as AUTO-SWITCH OFF (manual only)
-			if !r.canAutoRotate(a.ID()) {
-				continue
-			}
 			if isQ, _, _ := guard.IsQuarantined(a.ID()); isQ {
 				continue
 			}
 			if r.cooling(a.ID()) {
 				continue
 			}
-			isPaced := tier == types.AccountTypeWeb || tier == types.AccountTypeAPIKey
-			isSub := tier == types.AccountTypeSubscription
-			if err := guard.Pace(ctx, a.ID(), isPaced); err != nil {
+			isWeb := tier == types.AccountTypeWeb
+			if err := guard.Pace(ctx, a.ID(), isWeb); err != nil {
 				continue
 			}
 			callReq := req
-			if (skippedPreferred || len(failedInReq) > 0) && req != nil && len(req.Messages) > 8 && !isSub {
-				// Secondary / fallback adapter is a cold account: compact messages ONLY for Web & API accounts
-				// to avoid massive token burn on cold accounts.
-				// For Subscription accounts (200k window), preserve full history to maintain prompt cache prefix
-				// and prevent unnecessary loss of developer context.
+			if (skippedPreferred || len(failedInReq) > 0) && req != nil && len(req.Messages) > 4 {
+				// Secondary / fallback adapter is a cold account: compact messages so it does not
+				// pay massive uncached token creation fees and burn its 5h/7d rate limit.
 				cloned := *req
 				cloned.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 				callReq = &cloned
@@ -686,7 +671,7 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 			"preferred":     a.ID() == r.preferred,
 			"manual_pin":    a.ID() == r.preferred && r.manualPin,
 			"last_used":     a.ID() == r.lastUsed,
-			"in_pool":       r.canAutoRotate(a.ID()),
+			"in_pool":       true,
 			"health_score":  report.Score,
 			"health_status": report.Status,
 		}

@@ -125,6 +125,13 @@ func ResetAll() {
 	pacerMu.Unlock()
 }
 
+// ResetPacer resets the pacer cooldown timestamp for a specific account.
+func ResetPacer(accountID string) {
+	pacerMu.Lock()
+	delete(accountLastReq, accountID)
+	pacerMu.Unlock()
+}
+
 // IsQuarantined checks whether an account is quarantined from active rotation.
 func IsQuarantined(accountID string) (bool, time.Duration, string) {
 	return globalHealth.IsQuarantined(accountID)

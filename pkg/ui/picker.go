@@ -25,7 +25,7 @@ func PickProfile(tool string) string {
 		profs = append(profs, providerMenuEntries()...)
 	}
 	if len(profs) == 0 {
-		term.Warn("no %s profiles (add one: amux add %s)", tool, tool)
+		term.Warn("no %s profiles (add one: am add %s)", tool, tool)
 		return ""
 	}
 	if len(profs) == 1 {

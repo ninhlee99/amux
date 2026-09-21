@@ -98,6 +98,8 @@ func Run(rawArgs []string) {
 		CmdUsage(args)
 	case "doctor":
 		CmdDoctor(args)
+	case "audit":
+		CmdAudit(args)
 	case "setup":
 		CmdSetup(args)
 	case "config":

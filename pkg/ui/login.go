@@ -14,7 +14,6 @@ import (
 
 	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/browser"
-	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
@@ -25,10 +24,10 @@ import (
 
 // loginFlags holds optional non-interactive credentials passed on the CLI.
 type loginFlags struct {
-	name       string // custom provider name
-	baseURL    string // custom endpoint base URL
 	model      string
 	token      string // access token / API key / sessionKey
+	baseURL    string // endpoint / base URL for custom API provider
+	name       string // friendly name or identifier
 	cookie     string // raw Cookie header or name=value
 	refresh    string // refresh token when the web session exposes one
 	useBrowser bool   // open Chromium via CDP and capture cookie (default when no token/cookie)
@@ -46,41 +45,66 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 	providerName = strings.ToLower(args[0])
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
-		var key, val string
-		hasEq := false
-		if strings.HasPrefix(arg, "--") && strings.Contains(arg, "=") {
-			parts := strings.SplitN(arg, "=", 2)
-			key = strings.ToLower(parts[0])
-			val = parts[1]
-			hasEq = true
-		} else {
-			key = strings.ToLower(arg)
+		if strings.HasPrefix(arg, "--model=") {
+			f.model = strings.TrimPrefix(arg, "--model=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--api-key=") || strings.HasPrefix(arg, "--token=") || strings.HasPrefix(arg, "--access-token=") || strings.HasPrefix(arg, "--key=") {
+			idx := strings.Index(arg, "=")
+			f.token = arg[idx+1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "--endpoint=") || strings.HasPrefix(arg, "--base-url=") || strings.HasPrefix(arg, "--url=") {
+			idx := strings.Index(arg, "=")
+			f.baseURL = arg[idx+1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "--name=") || strings.HasPrefix(arg, "--provider=") {
+			idx := strings.Index(arg, "=")
+			f.name = arg[idx+1:]
+			continue
+		}
+		if strings.HasPrefix(arg, "--cookie=") {
+			f.cookie = strings.TrimPrefix(arg, "--cookie=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--refresh=") || strings.HasPrefix(arg, "--refresh-token=") {
+			idx := strings.Index(arg, "=")
+			f.refresh = arg[idx+1:]
+			continue
 		}
 
-		getVal := func() string {
-			if hasEq {
-				return val
-			}
-			if i+1 < len(args) {
-				i++
-				return args[i]
-			}
-			return ""
-		}
-
-		switch key {
-		case "--name", "--id", "--provider":
-			f.name = getVal()
-		case "--base-url", "--baseurl", "--url", "--endpoint":
-			f.baseURL = getVal()
+		switch arg {
 		case "--model":
-			f.model = getVal()
-		case "--token", "--access-token", "--api-key", "--apikey", "--key":
-			f.token = getVal()
+			if i+1 < len(args) {
+				f.model = args[i+1]
+				i++
+			}
+		case "--token", "--access-token", "--api-key", "--key":
+			if i+1 < len(args) {
+				f.token = args[i+1]
+				i++
+			}
+		case "--endpoint", "--base-url", "--url":
+			if i+1 < len(args) {
+				f.baseURL = args[i+1]
+				i++
+			}
+		case "--name", "--provider":
+			if i+1 < len(args) {
+				f.name = args[i+1]
+				i++
+			}
 		case "--cookie":
-			f.cookie = getVal()
+			if i+1 < len(args) {
+				f.cookie = args[i+1]
+				i++
+			}
 		case "--refresh", "--refresh-token":
-			f.refresh = getVal()
+			if i+1 < len(args) {
+				f.refresh = args[i+1]
+				i++
+			}
 		case "--browser":
 			f.useBrowser = true
 		case "--no-browser":
@@ -100,49 +124,33 @@ func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []s
 	return providerName, f, rest
 }
 
-// CmdLogin handles login.
+// CmdLogin handles login. Default for chatgpt/claude/gemini-web: open the login
+// page in the user's own default browser (where they are usually already signed
+// in) and take the cookie as a paste. Pass --browser for a dedicated window with
+// automatic CDP capture, --token/--cookie to skip the browser entirely, or
+// --no-browser to paste without opening anything. Pass --oauth or login
+// codex/antigravity for standalone OAuth.
 func CmdLogin(args []string) {
 	var target string
 	var flags loginFlags
 	if len(args) == 0 {
 		fmt.Println("Select provider to login:")
-		fmt.Println("  [1] claude         (Claude Code OAuth / Device / Web Session)")
-		fmt.Println("  [2] chatgpt        (ChatGPT Web - chatgpt.com Session Pool)")
-		fmt.Println("  [3] codex          (OpenAI Codex CLI / OAuth)")
-		fmt.Println("  [4] gemini         (Gemini Web - gemini.google.com)")
-		fmt.Println("  [5] agy            (Google Antigravity / AGY OAuth Subscription)")
-		fmt.Println("  [6] gemini-api     (Google AI Studio Gemini API Key)")
-		fmt.Println("  [7] openai         (OpenAI API Key - api.openai.com)")
-		fmt.Println("  [8] anthropic      (Anthropic API Key - api.anthropic.com)")
-		fmt.Println("  [9] openrouter     (OpenRouter API Key - openrouter.ai)")
-		fmt.Println("  [10] api           (Custom OpenAI-compatible API: DeepSeek, Ollama, Groq, Kimi, etc.)")
-		fmt.Println("  [11] cursor        (Cursor API Key / Token)")
-		ans := strings.TrimSpace(term.ReadLine("Select [1-11] (claude/chatgpt/codex/gemini/agy/gemini-api/openai/anthropic/openrouter/api/cursor): "))
+		fmt.Println("  [1] claude (Claude Code OAuth / Web)")
+		fmt.Println("  [2] codex  (OpenAI Codex OAuth)")
+		fmt.Println("  [3] gemini (Google AI Studio / Antigravity OAuth)")
+		fmt.Println("  [4] cursor (Cursor API Key / Token)")
+		ans := strings.TrimSpace(term.ReadLine("Select [1-4] (claude/codex/gemini/cursor): "))
 		switch strings.ToLower(ans) {
 		case "1", "claude":
 			target = "claude"
-		case "2", "chatgpt":
-			target = "chatgpt"
-		case "3", "codex":
+		case "2", "codex":
 			target = "codex"
-		case "4", "gemini", "gemini-web", "geminiweb":
+		case "3", "gemini":
 			target = "gemini"
-		case "5", "agy", "antigravity":
-			target = "antigravity"
-		case "6", "gemini-api", "google-ai-studio", "geminiapi":
-			target = "gemini-api"
-		case "7", "openai", "openai-api":
-			target = "openai"
-		case "8", "anthropic", "anthropic-api":
-			target = "anthropic"
-		case "9", "openrouter", "openrouter-api":
-			target = "openrouter"
-		case "10", "api", "other", "deepseek", "ollama":
-			target = "api"
-		case "11", "cursor":
+		case "4", "cursor":
 			target = "cursor"
 		default:
-			fmt.Println("Invalid selection. Supported: claude, chatgpt, codex, gemini, agy, gemini-api, openai, anthropic, openrouter, api, cursor")
+			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor")
 			return
 		}
 	} else {
@@ -157,44 +165,10 @@ func CmdLogin(args []string) {
 		}
 		CmdAccounts()
 	case "agy", "antigravity":
-		if !flags.isDevice && !flags.isManual && flags.token == "" {
-			fmt.Println("Choose Antigravity / AGY login method:")
-			fmt.Println("  [1] Snapshot active login from IDE / System [Default - Enter]")
-			fmt.Println("      (Saves the account currently signed in on your Antigravity IDE / CLI)")
-			fmt.Println("  [2] Google OAuth Browser Login")
-			fmt.Println("      (Direct OAuth flow - requires $ANTIGRAVITY_CLIENT_SECRET)")
-			ans := strings.TrimSpace(term.ReadLine("Select [1-2] (Enter = 1): "))
-			if ans == "2" || ans == "oauth" {
-				opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
-				if err := oauth.InteractiveOAuthWithOptions("antigravity", opts); err != nil {
-					fmt.Printf("Login failed: %v\n", err)
-					return
-				}
-			} else {
-				spec, ok := profile.LookupToolSpec("antigravity")
-				if !ok {
-					fmt.Println("Antigravity tool spec not found.")
-					return
-				}
-				acct := profile.DetectAccount(spec)
-				if acct == "" {
-					fmt.Println("No active Antigravity login detected in Keychain or ~/.gemini.")
-					fmt.Println("Please sign in to Antigravity in your IDE or terminal first, then run this command again.")
-					return
-				}
-				savedName, err := profile.CmdSave("antigravity", "")
-				if err != nil {
-					fmt.Printf("Failed to snapshot Antigravity account: %v\n", err)
-					return
-				}
-				fmt.Printf("✓ Successfully saved Antigravity profile %q (%s)!\n", savedName, acct)
-			}
-		} else {
-			opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
-			if err := oauth.InteractiveOAuthWithOptions("antigravity", opts); err != nil {
-				fmt.Printf("Login failed: %v\n", err)
-				return
-			}
+		opts := oauth.OAuthOptions{DeviceFlow: flags.isDevice, ManualFlow: flags.isManual || flags.noBrowser}
+		if err := oauth.InteractiveOAuthWithOptions("antigravity", opts); err != nil {
+			fmt.Printf("Login failed: %v\n", err)
+			return
 		}
 		CmdAccounts()
 	case "claude-code", "claude-oauth":
@@ -209,16 +183,10 @@ func CmdLogin(args []string) {
 	case "claude", "claude-web", "claudeweb":
 		if target == "claude" && !flags.isOAuth && !flags.isDevice && !flags.isManual && flags.token == "" && flags.cookie == "" {
 			fmt.Println("Choose login method for Claude:")
-			fmt.Println("  [1] Claude Code OAuth (Tự động mở trình duyệt & lấy Access Token) [Default - Enter]")
-			fmt.Println("  [2] Login with Device / Remote Code (Lấy mã xác thực qua web - không cần callback localhost)")
-			fmt.Println("  [3] Claude Web (sessionKey cookie cho claude.ai web session pool)")
-			ans := strings.TrimSpace(term.ReadLine("Select [1-3] (Enter = 1): "))
-			switch ans {
-			case "2", "device":
-				flags.isDevice = true
-			case "3", "web":
-				// Proceed to loginClaude web session
-			default:
+			fmt.Println("  [1] Claude Code OAuth (Auto-login via browser -> Access Token & Refresh Token) [Default]")
+			fmt.Println("  [2] Claude Web (sessionKey cookie for claude.ai web session pool)")
+			ans := term.ReadLine("Select [1/2] (Enter = 1): ")
+			if ans == "" || ans == "1" {
 				flags.isOAuth = true
 			}
 		}
@@ -232,22 +200,10 @@ func CmdLogin(args []string) {
 		} else {
 			loginClaude(flags)
 		}
-	case "gemini", "gemini-web", "geminiweb":
+	case "gemini-web", "geminiweb":
 		loginGeminiWeb(flags)
-	case "gemini-api", "google-ai-studio", "geminiapi":
-		if flags.name == "" {
-			flags.name = "gemini"
-		}
-		if flags.baseURL == "" {
-			flags.baseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-		}
-		loginAPI("gemini", flags)
-	case "openai", "openai-api":
-		loginOpenAI(flags)
-	case "anthropic", "anthropic-api":
-		loginAnthropic(flags)
-	case "openrouter", "openrouter-api":
-		loginOpenRouter(flags)
+	case "gemini", "google-ai-studio", "geminiapi":
+		loginGemini(flags)
 	case "github", "github-models":
 		loginGitHubModels(flags)
 	case "groq":
@@ -274,104 +230,9 @@ func CmdLogin(args []string) {
 		}
 	case "cursor":
 		loginCursor(flags)
-	case "api":
-		loginAPI("api", flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: claude, chatgpt, codex, gemini, agy, gemini-api, openai, anthropic, openrouter, api, cursor (or run: amux login)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, cursor (or run: am login)\n", target)
 	}
-}
-
-func loginAPI(target string, f loginFlags) {
-	fmt.Println("== Setup OpenAI-Compatible API Provider ==")
-	key := strings.TrimSpace(f.token)
-	if key == "" {
-		key = strings.TrimSpace(readLinePrompt("API Key (press Enter if no auth / local): "))
-	}
-
-	model := strings.TrimSpace(f.model)
-	if model == "" {
-		model = strings.TrimSpace(readLinePrompt("Model name (e.g. gpt-4o, deepseek-chat, gemini-2.5-flash, llama3): "))
-		if model == "" {
-			model = "default"
-		}
-	}
-
-	endpoint := strings.TrimSpace(f.baseURL)
-	if endpoint == "" {
-		defURL := "https://api.openai.com/v1"
-		lowerName := strings.ToLower(f.name)
-		if lowerName == "" {
-			lowerName = strings.ToLower(target)
-		}
-		if strings.Contains(lowerName, "deepseek") {
-			defURL = "https://api.deepseek.com/v1"
-		} else if strings.Contains(lowerName, "ollama") {
-			defURL = "http://localhost:11434/v1"
-		} else if strings.Contains(lowerName, "gemini") {
-			defURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-		}
-		endpoint = strings.TrimSpace(readLinePrompt(fmt.Sprintf("Endpoint / Base URL [default: %s]: ", defURL)))
-		if endpoint == "" {
-			endpoint = defURL
-		}
-	}
-
-	name := strings.TrimSpace(f.name)
-	if name == "" {
-		if target != "api" {
-			name = target
-		} else {
-			defName := "api"
-			lowerEnd := strings.ToLower(endpoint)
-			if strings.Contains(lowerEnd, "deepseek") {
-				defName = "deepseek"
-			} else if strings.Contains(lowerEnd, "openai") {
-				defName = "openai"
-			} else if strings.Contains(lowerEnd, "ollama") {
-				defName = "ollama"
-			} else if strings.Contains(lowerEnd, "groq") {
-				defName = "groq"
-			} else if strings.Contains(lowerEnd, "googleapis") || strings.Contains(lowerEnd, "gemini") {
-				defName = "gemini"
-			}
-			name = strings.TrimSpace(readLinePrompt(fmt.Sprintf("Provider name/id (e.g. deepseek, ollama, openai, gemini) [default: %s]: ", defName)))
-			if name == "" {
-				name = defName
-			}
-		}
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "api"
-	}
-
-	idPrefix := name
-	if !strings.HasSuffix(idPrefix, ":api") && idPrefix != "api" {
-		idPrefix = fmt.Sprintf("%s:api", name)
-	}
-	id, priorityFloor, multi := nextPoolID(idPrefix)
-	priority := provider.PriorityAPICustom
-	if multi {
-		priority = priorityFloor
-	}
-
-	cfg := provider.ProviderConfig{
-		ID:       id,
-		Type:     "openai_compatible",
-		Priority: priority,
-		BaseURL:  endpoint,
-		APIKey:   key,
-		Model:    model,
-	}
-
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return
-	}
-	proxy.Sync()
-	fmt.Printf("✓ Saved API provider %q as %s (Endpoint: %s, Model: %s).\n", name, id, endpoint, model)
-	CmdAccounts()
 }
 
 func loginCursor(f loginFlags) {
@@ -464,32 +325,29 @@ func loginChatGPT(f loginFlags) {
 		}
 	}
 
-	// If no token provided directly, try auto-extract from installed browsers first
-	if sessionCookie == "" && access == "" && !f.noBrowser {
-		if tok, bName, err := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); err == nil && tok != "" {
-			fmt.Printf("✓ Auto-extracted ChatGPT session token from %s!\n", bName)
-			sessionCookie = tok
-			if cf, _, err := browser.ExtractCookie("chatgpt.com", "cf_clearance"); err == nil && cf != "" {
-				sessionCookie = "__Secure-next-auth.session-token=" + tok + "; cf_clearance=" + cf
-			}
-		}
-	}
-
-	wantBrowser := !f.noBrowser && !f.defBrowser && access == "" && sessionCookie == ""
-	useDefaultBrowser := f.defBrowser && access == "" && sessionCookie == ""
+	// CDP capture is opt-in via --browser. By default we open the user's own
+	// browser, where they are usually already signed in, and take a paste.
+	wantBrowser := f.useBrowser && access == "" && sessionCookie == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && access == "" && sessionCookie == ""
 	if wantBrowser {
-		fmt.Println("Opening dedicated browser (automatic cookie capture via CDP) — sign in to chatgpt.com…")
+		fmt.Println("Opening dedicated browser (CDP capture, no Keychain)…")
 		tok, err := browser.CaptureCookieViaBrowser(browser.ChatGPTWebLogin, 5*time.Minute)
 		if err != nil {
 			fmt.Printf("Browser capture failed: %v\n", err)
 			if f.useBrowser {
 				return
 			}
-			fmt.Println("Falling back to manual entry…")
-			useDefaultBrowser = true
+			fmt.Println("Falling back to your default browser…")
+			f.defBrowser = true
 		} else {
 			sessionCookie = tok
-			fmt.Println("✓ Captured session cookie automatically from browser.")
+			fmt.Println("Captured session cookie from browser.")
+		}
+	}
+	if sessionCookie == "" && access == "" && !wantBrowser {
+		if tok, bName, err := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); err == nil && tok != "" {
+			fmt.Printf("✓ Auto-extracted ChatGPT session token from %s!\n", bName)
+			sessionCookie = tok
 		}
 	}
 
@@ -533,9 +391,7 @@ func loginChatGPT(f loginFlags) {
 			}
 		}
 	}
-	if refresh == "" && sessionCookie != "" {
-		refresh = sessionCookie
-	} else if refresh == "" && f.token == "" && f.cookie == "" && !wantBrowser && sessionCookie == "" {
+	if refresh == "" && f.token == "" && f.cookie == "" && !wantBrowser {
 		if r := readLinePrompt("  refresh token (optional, Enter to skip): "); r != "" {
 			refresh = r
 		}
@@ -571,41 +427,35 @@ func loginClaude(f loginFlags) {
 		}
 	}
 
+	wantBrowser := f.useBrowser && key == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && key == ""
 	cookieHeader := ""
-
-	// If no cookie/token provided directly, try auto-extract from installed browsers first
-	if key == "" && !f.noBrowser {
-		if tok, bName, err := browser.ExtractCookie("claude.ai", "sessionKey"); err == nil && tok != "" {
-			fmt.Printf("✓ Auto-extracted claude.ai sessionKey from %s!\n", bName)
-			key = tok
-			if cf, _, err := browser.ExtractCookie("claude.ai", "cf_clearance"); err == nil && cf != "" {
-				cookieHeader = "sessionKey=" + tok + "; cf_clearance=" + cf
-			}
-		}
-	}
-
-	wantBrowser := !f.noBrowser && !f.defBrowser && key == ""
-	useDefaultBrowser := f.defBrowser && key == ""
 	if wantBrowser && key == "" {
-		fmt.Println("Opening dedicated browser (automatic cookie capture via CDP) — sign in to claude.ai…")
+		fmt.Println("Opening dedicated browser (CDP capture, no Keychain)…")
 		auth, err := browser.CaptureWebAuthViaBrowser(browser.ClaudeWebLogin, 5*time.Minute)
 		if err != nil {
 			fmt.Printf("Browser capture failed: %v\n", err)
 			if f.useBrowser {
 				return
 			}
-			fmt.Println("Falling back to manual cookie entry…")
-			useDefaultBrowser = true
+			fmt.Println("Falling back to your default browser…")
+			f.defBrowser = true
 		} else {
 			key = auth.SessionValue
 			cookieHeader = auth.CookieHeader
-			fmt.Println("✓ Captured sessionKey automatically from browser.")
+			fmt.Println("Captured sessionKey from browser.")
 			if cookieHeader != "" {
 				n := strings.Count(cookieHeader, "=")
 				fmt.Printf("Captured full cookie jar (%d cookies).\n", n)
 			} else {
 				fmt.Println("Warning: cookie jar empty — Cloudflare cookies missing; re-run login if chat 403s.")
 			}
+		}
+	}
+	if key == "" && !wantBrowser {
+		if tok, bName, err := browser.ExtractCookie("claude.ai", "sessionKey"); err == nil && tok != "" {
+			fmt.Printf("✓ Auto-extracted claude.ai sessionKey from %s!\n", bName)
+			key = tok
 		}
 	}
 
@@ -638,7 +488,7 @@ func loginClaude(f loginFlags) {
 		}
 		if accountPlan == "pro" {
 			fmt.Printf("✨ Signed in as %s [Subscription: Claude Pro/Team].\n", accountEmail)
-			fmt.Println("👉 Tip: This account has a paid subscription and can also be used directly with Claude Code CLI ('amux id add claude').")
+			fmt.Println("👉 Tip: This account has a paid subscription and can also be used directly with Claude Code CLI ('am add claude').")
 		} else {
 			fmt.Printf("ℹ️ Signed in as %s [Tier: Free] -> Configured for Claude Web proxy pool.\n", accountEmail)
 		}
@@ -751,35 +601,22 @@ func loginGeminiWeb(f loginFlags) {
 
 	cookieHeader := strings.TrimSpace(f.cookie)
 	key := strings.TrimSpace(f.token)
-
-	// If no cookie/token provided directly, try auto-extract from installed browsers first
-	if cookieHeader == "" && key == "" && !f.noBrowser {
-		if tok, bName, err := browser.ExtractCookie("google.com", "__Secure-1PSID"); err == nil && tok != "" {
-			fmt.Printf("✓ Auto-extracted __Secure-1PSID cookie from %s!\n", bName)
-			key = tok
-			cookieHeader = "__Secure-1PSID=" + tok
-			if ts, _, err := browser.ExtractCookie("google.com", "__Secure-1PSIDTS"); err == nil && ts != "" {
-				cookieHeader += "; __Secure-1PSIDTS=" + ts
-			}
-		}
-	}
-
-	wantBrowser := !f.noBrowser && !f.defBrowser && cookieHeader == "" && key == ""
-	useDefaultBrowser := f.defBrowser && cookieHeader == "" && key == ""
+	wantBrowser := f.useBrowser && cookieHeader == "" && key == ""
+	useDefaultBrowser := !wantBrowser && !f.noBrowser && cookieHeader == "" && key == ""
 	if wantBrowser {
-		fmt.Println("Opening dedicated browser (automatic cookie capture via CDP) — sign in to gemini.google.com…")
+		fmt.Println("Opening dedicated browser (CDP capture) — sign in to gemini.google.com…")
 		auth, err := browser.CaptureWebAuthViaBrowser(browser.GeminiWebLogin, 5*time.Minute)
 		if err != nil {
 			fmt.Printf("Browser capture failed: %v\n", err)
 			if f.useBrowser {
 				return
 			}
-			fmt.Println("Falling back to manual cookie entry…")
-			useDefaultBrowser = true
+			fmt.Println("Falling back to your default browser…")
+			f.defBrowser = true
 		} else {
 			key = auth.SessionValue
 			cookieHeader = auth.CookieHeader
-			fmt.Println("✓ Captured __Secure-1PSID automatically from browser.")
+			fmt.Println("Captured __Secure-1PSID from browser.")
 			if cookieHeader != "" {
 				fmt.Printf("Captured cookie jar (%d cookies).\n", strings.Count(cookieHeader, "="))
 			}
@@ -802,74 +639,26 @@ func loginGeminiWeb(f loginFlags) {
 		return
 	}
 
-	savePoolLogin("gemini_web", "", func(slot provider.PoolSlot) provider.ProviderConfig {
-		return provider.ProviderConfig{
-			ID:         slot.ID,
-			Type:       "gemini_web",
-			Priority:   slot.Priority,
-			Enabled:    slot.Enabled,
-			SessionKey: key,
-			Cookies:    cookieHeader,
-			Model:      f.model,
-		}
-	})
-}
-
-func loginOpenAI(f loginFlags) {
-	loginOpenAICompat(openAICompatSpec{
-		Name:         "OpenAI API",
-		EnvVar:       "OPENAI_API_KEY",
-		DefaultURL:   "https://api.openai.com/v1",
-		DefaultModel: "gpt-4o",
-		IDPrefix:     "openai:api",
-		Priority:     provider.PriorityAPICustom,
-	}, f)
-}
-
-func loginAnthropic(f loginFlags) {
-	fmt.Println("== Login: Anthropic API ==")
-	key := strings.TrimSpace(f.token)
-	if key == "" {
-		key = readLinePrompt("Anthropic API key (Enter = $ANTHROPIC_API_KEY): ")
-	}
-	if key == "" {
-		key = "env:ANTHROPIC_API_KEY"
-	}
-	model := f.model
-	if model == "" {
-		model = "claude-3-7-sonnet-20250219"
-	}
-	id, priorityFloor, multi := nextPoolID("anthropic:api")
-	priority := provider.PriorityAPICustom
+	id, priorityFloor, multi := nextPoolID(provider.PoolIDPrefix("gemini_web"))
+	priority := provider.PriorityWebGemini
 	if multi {
 		priority = priorityFloor
 	}
-	cfg := provider.ProviderConfig{
-		ID:       id,
-		Type:     "claude",
-		Priority: priority,
-		APIKey:   key,
-		Model:    model,
-	}
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), cfg)
+	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
+		ID:         id,
+		Type:       "gemini_web",
+		Priority:   priority,
+		SessionKey: key,
+		Cookies:    cookieHeader,
+		Model:      f.model,
+	})
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		fmt.Printf("Error saving: %v\n", err)
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("✓ Saved Anthropic API as %s (model: %s).\n", id, model)
+	fmt.Printf("Saved Gemini Web as %s.\n", id)
 	CmdAccounts()
-}
-
-func loginOpenRouter(f loginFlags) {
-	loginOpenAICompat(openAICompatSpec{
-		Name:         "OpenRouter",
-		EnvVar:       "OPENROUTER_API_KEY",
-		DefaultURL:   "https://openrouter.ai/api/v1",
-		DefaultModel: "anthropic/claude-3.7-sonnet",
-		IDPrefix:     "openrouter:api",
-		Priority:     provider.PriorityAPICustom,
-	}, f)
 }
 
 func loginGitHubModels(f loginFlags) {
@@ -997,12 +786,12 @@ func CmdDoctorProviders() {
 		return
 	}
 	if len(adapters) == 0 {
-		fmt.Println("No providers. Try: amux id add")
+		fmt.Println("No providers. Try: am login chatgpt|claude|gemini")
 		return
 	}
 	probeFreeWeb := os.Getenv("AM_DOCTOR_WEB") == "1"
 	probeTools := os.Getenv("AM_DOCTOR_TOOLS") == "1"
-	fmt.Println(term.Bold("=== amux doctor providers (live 1-turn probe) ==="))
+	fmt.Println(term.Bold("=== am doctor providers (live 1-turn probe) ==="))
 	if !probeFreeWeb {
 		fmt.Println(term.Dim("free web skipped (set AM_DOCTOR_WEB=1 to probe)"))
 	}
@@ -1160,61 +949,71 @@ func loadProviderRows() []provider.ProviderConfig {
 	return rows
 }
 
-// CmdAccounts displays the flat identity list.
+// CmdAccounts lists every saved account: Claude profiles + web/API providers.
 func CmdAccounts() {
 	CmdAccountsFilter("")
 }
 
-// CmdAccountsFilter lists identities in a clean flat table.
-func CmdAccountsFilter(filter string) {
-	cfg, err := identity.LoadConfig("")
-	if err != nil || len(cfg.Identities) == 0 {
-		if n, _ := identity.MigrateLegacyAccounts("", ""); n > 0 {
-			cfg, _ = identity.LoadConfig("")
+// CollectFlatAccounts compiles all accounts into a flat list structure without nested groups.
+func CollectFlatAccounts(filter string) []types.Account {
+	var accounts []types.Account
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
+		if tool == "codex" {
+			continue
+		}
+		for _, p := range profile.ListProfiles(tool) {
+			acct := p.ToAccount()
+			if filter != "" && !strings.EqualFold(acct.Provider, filter) && !strings.Contains(strings.ToLower(acct.ID), filter) {
+				continue
+			}
+			accounts = append(accounts, acct)
 		}
 	}
-	if err != nil || len(cfg.Identities) == 0 {
-		fmt.Println("No identities configured. Run 'amux id add [provider]' to register an identity.")
+	for _, p := range loadProviderRows() {
+		acct := p.ToAccount()
+		if filter != "" && !strings.EqualFold(acct.Provider, filter) && !strings.Contains(strings.ToLower(acct.ID), filter) {
+			continue
+		}
+		accounts = append(accounts, acct)
+	}
+	return accounts
+}
+
+// CmdAccountsFilter lists accounts in a clean flat table.
+// filter may be a tool/provider hint (claude, codex, gemini, cursor) or empty = all.
+func CmdAccountsFilter(filter string) {
+	subtitle := "flat accounts list · ACTIVE=Yes means in rotate"
+	if filter != "" {
+		subtitle = "filter " + filter + " · " + subtitle
+	}
+	term.Header("amux accounts", subtitle)
+
+	accounts := CollectFlatAccounts(filter)
+	if len(accounts) == 0 {
+		term.Warn("No accounts. am login [claude|codex|gemini|cursor]")
 		return
 	}
 
-	filter = strings.ToLower(strings.TrimSpace(filter))
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "MODEL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "------------------", "--------------", "--------", "--------", "------------", "------------")
-
-	for _, id := range cfg.Identities {
-		if filter != "" && !strings.Contains(strings.ToLower(id.ID), filter) && !strings.Contains(strings.ToLower(id.Email()), filter) && !strings.Contains(strings.ToLower(id.Provider), filter) {
-			continue
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, term.Dim("ID\tPROVIDER\tTYPE\tAUTH_TYPE\tUSAGE %\tACTIVE"))
+	for _, a := range accounts {
+		activeStr := "No"
+		if a.Active {
+			activeStr = "Yes"
 		}
-		activeStr := "NO"
-		if id.Active {
-			activeStr = "YES"
-		}
-		if !identity.IsEnabled(id) {
-			activeStr = "DISABLED"
-		}
-		autoStr := "ON"
-		if !id.CanAutoRotate() {
-			autoStr = "OFF"
-		}
-		if !identity.IsEnabled(id) {
-			autoStr = "-"
-		}
-		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
-		threshStr := fmt.Sprintf("%.1f%%", thresh)
-		resetStr := id.FormatResetTime()
-		fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n",
-			id.ID, id.Email(), id.ModelName(), threshStr, usageStr, activeStr, autoStr, resetStr)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%.1f%%\t%s\n", a.ID, a.Provider, a.Type, a.AuthType, a.UsagePercent, activeStr)
 	}
+	w.Flush()
+	term.PanelEnd()
 }
 
 // CmdPool lists accounts currently in the rotate pool (POOL=IN), flat — no group sections.
 func CmdPool() {
-	term.Header("amux pool", "rotate set · amux id list")
+	term.Header("amux pool", "rotate set · am pool add|remove <id>")
 	rows := collectPoolRows()
 	if len(rows) == 0 {
-		term.Warn("Rotate pool empty. Use: amux id add")
+		term.Warn("Rotate pool empty. am pool add <id>  (see: am accounts)")
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
@@ -1276,7 +1075,7 @@ func collectPoolRows() []poolRow {
 	return rows
 }
 
-// CmdAccountsCmd handles legacy accounts commands.
+// CmdAccountsCmd handles `am accounts [priority <id> <N>]`.
 func CmdAccountsCmd(args []string) {
 	if len(args) == 0 {
 		CmdAccounts()
@@ -1292,22 +1091,19 @@ func CmdAccountsCmd(args []string) {
 		CmdAccountsFilter(filter)
 	case "rm", "delete", "remove":
 		if len(args) < 2 {
-			fmt.Println("Usage: amux id remove <id>")
+			fmt.Println("Usage: amux accounts rm <id>")
+			fmt.Println("   or: amux api rm <id>")
 			return
 		}
-		target := args[1]
-		profDeleted, _ := profile.DeleteProfileAnyTool(target)
-		provDeleted := provider.RemoveProvider(provider.DefaultAccountsPath(), target) == nil
-		idDeleted, _ := identity.Remove("", target)
-		if !profDeleted && !provDeleted && !idDeleted {
-			fmt.Printf("Account %q not found in profiles or providers\n", target)
+		if err := provider.RemoveProvider(provider.DefaultAccountsPath(), args[1]); err != nil {
+			fmt.Printf("Error removing provider: %v\n", err)
 			return
 		}
 		proxy.Sync()
-		fmt.Printf("✓ Removed %q from accounts\n", target)
+		fmt.Printf("Removed provider %q from pool\n", args[1])
 	case "priority":
 		if len(args) < 3 {
-			fmt.Println("Usage: amux id priority <id> <N>")
+			fmt.Println("Usage: amux accounts priority <id> <N>")
 			return
 		}
 		n, err := strconv.Atoi(args[2])
@@ -1323,7 +1119,7 @@ func CmdAccountsCmd(args []string) {
 		fmt.Printf("set %s priority to %d\n", args[1], n)
 	case "model":
 		if len(args) < 3 {
-			fmt.Println("Usage: amux id model <id> <model>")
+			fmt.Println("Usage: amux accounts model <id> <model>")
 			return
 		}
 		if err := provider.SetModel(provider.DefaultAccountsPath(), args[1], args[2]); err != nil {
@@ -1334,7 +1130,7 @@ func CmdAccountsCmd(args []string) {
 		fmt.Printf("set %s model to %s\n", args[1], args[2])
 	case "off", "disable":
 		if len(args) < 2 {
-			fmt.Println("Usage: amux id disable <id>")
+			fmt.Println("Usage: am off <id>   (or: am pool remove <id>)")
 			return
 		}
 		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], false); err != nil {
@@ -1342,10 +1138,10 @@ func CmdAccountsCmd(args []string) {
 			return
 		}
 		proxy.Sync()
-		fmt.Printf("off %s — out of rotate (amux id enable %s)\n", args[1], args[1])
+		fmt.Printf("off %s — out of rotate (am on %s)\n", args[1], args[1])
 	case "on", "enable":
 		if len(args) < 2 {
-			fmt.Println("Usage: amux id enable <id>")
+			fmt.Println("Usage: am on <id>   (or: am pool add <id>)")
 			return
 		}
 		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], true); err != nil {
@@ -1355,7 +1151,7 @@ func CmdAccountsCmd(args []string) {
 		proxy.Sync()
 		fmt.Printf("on %s — back in rotate\n", args[1])
 	default:
-		fmt.Println("Usage: amux id list | amux id remove <id> | amux id select <id>")
+		fmt.Println("Usage: am accounts | am accounts rm <id> | am pool add|remove|priority|model")
 	}
 }
 

@@ -17,13 +17,13 @@ const (
 type Account struct {
 	ID           string      `json:"id"`
 	Email        string      `json:"email,omitempty"`
+	Model        string      `json:"model,omitempty"`
 	Provider     string      `json:"provider"`      // "claude", "codex", "gemini", "cursor"
 	Type         AccountType `json:"type"`           // subscription, web, api_key
 	AuthType     string      `json:"auth_type"`      // oauth, cdp, api_key
 	UsagePercent float64     `json:"usage_percent"`  // 0.0 to 100.0
 	ResetAt      int64       `json:"reset_at,omitempty"`
 	Active       bool        `json:"active"`
-	ThresholdPct *float64    `json:"threshold_pct,omitempty"`
 }
 
 // IsSubscription reports whether this account is billed as a fixed-cost subscription.

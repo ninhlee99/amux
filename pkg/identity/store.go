@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,11 +10,13 @@ import (
 	"strings"
 	"sync"
 
+	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/types"
 )
 
 var (
 	storeMu sync.RWMutex
+	identitiesFileMagic = []byte("AMENC1:")
 )
 
 // DefaultIdentitiesPath returns ~/.amux/identities.json.
@@ -22,6 +26,7 @@ func DefaultIdentitiesPath() string {
 
 // LoadConfig loads the flat identity config from disk. If the file does not exist,
 // it returns a default config with ThresholdPct: 95.0.
+// Transparently decrypts AMENC1: sealed configurations.
 func LoadConfig(path string) (*Config, error) {
 	storeMu.RLock()
 	defer storeMu.RUnlock()
@@ -41,6 +46,16 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read identity config: %w", err)
 	}
 
+	if bytes.HasPrefix(data, identitiesFileMagic) {
+		enc := data[len(identitiesFileMagic):]
+		dec, decErr := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(enc)))
+		if decErr == nil {
+			if plain, perr := auth.Decrypt(dec); perr == nil {
+				data = plain
+			}
+		}
+	}
+
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal identity config: %w", err)
@@ -54,7 +69,7 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// SaveConfig atomically writes the flat identity config to disk.
+// SaveConfig atomically writes the flat identity config to disk with AES-256-GCM encryption at rest.
 func SaveConfig(path string, cfg *Config) error {
 	storeMu.Lock()
 	defer storeMu.Unlock()
@@ -76,8 +91,17 @@ func SaveConfig(path string, cfg *Config) error {
 		return fmt.Errorf("marshal identity config: %w", err)
 	}
 
+	var fileData []byte
+	enc, encErr := auth.Encrypt(data)
+	if encErr == nil {
+		fileData = append(append([]byte{}, identitiesFileMagic...), []byte(base64.StdEncoding.EncodeToString(enc))...)
+		fileData = append(fileData, '\n')
+	} else {
+		fileData = append(data, '\n')
+	}
+
 	tmpFile := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if err := os.WriteFile(tmpFile, append(data, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(tmpFile, fileData, 0o600); err != nil {
 		return fmt.Errorf("write tmp identity config: %w", err)
 	}
 

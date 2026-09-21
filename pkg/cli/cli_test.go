@@ -77,7 +77,7 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 	categories := []string{
 		"Gateway Daemon:",
 		"Account Management:",
-		"Diagnostics & Setup:",
+		"Diagnostics & Security:",
 		"Examples:",
 	}
 	for _, cat := range categories {
