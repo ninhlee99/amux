@@ -101,3 +101,44 @@ func TestWorkerPool_PanicRecovery(t *testing.T) {
 		t.Fatal("worker pool did not recover after panic to process next task")
 	}
 }
+
+func TestWorkerPool_SessionTelemetry(t *testing.T) {
+	wp := NewWorkerPool(4, 32)
+	defer wp.Close()
+
+	var wg sync.WaitGroup
+	const sessionA = "session-claude-test"
+	const sessionB = "session-gemini-test"
+
+	wg.Add(4)
+	for i := 0; i < 4; i++ {
+		sess := sessionA
+		if i%2 == 1 {
+			sess = sessionB
+		}
+		wp.SubmitSession(sess, func() {
+			defer wg.Done()
+			time.Sleep(10 * time.Millisecond)
+		})
+	}
+
+	wg.Wait()
+
+	statsA := wp.GetSessionStats(sessionA)
+	if statsA.CompletedTasks != 2 {
+		t.Errorf("expected 2 completed tasks for sessionA, got %d", statsA.CompletedTasks)
+	}
+	if statsA.TotalExecutionTimeMs < 0 {
+		t.Errorf("expected non-negative execution time for sessionA, got %d", statsA.TotalExecutionTimeMs)
+	}
+
+	statsB := wp.GetSessionStats(sessionB)
+	if statsB.CompletedTasks != 2 {
+		t.Errorf("expected 2 completed tasks for sessionB, got %d", statsB.CompletedTasks)
+	}
+
+	all := wp.GetAllSessionStats()
+	if len(all) != 2 {
+		t.Errorf("expected 2 sessions in all stats, got %d", len(all))
+	}
+}

@@ -134,6 +134,7 @@ func RunProxy(addr, upstream string) error {
 		if srv != nil {
 			_ = srv.Close()
 		}
+		_ = monitor.GlobalUDSServer().Stop()
 		_ = ClearAuthToken()
 		StopAuthRateLimiter()
 	})
@@ -143,6 +144,9 @@ func RunProxy(addr, upstream string) error {
 
 	sw.Set(handler)
 	srv = &http.Server{Addr: addr, Handler: sw}
+
+	// Start Unix Domain Socket interface for CLI IPC
+	_ = monitor.GlobalUDSServer().Start()
 
 	// Restore caches from disk
 	_ = ctxshrink.GlobalDeduplicator().LoadSnapshot("")
