@@ -3,7 +3,9 @@ package guard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -289,5 +291,42 @@ func TestHealthTracker_RealAuthStillQuarantines(t *testing.T) {
 	ht.RecordError("groq:01", errors.New("401 unauthorized"))
 	if q, _, _ := ht.IsQuarantined("groq:01"); !q {
 		t.Fatal("real 401/403 must still quarantine")
+	}
+}
+
+func TestSessionAffinity_HighConcurrencyMultiplexing(t *testing.T) {
+	sa := NewSessionAffinity(time.Hour)
+	defer sa.Close()
+
+	const numWorkers = 50
+	const opsPerWorker = 200
+
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		go func(workerID int) {
+			defer wg.Done()
+			sessKey := fmt.Sprintf("terminal-session-%d", workerID)
+			account := fmt.Sprintf("claude:pro:%d", workerID%5)
+
+			for i := 0; i < opsPerWorker; i++ {
+				sa.Pin(sessKey, account)
+				got, ok := sa.GetPinned(sessKey)
+				if !ok || got != account {
+					t.Errorf("worker %d: expected %s, got %s", workerID, account, got)
+				}
+				if i%50 == 0 {
+					_ = sa.ActivePinsCount()
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	count := sa.ActivePinsCount()
+	if count != numWorkers {
+		t.Errorf("expected %d active pinned sessions, got %d", numWorkers, count)
 	}
 }
