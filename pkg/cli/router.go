@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/ui"
 )
@@ -207,12 +210,44 @@ func (r *Router) registerDiagnosticRoutes() {
 		Handler: CmdCompletion,
 	})
 
+	r.Register("init", CommandRoute{
+		Domain:  domain,
+		Handler: CmdInit,
+	})
+
 	r.Register("statusline", CommandRoute{
 		Domain: domain,
 		Handler: func(_ []string) {
 			ui.CmdStatusline()
 		},
 	})
+
+	// User Experience Aliases & Shortcuts
+	r.Register("whoami", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdStatus,
+		HelpHandler: helpStatus,
+	})
+
+	r.Register("ps", CommandRoute{
+		Domain:  domain,
+		Handler: CmdTop,
+	})
+
+	r.Register("ls", CommandRoute{
+		Domain: domain,
+		Handler: func(_ []string) {
+			cmdIDList()
+		},
+	})
+
+	versionHandler := func(_ []string) {
+		fmt.Println("amux version 1.4.2 (darwin/arm64 & linux/amd64)")
+		fmt.Println("AI-Native Development Environment & Multi-Provider Proxy Multiplexer")
+	}
+	r.Register("version", CommandRoute{Domain: domain, Handler: versionHandler})
+	r.Register("-v", CommandRoute{Domain: domain, Handler: versionHandler})
+	r.Register("--version", CommandRoute{Domain: domain, Handler: versionHandler})
 }
 
 // Dispatch executes routing for incoming command-line arguments.
@@ -234,7 +269,13 @@ func (r *Router) Dispatch(rawArgs []string) {
 
 	route, exists := r.routes[cmd]
 	if !exists {
-		die("unknown command: %s (run 'amux help' for usage)", cmd)
+		// Calculate closest matching command for better DX
+		suggestion := r.findClosestCommand(cmd)
+		if suggestion != "" {
+			die("unknown command '%s'\n\nDid you mean this?\n    amux %s\n\nRun 'amux help' for a complete list of commands.", cmd, suggestion)
+		} else {
+			die("unknown command: %s (run 'amux help' for usage)", cmd)
+		}
 		return
 	}
 
@@ -250,4 +291,60 @@ func (r *Router) Dispatch(rawArgs []string) {
 	if route.Handler != nil {
 		route.Handler(args)
 	}
+}
+
+// findClosestCommand calculates Levenshtein distance against registered commands.
+func (r *Router) findClosestCommand(target string) string {
+	bestDist := 999
+	bestCmd := ""
+	for name := range r.routes {
+		if strings.HasPrefix(name, "-") {
+			continue
+		}
+		// Exact prefix match prioritization
+		if len(target) >= 3 && strings.HasPrefix(name, target) {
+			return name
+		}
+		dist := levenshteinDistance(target, name)
+		if dist < bestDist && dist <= 3 {
+			bestDist = dist
+			bestCmd = name
+		}
+	}
+	return bestCmd
+}
+
+func levenshteinDistance(s1, s2 string) int {
+	r1, r2 := []rune(s1), []rune(s2)
+	n, m := len(r1), len(r2)
+	if n == 0 {
+		return m
+	}
+	if m == 0 {
+		return n
+	}
+
+	matrix := make([][]int, n+1)
+	for i := range matrix {
+		matrix[i] = make([]int, m+1)
+		matrix[i][0] = i
+	}
+	for j := 0; j <= m; j++ {
+		matrix[0][j] = j
+	}
+
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			cost := 0
+			if r1[i-1] != r2[j-1] {
+				cost = 1
+			}
+			matrix[i][j] = min(
+				matrix[i-1][j]+1,      // deletion
+				matrix[i][j-1]+1,      // insertion
+				matrix[i-1][j-1]+cost, // substitution
+			)
+		}
+	}
+	return matrix[n][m]
 }
