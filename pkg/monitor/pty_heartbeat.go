@@ -41,6 +41,7 @@ type PTYHeartbeatConfig struct {
 	StaleThreshold time.Duration
 	HungThreshold  time.Duration
 	AutoKillDead   bool
+	StorePath      string
 	OnStale        func(sess *PTYSession)
 	OnHung         func(sess *PTYSession)
 	OnDead         func(sess *PTYSession)
@@ -53,6 +54,7 @@ func DefaultPTYHeartbeatConfig() PTYHeartbeatConfig {
 		StaleThreshold: 2 * time.Minute,
 		HungThreshold:  5 * time.Minute,
 		AutoKillDead:   true,
+		StorePath:      DefaultPTYStorePath(),
 	}
 }
 
@@ -62,6 +64,7 @@ type PTYHeartbeatMonitor struct {
 	mu       sync.RWMutex
 	cfg      PTYHeartbeatConfig
 	sessions map[string]*PTYSession
+	store    *PTYSessionStore
 	stopCh   chan struct{}
 	running  atomic.Bool
 	closed   atomic.Bool
@@ -76,6 +79,7 @@ var (
 func GlobalPTYMonitor() *PTYHeartbeatMonitor {
 	globalPTYMonitorOnce.Do(func() {
 		globalPTYMonitor = NewPTYHeartbeatMonitor(DefaultPTYHeartbeatConfig())
+		_, _ = globalPTYMonitor.RecoverFromStore()
 		globalPTYMonitor.Start()
 	})
 	return globalPTYMonitor
@@ -92,12 +96,71 @@ func NewPTYHeartbeatMonitor(cfg PTYHeartbeatConfig) *PTYHeartbeatMonitor {
 	if cfg.HungThreshold <= 0 {
 		cfg.HungThreshold = 5 * time.Minute
 	}
+	if cfg.StorePath == "" {
+		cfg.StorePath = DefaultPTYStorePath()
+	}
 
 	return &PTYHeartbeatMonitor{
 		cfg:      cfg,
 		sessions: make(map[string]*PTYSession),
+		store:    NewPTYSessionStore(cfg.StorePath),
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// RecoverFromStore restores living PTY processes from disk after a daemon restart or crash.
+func (m *PTYHeartbeatMonitor) RecoverFromStore() ([]PTYSession, error) {
+	recoverable, dead, err := m.store.FindRecoverableSessions()
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, s := range recoverable {
+		sessCopy := s
+		sessCopy.State = PTYStateActive
+		sessCopy.LastHeartbeat = time.Now()
+		m.sessions[sessCopy.SessionID] = &sessCopy
+		AppendEvent("pty:recovered_from_disk", fmt.Sprintf("session=%s pid=%d recovered from persistent store", sessCopy.SessionID, sessCopy.PID))
+	}
+
+	for _, s := range dead {
+		AppendEvent("pty:pruned_dead_disk", fmt.Sprintf("session=%s pid=%d pruned dead process from store", s.SessionID, s.PID))
+	}
+
+	// Update store with active states
+	_ = m.store.SaveAll(m.sessions)
+	return recoverable, nil
+}
+
+// Reconnect allows a user or CLI command to re-attach to an active terminal session.
+func (m *PTYHeartbeatMonitor) Reconnect(sessionID string) (*PTYSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check in-memory first
+	if sess, ok := m.sessions[sessionID]; ok {
+		if sess.PID > 0 && !isProcessAlive(sess.PID) {
+			sess.State = PTYStateDead
+			return nil, fmt.Errorf("session %q process (PID %d) is dead", sessionID, sess.PID)
+		}
+		sess.State = PTYStateActive
+		sess.LastHeartbeat = time.Now()
+		_ = m.store.SaveAll(m.sessions)
+		return sess, nil
+	}
+
+	// Fallback to disk store
+	sess, err := m.store.ReconnectSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	m.sessions[sess.SessionID] = sess
+	_ = m.store.SaveAll(m.sessions)
+	return sess, nil
 }
 
 // Start kicks off the background heartbeat monitoring goroutine.
@@ -133,6 +196,7 @@ func (m *PTYHeartbeatMonitor) Register(sess PTYSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[sess.SessionID] = &sess
+	_ = m.store.SaveAll(m.sessions)
 
 	AppendEvent("pty:register", fmt.Sprintf("session=%s pid=%d cmd=%q", sess.SessionID, sess.PID, sess.Command))
 }
@@ -146,6 +210,7 @@ func (m *PTYHeartbeatMonitor) Unregister(sessionID string) {
 	defer m.mu.Unlock()
 	if sess, exists := m.sessions[sessionID]; exists {
 		delete(m.sessions, sessionID)
+		_ = m.store.SaveAll(m.sessions)
 		AppendEvent("pty:unregister", fmt.Sprintf("session=%s pid=%d", sessionID, sess.PID))
 	}
 }
