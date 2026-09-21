@@ -80,6 +80,16 @@ func (r *Router) registerIdentityRoutes() {
 		Handler:     CmdVault,
 		HelpHandler: cmdVaultHelp,
 	})
+
+	r.Register("use", CommandRoute{
+		Domain:  domain,
+		Handler: CmdUse,
+	})
+
+	r.Register("project", CommandRoute{
+		Domain:  domain,
+		Handler: CmdProject,
+	})
 }
 
 // registerGatewayRoutes registers commands related to daemon lifecycle, proxy, and IDE hooks.

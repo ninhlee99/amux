@@ -6,6 +6,7 @@ import (
 
 	"amux-accounts/pkg/env"
 	"amux-accounts/pkg/gateway"
+	"amux-accounts/pkg/project"
 )
 
 // CmdEnv handles shell environment exports and env variable management for eval "$(amux env)".
@@ -14,6 +15,12 @@ func CmdEnv(args []string) {
 		base := "http://127.0.0.1:8787"
 		proxyUp := gateway.IsRunning()
 		env.PrintEnvExports(proxyUp, true, base)
+
+		// Check if project has local identity binding
+		if proj, path, err := project.LoadProjectConfig(""); err == nil && proj != nil && proj.Account != "" {
+			fmt.Printf("# Project identity bound via %s\n", path)
+			fmt.Printf("export AMUX_PROJECT_IDENTITY=%s\n", proj.Account)
+		}
 		return
 	}
 

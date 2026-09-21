@@ -17,6 +17,8 @@ func TestRouter_DomainRouteRegistration(t *testing.T) {
 		"switch":   "identity",
 		"migrate":  "identity",
 		"vault":    "identity",
+		"use":      "identity",
+		"project":  "identity",
 
 		// Gateway domain
 		"start":   "gateway",

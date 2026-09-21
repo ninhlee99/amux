@@ -30,6 +30,8 @@ Account Management:
   login [provider]           Interactive or CLI login (claude, codex, antigravity, gemini, chatgpt, api)
   account list               List all configured accounts, tiers, active status & quotas
   account switch [id]        Switch active account (updates native Keychain & IDE configs)
+  use <id>                   Bind current workspace/repo to a specific account (.amux)
+  project [status|set|clear] Manage per-project identity and settings
   account logout <id>        Remove account and purge its cached credentials
   account on / off <id>      Enable or temporarily disable an account from failover
   account auto <id> [on|off] Toggle automatic rotation eligibility for an account
