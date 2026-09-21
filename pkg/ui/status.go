@@ -185,7 +185,7 @@ func printOneClaudeAccount(s *proxyStatus, a statusAccount) {
 		notes = append(notes, term.Red("re-login needed"))
 	}
 	if a.Disabled {
-		notes = append(notes, term.Dim("amux on "+a.Profile))
+		notes = append(notes, term.Dim("am on "+a.Profile))
 	}
 	if a.AutoSwitches+a.ManualSwitches > 0 {
 		notes = append(notes, term.Dim(fmt.Sprintf("auto %d · manual %d", a.AutoSwitches, a.ManualSwitches)))
@@ -480,6 +480,7 @@ func CmdGuard(args []string) {
 			term.Success("guard: reset health scores and backoff state for all accounts")
 		} else {
 			guard.GlobalHealth().Reset(target)
+			guard.ResetPacer(target)
 			term.Success("guard: reset health score for %s", target)
 		}
 		return
@@ -491,7 +492,7 @@ func CmdGuard(args []string) {
 		term.Section("guard (local state)")
 		term.KV("status", term.Dim("proxy daemon not running"))
 		if len(reports) == 0 {
-			term.Row(term.Dim("No accounts tracked yet (run amux proxy up to activate)"))
+			term.Row(term.Dim("No accounts tracked yet (run am proxy up to activate)"))
 		} else {
 			repIDs := make([]string, 0, len(reports))
 			for id := range reports {
@@ -523,7 +524,7 @@ func CmdGuard(args []string) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		term.Error("proxy returned HTTP %d (restart proxy with `amux proxy restart` to activate latest features)", resp.StatusCode)
+		term.Error("proxy returned HTTP %d (restart proxy with `am proxy restart` to activate latest features)", resp.StatusCode)
 		return
 	}
 	var g map[string]any

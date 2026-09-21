@@ -71,6 +71,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	if err != nil {
 		cfg = &Config{ThresholdPct: DefaultThresholdPct, Identities: []Identity{}}
 	}
+	initialCount := len(cfg.Identities)
 
 	// 0. Deduplicate any existing duplicates in cfg.Identities (same provider + email)
 	// If one is named ID (e.g. codex:ninhle21199) and one is numeric (codex:01), merge credentials and retain the named ID.
@@ -379,13 +380,17 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	}
 
 	cfg.Identities = DeduplicateIdentities(cfg.Identities)
-	if migratedCount > 0 || changed {
+	if len(cfg.Identities) > 0 || changed {
 		if err := SaveConfig(identitiesPath, cfg); err != nil {
 			return 0, fmt.Errorf("save migrated config: %w", err)
 		}
 	}
 
-	return migratedCount, nil
+	newMigrated := len(cfg.Identities) - initialCount
+	if newMigrated < 0 {
+		newMigrated = 0
+	}
+	return newMigrated, nil
 }
 
 func enrichIdentityFromProvider(target *Identity, p LegacyProvider) {

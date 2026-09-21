@@ -36,8 +36,9 @@ Account Management:
   account threshold [id]     View or set account failover quota threshold (default: 95%)
   account health             Probe credential validity and rate-limit limits
 
-Diagnostics & Setup:
-  doctor                     Run comprehensive diagnostics on keychain, network, tools & gateway
+Diagnostics & Security:
+  doctor [--security]        Run diagnostics on keychain, network, tools & gateway
+  audit                      Verify security posture, AES-256-GCM encryption & permissions
   usage [day|week|month]     Token usage & request analytics (day, week, month)
   setup                      Guided configuration wizard
   config [property]          Inspect or edit configuration (e.g. amux config threshold 85)

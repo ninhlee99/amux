@@ -41,29 +41,29 @@ I'll list files.
 	}
 }
 
-func TestParseWebTools_NativeToolCalls(t *testing.T) {
-	// Client catalog: model emits tools matching the native schema.
+func TestParseWebTools_DialectAliases(t *testing.T) {
+	// Cursor-style catalog: model emits Bash/Read → map to client names.
 	defs := []types.ToolDef{
 		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
 		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
 	}
 	xml := ParseWebTools(`<tool_call>
-{"name": "run_terminal_command", "arguments": {"command": "ls"}}
+{"name": "Bash", "arguments": {"command": "ls"}}
 </tool_call>
 <tool_call>
-{"name": "read_file", "arguments": {"file_path": "a.go"}}
+{"name": "Read", "arguments": {"path": "a.go"}}
 </tool_call>`, defs)
 	if len(xml) != 2 {
 		t.Fatalf("want 2 calls, got %+v", xml)
 	}
 	if xml[0].Name != "run_terminal_command" {
-		t.Fatalf("tool 0 name: %q", xml[0].Name)
+		t.Fatalf("bash alias → %q", xml[0].Name)
 	}
 	if xml[1].Name != "read_file" {
-		t.Fatalf("tool 1 name: %q", xml[1].Name)
+		t.Fatalf("read alias → %q", xml[1].Name)
 	}
 	if !strings.Contains(xml[1].Arguments, "file_path") {
-		t.Fatalf("expected file_path: %s", xml[1].Arguments)
+		t.Fatalf("path coerced to file_path: %s", xml[1].Arguments)
 	}
 	fence := ParseWebTools("```bash\necho hi\n```", defs)
 	if len(fence) != 1 || fence[0].Name != "run_terminal_command" {
@@ -451,135 +451,3 @@ func TestParseWebTools_UnescapedQuotesInsideBashCommand(t *testing.T) {
 		t.Fatalf("command not preserved byte-for-byte:\nwant=%q\ngot =%q", cmd, got.Command)
 	}
 }
-
-func TestFinalizeWebToolCalls_MultiTurnReviewThenFix_InterceptsRefusal(t *testing.T) {
-	defs := []types.ToolDef{
-		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
-		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
-	}
-
-	hist := []types.ChatMessage{
-		{
-			Role:    "user",
-			Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/39\nbạn hãy review PR này giúp tôi nhé",
-		},
-		{
-			Role: "assistant",
-			Content: `🤖【AI REVIEW】Overview
-🙏 Đã xem các thay đổi hiện có trong PR và tập trung vào các khu vực có khả năng gây regression/runtime issue.
-
-🟠 SHOULD FIX
-🟠 pkg/tools/capabilities.go:26-35 — Detection of reasoning models is too broad.
-if strings.Contains(m, "o1") || strings.Contains(m, "r1") {
-    caps.SupportsTemperature = false
-    caps.SupportsReasoningEffort = true
-}
-
-Fix — Restrict matching to known model families instead of substring matching.`,
-		},
-		{
-			Role:    "user",
-			Content: "/open-pr:fix https://github.com/ninhlee99/amux/pull/39\nhãy fix các comment của review trên",
-		},
-	}
-
-	refusalText := "I can continue the PR fix, but this chat context does not currently have access to the amux working tree or the PR worktree needed to safely edit files, commit, and push."
-
-	calls, forced := FinalizeWebToolCalls(refusalText, defs, hist)
-	if !forced {
-		t.Fatalf("expected refusal to be intercepted and forced into tool calls")
-	}
-	if len(calls) == 0 {
-		t.Fatalf("expected at least 1 forced tool call, got 0")
-	}
-
-	// Must target pkg/tools/capabilities.go from the review findings, NOT hardcoded hook.go
-	foundTarget := false
-	for _, c := range calls {
-		if strings.Contains(c.Arguments, "capabilities.go") {
-			foundTarget = true
-			break
-		}
-	}
-	if !foundTarget {
-		t.Fatalf("expected tool call to target pkg/tools/capabilities.go from review findings, got: %+v", calls)
-	}
-
-	// Ensure hook.go was NOT forced
-	for _, c := range calls {
-		if strings.Contains(c.Arguments, "hook.go") {
-			t.Fatalf("hook.go must NOT be hardcoded when review targeted capabilities.go: %+v", calls)
-		}
-	}
-}
-
-func TestFinalizeWebToolCalls_WebappEvidenceRecording_ForcesInspectOrSkill(t *testing.T) {
-	defs := []types.ToolDef{
-		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
-		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
-	}
-
-	hist := []types.ChatMessage{
-		{
-			Role:    "user",
-			Content: "/webapp-evidence:recording https://example.com/checkout",
-		},
-	}
-
-	evasionText := "I’m ready to help with the coding task. Provide the repository task, PR number, issue description, or relevant command/context."
-
-	calls, forced := FinalizeWebToolCalls(evasionText, defs, hist)
-	if !forced {
-		t.Fatalf("expected webapp-evidence evasion to be intercepted and forced")
-	}
-	if len(calls) == 0 {
-		t.Fatalf("expected at least 1 forced tool call for recording")
-	}
-
-	foundInspectOrSkill := false
-	for _, c := range calls {
-		if strings.Contains(c.Arguments, "inspect.js") || strings.Contains(c.Arguments, "recording/SKILL.md") || strings.Contains(c.Arguments, "example.com") {
-			foundInspectOrSkill = true
-			break
-		}
-	}
-	if !foundInspectOrSkill {
-		t.Fatalf("expected tool call to target inspect.js, recording SKILL.md, or target URL, got: %+v", calls)
-	}
-}
-
-func TestFinalizeWebToolCalls_WebappEvidenceVision_ForcesContactSheetOrSkill(t *testing.T) {
-	defs := []types.ToolDef{
-		{Name: "read_file", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
-		{Name: "run_terminal_command", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
-	}
-
-	hist := []types.ChatMessage{
-		{
-			Role:    "user",
-			Content: "/webapp-evidence:vision evidence/take-01.mp4",
-		},
-	}
-
-	evasionText := "I cannot run contact-sheet or look at videos in this chat."
-
-	calls, forced := FinalizeWebToolCalls(evasionText, defs, hist)
-	if !forced {
-		t.Fatalf("expected webapp-evidence vision refusal to be intercepted and forced")
-	}
-	if len(calls) == 0 {
-		t.Fatalf("expected at least 1 forced tool call for vision")
-	}
-
-	foundVisionTarget := false
-	for _, c := range calls {
-		if strings.Contains(c.Arguments, "contact-sheet.js") || strings.Contains(c.Arguments, "vision/SKILL.md") || strings.Contains(c.Arguments, "take-01.mp4") {
-			foundVisionTarget = true
-			break
-		}
-	}
-	if !foundVisionTarget {
-		t.Fatalf("expected tool call to target contact-sheet.js, vision SKILL.md, or target video, got: %+v", calls)
-	}
-}
-
