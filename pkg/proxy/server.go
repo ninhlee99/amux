@@ -33,6 +33,12 @@ import (
 	"amux-accounts/pkg/usage"
 )
 
+// AmuxGatewayHeader marks responses from amux's own /_am/status endpoint so
+// callers can tell them apart from some unrelated process that happens to
+// also be listening on the gateway's port (a plain 200 isn't proof enough —
+// see gateway.IsRunning).
+const AmuxGatewayHeader = "X-Amux-Gateway"
+
 type ProxyMode struct {
 	mu   sync.Mutex
 	mode string // "claude" | "provider"
@@ -96,6 +102,14 @@ func RunProxy(addr, upstream string) error {
 		upstream = "https://api.anthropic.com"
 	}
 
+	// Runs a `security find-generic-password` lookup on macOS. Kept
+	// synchronous and in front of NewRotator's own profile reads below —
+	// running it in a goroutine here raced with those reads (and with
+	// PeriodicSnapshot) against the same on-disk profile state with no
+	// locking. auth.KCGet/KCSet/KCAccount now bound every `security` call
+	// with a timeout (see pkg/auth/keychain.go), so a hung Keychain
+	// prompt can no longer stall this indefinitely — just for a few
+	// seconds at worst.
 	profile.SyncActiveFromSystem("claude")
 
 	rot := NewRotator("claude")
@@ -373,6 +387,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	// speaks the upstream HTTP APIs those clients already use.
 	mux.HandleFunc("/_am/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(AmuxGatewayHeader, "1")
 		s := rot.Status()
 		s["sessions"] = life.Sessions()
 		s["upstream"] = upstream

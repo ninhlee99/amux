@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 )
 
@@ -40,13 +42,39 @@ func PIDFilePath() string {
 
 // IsRunning reports whether the gateway is responding to HTTP requests.
 func IsRunning() bool {
+	return probeStatus() == probeUp
+}
+
+type probeResult int
+
+const (
+	// probeDown means nothing answered (connection refused/timeout) —
+	// the gateway may just not have bound its listener yet.
+	probeDown probeResult = iota
+	// probeUp means amux's own gateway answered.
+	probeUp
+	// probeOccupied means something answered on the port, but it isn't
+	// amux — some unrelated local process is squatting on :8787 (this
+	// has happened in practice and made `amux start` spin for its whole
+	// timeout waiting on a health check that was talking to the wrong
+	// server).
+	probeOccupied
+)
+
+// probeStatus checks /_am/status once and classifies the result. It relies
+// on the marker header amux's own handler always sets — a bare HTTP 200
+// isn't proof it's *our* gateway.
+func probeStatus() probeResult {
 	c := http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := c.Get(GatewayDefaultURL + "/_am/status")
 	if err != nil {
-		return false
+		return probeDown
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK && resp.Header.Get(proxy.AmuxGatewayHeader) != "" {
+		return probeUp
+	}
+	return probeOccupied
 }
 
 // GetStatus returns the current status of the gateway and hooked IDEs.
@@ -125,16 +153,27 @@ func Start() error {
 	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 
-	// Wait up to 3 seconds for gateway to be ready
-	deadline := time.Now().Add(3 * time.Second)
+	// Wait for the gateway to be ready. Startup runs a keychain lookup
+	// synchronously before it can bind the listener (see RunProxy), bounded
+	// by auth.KCTimeout — so this deadline must stay comfortably above that
+	// or a single slow-but-legitimate Keychain prompt (e.g. Touch ID) would
+	// misreport a healthy startup as "did not respond in time". +5s covers
+	// everything else startup does (account/profile loading, etc.).
+	deadline := time.Now().Add(auth.KCTimeout + 5*time.Second)
 	for time.Now().Before(deadline) {
-		if IsRunning() {
+		switch probeStatus() {
+		case probeUp:
 			return nil
+		case probeOccupied:
+			// Some other process is answering on :8787 right now — that's
+			// not going to change while we keep polling, so fail fast
+			// instead of burning the rest of the deadline.
+			return fmt.Errorf("gateway process %d started, but port 8787 is already in use by a different process (not amux) — stop whatever else is listening there, or check 'lsof -i :8787', and try again", pid)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return fmt.Errorf("gateway process %d started but did not respond on :8787 in time", pid)
+	return fmt.Errorf("gateway process %d started but did not respond on :8787 in time (it may still come up in the background — check with 'amux status')", pid)
 }
 
 // Stop gracefully stops the running gateway daemon.
