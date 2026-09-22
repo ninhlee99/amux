@@ -12,10 +12,14 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-// kcTimeout bounds every `security` invocation so a detached/background
-// process (no interactive session to satisfy a Keychain access prompt)
-// can never block its caller indefinitely.
-const kcTimeout = 3 * time.Second
+// kcTimeout bounds every `security` invocation so it can never block a
+// caller indefinitely — the original bug was a detached background process
+// stalling forever behind a Keychain access prompt nobody could answer.
+// It applies to interactive callers too (amux id add, amux use, ...), so
+// it's set generously enough to not cut off a user who's mid-prompt
+// approving Touch ID / their login password, while still bounding the
+// worst case.
+const kcTimeout = 10 * time.Second
 
 // KCGet retrieves a password item from macOS Keychain.
 func KCGet(service, account string) (string, error) {

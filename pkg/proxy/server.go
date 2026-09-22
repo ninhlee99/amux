@@ -102,13 +102,15 @@ func RunProxy(addr, upstream string) error {
 		upstream = "https://api.anthropic.com"
 	}
 
-	// Runs a `security find-generic-password` lookup on macOS, which can
-	// stall for a long time if Keychain wants an access prompt that a
-	// detached background process can never satisfy. Do it in the
-	// background so a slow/hung keychain lookup can't delay binding the
-	// listener and make `amux start` time out even though the gateway
-	// is otherwise healthy.
-	go profile.SyncActiveFromSystem("claude")
+	// Runs a `security find-generic-password` lookup on macOS. Kept
+	// synchronous and in front of NewRotator's own profile reads below —
+	// running it in a goroutine here raced with those reads (and with
+	// PeriodicSnapshot) against the same on-disk profile state with no
+	// locking. auth.KCGet/KCSet/KCAccount now bound every `security` call
+	// with a timeout (see pkg/auth/keychain.go), so a hung Keychain
+	// prompt can no longer stall this indefinitely — just for a few
+	// seconds at worst.
+	profile.SyncActiveFromSystem("claude")
 
 	rot := NewRotator("claude")
 	go rot.PeriodicSnapshot()

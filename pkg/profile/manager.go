@@ -457,7 +457,7 @@ func WriteBundle(tool, name string, entries []types.ProfileEntry) error {
 	if err := os.MkdirAll(ProfileDir(tool), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(BundlePath(tool, name), enc, 0o600)
+	return WriteFileAtomic(BundlePath(tool, name), enc, 0o600)
 }
 
 func UpdateProfileEntry(tool, name string, updated types.ProfileEntry) error {
