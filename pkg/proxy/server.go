@@ -33,6 +33,12 @@ import (
 	"amux-accounts/pkg/usage"
 )
 
+// AmuxGatewayHeader marks responses from amux's own /_am/status endpoint so
+// callers can tell them apart from some unrelated process that happens to
+// also be listening on the gateway's port (a plain 200 isn't proof enough —
+// see gateway.IsRunning).
+const AmuxGatewayHeader = "X-Amux-Gateway"
+
 type ProxyMode struct {
 	mu   sync.Mutex
 	mode string // "claude" | "provider"
@@ -96,7 +102,13 @@ func RunProxy(addr, upstream string) error {
 		upstream = "https://api.anthropic.com"
 	}
 
-	profile.SyncActiveFromSystem("claude")
+	// Runs a `security find-generic-password` lookup on macOS, which can
+	// stall for a long time if Keychain wants an access prompt that a
+	// detached background process can never satisfy. Do it in the
+	// background so a slow/hung keychain lookup can't delay binding the
+	// listener and make `amux start` time out even though the gateway
+	// is otherwise healthy.
+	go profile.SyncActiveFromSystem("claude")
 
 	rot := NewRotator("claude")
 	go rot.PeriodicSnapshot()
@@ -373,6 +385,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 	// speaks the upstream HTTP APIs those clients already use.
 	mux.HandleFunc("/_am/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(AmuxGatewayHeader, "1")
 		s := rot.Status()
 		s["sessions"] = life.Sessions()
 		s["upstream"] = upstream

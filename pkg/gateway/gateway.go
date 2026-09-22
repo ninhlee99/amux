@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 )
 
@@ -45,8 +46,26 @@ func IsRunning() bool {
 	if err != nil {
 		return false
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	// A bare 200 isn't proof it's *our* gateway: some unrelated local
+	// process can also be squatting on :8787 (this has happened in
+	// practice and made `amux start` spin for its whole timeout waiting
+	// on a health check that was talking to the wrong server). Require
+	// the marker header amux's own /_am/status handler always sets.
+	return resp.StatusCode == http.StatusOK && resp.Header.Get(proxy.AmuxGatewayHeader) != ""
+}
+
+// portOccupiedByOther reports whether something other than amux is already
+// answering on the gateway port, so Start() can surface an actionable error
+// instead of a generic timeout.
+func portOccupiedByOther() bool {
+	c := http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := c.Get(GatewayDefaultURL + "/_am/status")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.Header.Get(proxy.AmuxGatewayHeader) == ""
 }
 
 // GetStatus returns the current status of the gateway and hooked IDEs.
@@ -125,8 +144,11 @@ func Start() error {
 	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 
-	// Wait up to 3 seconds for gateway to be ready
-	deadline := time.Now().Add(3 * time.Second)
+	// Wait up to 8 seconds for gateway to be ready. Startup does some
+	// synchronous local I/O (account/profile loading) before it can bind
+	// the listener, so a few seconds of slack avoids false-negative
+	// timeouts on a slower machine even though the daemon is healthy.
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if IsRunning() {
 			return nil
@@ -134,7 +156,10 @@ func Start() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return fmt.Errorf("gateway process %d started but did not respond on :8787 in time", pid)
+	if portOccupiedByOther() {
+		return fmt.Errorf("gateway process %d started, but port 8787 is already in use by a different process (not amux) — stop whatever else is listening there, or check 'lsof -i :8787', and try again", pid)
+	}
+	return fmt.Errorf("gateway process %d started but did not respond on :8787 in time (it may still come up in the background — check with 'amux status')", pid)
 }
 
 // Stop gracefully stops the running gateway daemon.

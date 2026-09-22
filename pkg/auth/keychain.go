@@ -2,13 +2,20 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"amux-accounts/pkg/types"
 )
+
+// kcTimeout bounds every `security` invocation so a detached/background
+// process (no interactive session to satisfy a Keychain access prompt)
+// can never block its caller indefinitely.
+const kcTimeout = 3 * time.Second
 
 // KCGet retrieves a password item from macOS Keychain.
 func KCGet(service, account string) (string, error) {
@@ -16,10 +23,15 @@ func KCGet(service, account string) (string, error) {
 	if account != "" {
 		args = append(args, "-a", account)
 	}
-	cmd := exec.Command("security", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security", args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("security: timed out after %s (keychain may be waiting on a prompt)", kcTimeout)
+		}
 		return "", fmt.Errorf("security: %s", strings.TrimSpace(errb.String()))
 	}
 	return strings.TrimRight(out.String(), "\n"), nil
@@ -27,7 +39,9 @@ func KCGet(service, account string) (string, error) {
 
 // KCAccount reads the existing item's account attribute, if any.
 func KCAccount(service string) string {
-	cmd := exec.Command("security", "find-generic-password", "-s", service)
+	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -57,10 +71,15 @@ func KCSet(service, account, secret string) error {
 		"-s", service, "-a", account,
 		"-X", hex.EncodeToString([]byte(secret)),
 	}
-	cmd := exec.Command("security", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "security", args...)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("security add: timed out after %s (keychain may be waiting on a prompt)", kcTimeout)
+		}
 		return fmt.Errorf("security add: %s", strings.TrimSpace(errb.String()))
 	}
 	return nil

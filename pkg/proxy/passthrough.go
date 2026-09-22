@@ -38,6 +38,7 @@ func newPassthroughHandler(rot *Rotator, life *Lifecycle, upstream string, degra
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_am/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(AmuxGatewayHeader, "1")
 		s := rot.Status()
 		s["sessions"] = life.Sessions()
 		s["upstream"] = upstream
