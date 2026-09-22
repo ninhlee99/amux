@@ -229,9 +229,10 @@ func helpHook() {
   Inject AMUX Gateway endpoint into client IDE configurations for live failover and session routing.
 
 Usage:
-  amux hook [flags]
+  amux hook [target|flags]
 
-Flags:
+Targets:
+  status, list, ls    Show current hook & interception status (default when no args)
   --claude            Hook Claude Code (~/.claude/settings.json)
   --cursor            Hook Cursor IDE
   --codex             Hook Codex CLI
@@ -240,6 +241,7 @@ Flags:
   -h, --help          Show this help message
 
 Examples:
+  amux hook                   # Show current hook & interception status
   amux hook --all             # Direct all client IDE traffic through AMUX Gateway
   amux hook --claude          # Hook only Claude Code
 `)
