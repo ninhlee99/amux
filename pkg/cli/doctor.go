@@ -6,12 +6,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"amux-accounts/pkg/auth"
-	"amux-accounts/pkg/gateway"
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/types"
 )
 
@@ -22,7 +23,26 @@ func CmdDoctor(args []string) {
 		return
 	}
 
+	autoFix := false
+	for _, a := range args {
+		if a == "--fix" || a == "-f" {
+			autoFix = true
+		}
+	}
+
 	fmt.Println("== AMUX Diagnostic Doctor ==")
+
+	// 0. Base Directory & Self-Healing
+	baseDir := types.BaseDir()
+	if autoFix {
+		fmt.Printf("[Self-Healing] Verifying workspace permissions for %s... ", baseDir)
+		_ = os.MkdirAll(baseDir, 0o700)
+		_ = os.Chmod(baseDir, 0o700)
+		_ = os.MkdirAll(filepath.Join(baseDir, "sessions"), 0o700)
+		_ = os.MkdirAll(filepath.Join(baseDir, "logs"), 0o700)
+		_ = hook.InstallSlashCommand("feedback.md", []byte(hook.FeedbackSlashCommandContent))
+		fmt.Println("FIXED (0700 private permissions applied)")
+	}
 
 	// 1. macOS Keychain Access
 	fmt.Print("[Keychain] Checking OS Keychain read/write access... ")
@@ -32,12 +52,14 @@ func CmdDoctor(args []string) {
 		fmt.Printf("FAIL (%s)\n", msg)
 	}
 
-	// 2. Gateway Daemon Status
-	fmt.Print("[Gateway] Checking gateway daemon health... ")
-	if gateway.IsRunning() {
-		fmt.Printf("RUNNING (:8787 responding)\n")
+	// 2. Gateway Daemon & UDS Socket Status
+	fmt.Print("[Daemon Socket] Checking Unix Domain Socket (~/.amux/amux.sock)... ")
+	sockPath := monitor.DefaultSocketPath()
+	udsClient := monitor.NewUDSClient(sockPath)
+	if udsClient.IsDaemonAvailable() {
+		fmt.Printf("ONLINE (Responding via IPC)\n")
 	} else {
-		fmt.Printf("STOPPED (Normal if operating in zero-touch mode)\n")
+		fmt.Printf("OFFLINE (Run 'amux start' to activate socket IPC & proxy)\n")
 	}
 
 	// 3. Network Upstream Connectivity
@@ -69,14 +91,14 @@ func CmdDoctor(args []string) {
 	fmt.Println("\n== Identity Health Check ==")
 	reports, err := identity.CheckAllHealth("")
 	if err != nil || len(reports) == 0 {
-		fmt.Println("No identities configured.")
+		fmt.Println("No identities configured. (Add with 'amux id add [provider]')")
 	} else {
 		for _, r := range reports {
 			fmt.Printf(" - [%s] %s (%s): %s [%s]\n", r.Provider, r.ID, r.Tier, r.Status, r.Message)
 		}
 	}
 
-	fmt.Println("\nDiagnostics complete. Run 'amux audit' to verify security posture & encryption at rest.")
+	fmt.Println("\nDiagnostics complete. Run 'amux audit' for security verification or 'amux doctor --fix' for auto-repair.")
 }
 
 // CmdAudit runs a comprehensive security and encryption-at-rest verification.

@@ -41,7 +41,12 @@ func TestRouter_DomainRouteRegistration(t *testing.T) {
 		"uninstall":  "diagnostics",
 		"feedback":   "diagnostics",
 		"completion": "diagnostics",
+		"init":       "diagnostics",
 		"statusline": "diagnostics",
+		"whoami":     "diagnostics",
+		"ps":         "diagnostics",
+		"ls":         "diagnostics",
+		"version":    "diagnostics",
 	}
 
 	for cmd, expectedDomain := range expectedDomains {
@@ -110,5 +115,27 @@ func TestRouter_DispatchRootHelp(t *testing.T) {
 
 	if !strings.Contains(out, "Usage: amux <command>") {
 		t.Errorf("expected general help output when 'amux --help' is dispatched")
+	}
+}
+
+func TestRouter_FuzzySuggestion(t *testing.T) {
+	r := NewRouter()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"stat", "status"},
+		{"swich", "switch"},
+		{"docto", "doctor"},
+		{"usag", "usage"},
+		{"settup", "setup"},
+	}
+
+	for _, tt := range tests {
+		suggested := r.findClosestCommand(tt.input)
+		if suggested != tt.expected {
+			t.Errorf("input %q: expected suggestion %q, got %q", tt.input, tt.expected, suggested)
+		}
 	}
 }
