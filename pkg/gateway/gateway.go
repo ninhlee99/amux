@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
@@ -152,11 +153,13 @@ func Start() error {
 	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 
-	// Wait up to 8 seconds for gateway to be ready. Startup does some
-	// synchronous local I/O (account/profile loading) before it can bind
-	// the listener, so a few seconds of slack avoids false-negative
-	// timeouts on a slower machine even though the daemon is healthy.
-	deadline := time.Now().Add(8 * time.Second)
+	// Wait for the gateway to be ready. Startup runs a keychain lookup
+	// synchronously before it can bind the listener (see RunProxy), bounded
+	// by auth.KCTimeout — so this deadline must stay comfortably above that
+	// or a single slow-but-legitimate Keychain prompt (e.g. Touch ID) would
+	// misreport a healthy startup as "did not respond in time". +5s covers
+	// everything else startup does (account/profile loading, etc.).
+	deadline := time.Now().Add(auth.KCTimeout + 5*time.Second)
 	for time.Now().Before(deadline) {
 		switch probeStatus() {
 		case probeUp:

@@ -12,14 +12,18 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-// kcTimeout bounds every `security` invocation so it can never block a
+// KCTimeout bounds every `security` invocation so it can never block a
 // caller indefinitely — the original bug was a detached background process
 // stalling forever behind a Keychain access prompt nobody could answer.
 // It applies to interactive callers too (amux id add, amux use, ...), so
 // it's set generously enough to not cut off a user who's mid-prompt
 // approving Touch ID / their login password, while still bounding the
-// worst case.
-const kcTimeout = 10 * time.Second
+// worst case. Exported because gateway.Start()'s readiness deadline must
+// stay comfortably above this: gateway startup runs a keychain lookup
+// synchronously before it can bind its listener, so a deadline shorter
+// than (or too close to) this timeout would misreport a healthy-but-slow
+// startup as a failure.
+const KCTimeout = 10 * time.Second
 
 // KCGet retrieves a password item from macOS Keychain.
 func KCGet(service, account string) (string, error) {
@@ -27,14 +31,14 @@ func KCGet(service, account string) (string, error) {
 	if account != "" {
 		args = append(args, "-a", account)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), KCTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "security", args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("security: timed out after %s (keychain may be waiting on a prompt)", kcTimeout)
+			return "", fmt.Errorf("security: timed out after %s (keychain may be waiting on a prompt)", KCTimeout)
 		}
 		return "", fmt.Errorf("security: %s", strings.TrimSpace(errb.String()))
 	}
@@ -43,7 +47,7 @@ func KCGet(service, account string) (string, error) {
 
 // KCAccount reads the existing item's account attribute, if any.
 func KCAccount(service string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), KCTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service)
 	out, err := cmd.Output()
@@ -75,14 +79,14 @@ func KCSet(service, account, secret string) error {
 		"-s", service, "-a", account,
 		"-X", hex.EncodeToString([]byte(secret)),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), kcTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), KCTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "security", args...)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("security add: timed out after %s (keychain may be waiting on a prompt)", kcTimeout)
+			return fmt.Errorf("security add: timed out after %s (keychain may be waiting on a prompt)", KCTimeout)
 		}
 		return fmt.Errorf("security add: %s", strings.TrimSpace(errb.String()))
 	}
