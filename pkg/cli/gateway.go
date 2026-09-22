@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/gateway"
+	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/proxy"
 )
 
@@ -196,22 +197,25 @@ func hookStatusStr(hooked bool) string {
 }
 
 func cmdGatewayHook(args []string) {
+	if len(args) == 0 || args[0] == "status" || args[0] == "list" || args[0] == "ls" {
+		cmdGatewayHookStatus()
+		return
+	}
+
 	target := gateway.TargetAll
-	if len(args) > 0 {
-		switch args[0] {
-		case "--claude", "-c", "claude":
-			target = gateway.TargetClaude
-		case "--cursor", "cursor":
-			target = gateway.TargetCursor
-		case "--codex", "codex":
-			target = gateway.TargetCodex
-		case "--agy", "agy", "--antigravity", "antigravity":
-			target = gateway.TargetAgy
-		case "--all", "-a", "all":
-			target = gateway.TargetAll
-		default:
-			die("unknown hook target: %s (use --claude, --cursor, --codex, --agy, or --all)", args[0])
-		}
+	switch args[0] {
+	case "--claude", "-c", "claude":
+		target = gateway.TargetClaude
+	case "--cursor", "cursor":
+		target = gateway.TargetCursor
+	case "--codex", "codex":
+		target = gateway.TargetCodex
+	case "--agy", "agy", "--antigravity", "antigravity":
+		target = gateway.TargetAgy
+	case "--all", "-a", "all":
+		target = gateway.TargetAll
+	default:
+		die("unknown hook target: %s\n\nUsage:\n  amux hook [target]\n\nTargets:\n  claude, cursor, codex, agy, all\n\nOr run 'amux hook' to view current interception status.", args[0])
 	}
 
 	if err := gateway.Hook(target, ""); err != nil {
@@ -221,6 +225,68 @@ func cmdGatewayHook(args []string) {
 	if !gateway.IsRunning() {
 		fmt.Println("Notice: AMUX Gateway daemon is currently STOPPED.")
 		fmt.Println("  Run 'amux start' to start the gateway background daemon, or run 'amux unhook' to restore direct upstream connection.")
+	}
+}
+
+func cmdGatewayHookStatus() {
+	st := gateway.GetStatus()
+	fmt.Println("== AMUX Client Hook & Interception Status ==")
+	fmt.Println()
+
+	type clientInfo struct {
+		Name     string
+		Detected bool
+		Hooked   bool
+		Config   string
+	}
+
+	clients := []clientInfo{
+		{
+			Name:     "Claude Code",
+			Detected: hook.ClaudeAvailable(),
+			Hooked:   st.ClaudeHooked,
+			Config:   gateway.ClaudeSettingsPath(),
+		},
+		{
+			Name:     "Cursor IDE",
+			Detected: hook.CursorAvailable(),
+			Hooked:   st.CursorHooked,
+			Config:   gateway.CursorSettingsPath(),
+		},
+		{
+			Name:     "Codex CLI",
+			Detected: hook.CodexAvailable(),
+			Hooked:   st.CodexHooked,
+			Config:   gateway.CodexConfigPath(),
+		},
+		{
+			Name:     "Antigravity (AGY)",
+			Detected: hook.GeminiAvailable(),
+			Hooked:   st.AgyHooked,
+			Config:   gateway.AGYSettingsPath(),
+		},
+	}
+
+	for _, c := range clients {
+		detStr := "Found"
+		if !c.Detected {
+			detStr = "Not installed"
+		}
+		statusStr := "DIRECT (Native execution)"
+		if c.Hooked {
+			statusStr = "HOOKED (Routing via Gateway :8787)"
+		}
+		fmt.Printf("• %-18s [%s] -> %s\n", c.Name, detStr, statusStr)
+		fmt.Printf("  Config: %s\n", c.Config)
+	}
+
+	fmt.Println()
+	fmt.Println("Actionable Commands:")
+	fmt.Println("  amux hook --all      Hook all detected AI IDEs/CLIs to AMUX Gateway")
+	fmt.Println("  amux hook claude     Hook only Claude Code")
+	fmt.Println("  amux unhook --all    Restore native direct connection for all tools")
+	if !st.Running {
+		fmt.Println("  amux start           Start AMUX background proxy daemon (:8787)")
 	}
 }
 
