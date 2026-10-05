@@ -217,17 +217,50 @@ func HookUninstall() (int, error) {
 		n++
 	}
 	if env, ok := m["env"].(map[string]any); ok {
-		for _, k := range claudeSettingsEnvKeys {
-			if _, exists := env[k]; exists {
-				delete(env, k)
-				n++
-			}
-		}
+		n += removeAmuxClaudeEnv(env)
 		if len(env) == 0 {
 			delete(m, "env")
 		}
 	}
+	if n == 0 {
+		return 0, nil
+	}
 	return n, SaveClaudeSettings(m)
+}
+
+// removeAmuxClaudeEnv deletes only the env values amux wrote: a local
+// gateway base URL, the "am-proxy" placeholder token, and the model amux
+// pinned alongside them. Values the user set themselves are kept.
+func removeAmuxClaudeEnv(env map[string]any) int {
+	n := 0
+	base, _ := env["ANTHROPIC_BASE_URL"].(string)
+	tok, _ := env["ANTHROPIC_AUTH_TOKEN"].(string)
+	ownBase := isLocalGatewayURL(base)
+	ownTok := tok == "am-proxy" || tok == "amux-proxy"
+	if ownBase {
+		delete(env, "ANTHROPIC_BASE_URL")
+		n++
+	}
+	if ownTok {
+		delete(env, "ANTHROPIC_AUTH_TOKEN")
+		n++
+	}
+	if model, _ := env["ANTHROPIC_MODEL"].(string); ownBase && ownTok && strings.Contains(model, "sonnet") {
+		delete(env, "ANTHROPIC_MODEL")
+		n++
+	}
+	return n
+}
+
+// isLocalGatewayURL reports whether u points at a gateway on this machine.
+func isLocalGatewayURL(u string) bool {
+	u = strings.TrimSpace(u)
+	for _, p := range []string{"http://127.0.0.1:", "http://localhost:", "http://0.0.0.0:"} {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func HookInstalled() bool {
@@ -314,7 +347,7 @@ var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN
 // from that point on will, without the user needing to `eval` anything.
 //
 // proxyUp true  -> set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN to proxyBase
-//                  and default ANTHROPIC_MODEL to claude-sonnet-5.
+//                  and default ANTHROPIC_MODEL to the current Sonnet (claude-sonnet-5-5).
 // proxyUp false -> remove keys so a new session falls through to the
 // real Anthropic API on whatever ANTHROPIC_API_KEY / subscription login it
 // already has.
@@ -327,7 +360,7 @@ func SyncClaudeSettingsEnv(proxyUp bool, proxyBase string) error {
 	if proxyUp {
 		env["ANTHROPIC_BASE_URL"] = proxyBase
 		env["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
-		env["ANTHROPIC_MODEL"] = "claude-sonnet-5"
+		env["ANTHROPIC_MODEL"] = "claude-sonnet-5-5"
 	} else {
 		for _, k := range claudeSettingsEnvKeys {
 			delete(env, k)
@@ -682,11 +715,12 @@ func CodexHookUninstall() (int, error) {
 			}
 		}
 	}
-	if err := SaveCodexHooks(m); err != nil {
-		return n, err
+	if n > 0 {
+		if err := saveOrRemoveHooks(CodexHooksPath(), m, SaveCodexHooks); err != nil {
+			return n, err
+		}
 	}
 	_ = uninstallCodexStatusLine()
-	_ = SyncCodexSettingsEnv(false, "")
 	return n, nil
 }
 
@@ -790,7 +824,25 @@ func CursorHookUninstall() (int, error) {
 			hooks["sessionStart"] = kept
 		}
 	}
-	return n, SaveCursorHooks(m)
+	if n == 0 {
+		return 0, nil
+	}
+	return n, saveOrRemoveHooks(CursorHooksPath(), m, SaveCursorHooks)
+}
+
+// saveOrRemoveHooks writes m back, or deletes the file when amux's entries
+// were all it held.
+func saveOrRemoveHooks(path string, m map[string]any, save func(map[string]any) error) error {
+	if hooks, ok := m["hooks"].(map[string]any); ok && len(hooks) == 0 {
+		delete(m, "hooks")
+	}
+	if len(m) == 0 || (len(m) == 1 && m["version"] != nil) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return save(m)
 }
 
 func CursorHookInstalled() bool {

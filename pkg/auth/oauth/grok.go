@@ -11,7 +11,7 @@ const (
 	GrokDeviceAuthURL = "https://auth.x.ai/oauth/device_authorization"
 	GrokTokenURL      = "https://auth.x.ai/oauth/token"
 	GrokAPIBaseURL    = "https://api.x.ai/v1"
-	GrokDefaultModel  = "grok-2-latest"
+	GrokDefaultModel  = "grok-4.7"
 )
 
 // LoginGrokDeviceFlow executes the RFC 8628 Device Authorization Flow for xAI Grok.

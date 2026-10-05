@@ -13,53 +13,88 @@ func hasHelp(args []string) bool {
 }
 
 func usageHelp() {
-	fmt.Print(`amux — Thin AI Gateway & AI Developer Infrastructure
+	fmt.Print(`amux — use several AI accounts from Claude Code, Codex, Cursor and Antigravity
 
-Usage: amux <command> [arguments]
+Usage: amux <command> [args]        Help for one command: amux <command> --help
 
-Gateway Daemon:
-  start [-f] [-p]            Start gateway daemon (-f foreground, -p public 0.0.0.0:8787)
-  stop                       Gracefully stop gateway background daemon
-  restart                    Restart gateway background daemon
-  status                     Real-time dashboard of accounts, quotas & gateway state
-  hook [flags]               Hook IDE settings to gateway (--claude, --cursor, --codex, --agy, --all)
-  unhook [flags]             Restore IDE settings to direct upstream
-  env                        Output shell export statements (eval "$(amux env)")
+Accounts
+  login [provider]        Add an account: claude, codex, agy, chatgpt, gemini-web, muse
+                          or an API key: gemini, groq, kimi, grok, github
+  account list            Show all accounts (also: amux ls)
+  switch <id>             Make <id> the active login of its tool — no re-login
+  account off|on <id>     Never use an account / allow it again
+  account remove <id>     Delete an account and its saved login
 
-Account Management:
-  login [provider]           Interactive or CLI login (claude, codex, antigravity, gemini, chatgpt, api)
-  account list               List all configured accounts, tiers, active status & quotas
-  account switch [id]        Switch active account (updates native Keychain & IDE configs)
-  use <id>                   Bind current workspace/repo to a specific account (.amux)
-  project [status|set|clear] Manage per-project identity and settings
-  account logout <id>        Remove account and purge its cached credentials
-  account on / off <id>      Enable or temporarily disable an account from failover
-  account auto <id> [on|off] Toggle automatic rotation eligibility for an account
-  account threshold [id]     View or set account failover quota threshold (default: 95%)
-  account health             Probe credential validity and rate-limit limits
+Pool (automatic switching)
+  pool                    Show which accounts amux may switch between on its own
+  pool add <id>           Allow automatic switching to <id> (subscriptions are never added for you)
+  pool remove <id>        Back to manual-only
 
-Diagnostics & Security:
-  doctor [--security]        Run diagnostics on keychain, network, tools & gateway
-  audit                      Verify security posture, AES-256-GCM encryption & permissions
-  vault [export|import|info] Passphrase-encrypted backup & multi-machine account sync
-  usage [day|week|month]     Token usage & request analytics (day, week, month)
-  completion [bash|zsh|fish] Generate shell autocompletion script
-  setup                      Guided configuration wizard
-  config [property]          Inspect or edit configuration (e.g. amux config threshold 85)
-  threshold [percent]        Get or set global multi-account failover threshold
-  migrate                    Non-destructive migration to flat Identity model
-  update [--force]           Update amux binary to latest version
-  uninstall [--purge]        Uninstall amux and clean up hooks
+Gateway (optional — route tools through amux)
+  start | stop | restart  Run the local gateway on http://127.0.0.1:8787
+  hook <tool>             Point a tool at the gateway (claude, codex, cursor, agy, all)
+  unhook <tool>           Undo it (no tool = all)
+  off                     Unhook everything and stop the gateway — back to native
+  status                  Gateway, hooked tools and accounts at a glance
+
+MCP (use your accounts as tools in any MCP agent)
+  mcp install [host|all]  Register amux in Claude Code, Cursor, Codex, Gemini CLI, …
+  mcp uninstall [host]    Remove it (no host = everywhere it is registered)
+  mcp status              Where amux is registered
+
+Maintenance
+  doctor                  Check keychain, tools and gateway
+  usage [day|week|month]  Token usage per account
+  config secret-store …   Keep secrets in the OS keychain (default) or a local vault file
+  update                  Update amux
+  uninstall [--purge]     Remove amux cleanly (--purge also deletes ~/.amux)
+
+Examples
+  amux login claude && amux login claude     Save two Claude Code accounts
+  amux switch claude:code:02                 Use the second one in Claude Code now
+  amux pool add claude:code:01 claude:code:02  Let amux switch between them at the limit
+`)
+}
+
+func helpPool() {
+	fmt.Print(`Purpose:
+  Choose which accounts amux may switch between on its own.
+
+Usage:
+  amux pool                 List accounts in / out of the pool
+  amux pool add <id>...     Add accounts to the pool
+  amux pool remove <id>...  Take accounts out of the pool
+
+The pool is the set of accounts amux may switch between by itself when one
+reaches its limit (default 95%, see: amux account threshold).
+
+  • Subscriptions (Claude Code, Codex, Antigravity plans) are never in the
+    pool unless you add them here.
+  • amux only switches from a pooled account to another pooled account.
+    An account outside the pool is used only when you pick it (amux switch).
+  • Web and API-key accounts are in the pool by default; remove them here.
 
 Examples:
-  amux login claude          Authenticate Claude Code subscription via OAuth
-  amux start                 Start AMUX Gateway service in background
-  amux account list          Display all configured accounts & status
-  amux switch claude:code:01 Switch active account to claude:code:01
-  amux status                Inspect real-time gateway routing & quota health
-  amux hook --all            Direct all IDE tools through AMUX Gateway
+  amux pool add claude:code:01 claude:code:02
+  amux pool remove codex:01
+`)
+}
 
-Run 'amux <command> --help' for detailed documentation and options for any command.
+func helpOff() {
+	fmt.Print(`Purpose:
+  Go back to native: every tool uses its own login, amux stays out of the way.
+
+Usage:
+  amux off
+
+Unhooks every tool (Claude Code, Codex, Cursor, Antigravity) and stops the
+gateway, so each tool talks to its own provider with its own login again.
+Accounts, saved logins and MCP registrations are kept; restart open sessions.
+
+Examples:
+  amux off                          Back to native
+  amux start && amux hook claude    Undo it
+  amux uninstall                    Remove amux completely
 `)
 }
 
@@ -88,21 +123,18 @@ Error Recovery:
 
 func helpStop() {
 	fmt.Print(`Purpose:
-  Gracefully terminate the running AMUX Gateway daemon.
+  Stop the local gateway.
 
 Usage:
-  amux stop [options]
+  amux stop [--public]
 
-Options:
-  -p, --public        Reset public binding configuration and revoke public bearer token
-  -h, --help          Show this help message
+Stops the gateway. Hooked tools keep pointing at it and will fail until
+'amux start' — use 'amux off' to unhook them and stop in one step.
+--public also turns public mode off and revokes its token.
 
 Examples:
-  amux stop                   # Stop running gateway background daemon
-  amux stop --public          # Stop gateway and reset public network binding
-
-Error Recovery:
-  - If daemon is unresponsive: Kill PID directly via 'kill $(cat ~/.amux/gateway.pid)'.
+  amux stop
+  amux off        Stop and unhook every tool
 `)
 }
 
@@ -144,13 +176,14 @@ Examples:
 
 func helpLogin() {
 	fmt.Print(`Purpose:
-  Authenticate and register AI provider accounts (Claude Code, Codex, Antigravity, Gemini, ChatGPT).
+  Authenticate and register AI provider accounts (Claude Code, Codex, Antigravity, Gemini, ChatGPT, Meta Muse).
 
 Usage:
   amux login [provider] [options]
 
 Arguments:
-  [provider]          Provider to authenticate: claude, codex, antigravity, gemini, chatgpt, api
+  [provider]          claude, codex, agy, chatgpt, gemini-web, muse (accounts)
+                      gemini, groq, kimi, grok, github, cursor (API keys)
 
 Options:
   --device, -d        Use device/remote authorization code flow (ideal for SSH/headless)
@@ -165,106 +198,81 @@ Examples:
   amux login claude --device  # Device code flow for headless/SSH servers
   amux login codex            # Authenticate OpenAI Codex CLI
   amux login antigravity      # Snapshot active Antigravity IDE login
-  amux login api --name deepseek --base-url https://api.deepseek.com --token sk-...
+  amux login muse             # Sign in to Meta Muse in amux's own browser profile (no keychain)
+  amux login groq --token gsk_...
 
 Error Recovery:
   - If browser fails to open: Copy the printed OAuth authorization URL and paste into any browser.
-  - If token expires: Run 'amux switch <id>' to trigger automatic token refresh.
+  - Logging in to a tool's account makes it that tool's active login; the previous login is saved
+    first, so 'amux switch <id>' brings it back without logging in again.
 `)
 }
 
 func helpSwitch() {
 	fmt.Print(`Purpose:
-  Switch the active account for a provider, updating OS Keychain and IDE configs without re-login.
+  Change which saved account a tool is logged in with — no browser login.
 
 Usage:
-  amux switch [account-id]
+  amux switch [id]          (no id: pick from a list; a number from that list also works)
 
-Arguments:
-  [account-id]        Target account ID (e.g. claude:code:01, antigravity:02). Omit for interactive menu.
+Makes <id> the active login of its tool. For Claude Code, Codex and
+Antigravity the saved login is written back into the tool's own keychain /
+config, so no browser login is needed. The login you are leaving is saved
+first, so switching back later works too. For web / API accounts it makes
+the gateway prefer that account.
 
-Options:
-  -h, --help          Show this help message
+Running sessions keep the old account until restarted (claude --continue).
 
 Examples:
-  amux switch                 # Interactive picker showing all configured accounts
-  amux switch claude:code:02  # Instantly switch active Claude Code subscription
-  amux switch antigravity:01  # Switch to Antigravity account 1
+  amux switch claude:code:02
+  amux switch codex:01
 
-Error Recovery:
-  - If account is not found: Run 'amux account list' to view available IDs.
-  - If account was disabled: Run 'amux account on <id>' to re-enable it.
+If it fails: the account's login expired — run amux login <tool> once more.
 `)
 }
 
 func helpAccount() {
-	fmt.Print(`Purpose:
-  Manage AI accounts, identity pools, quotas, and OS Keychain integration.
-
-Usage:
-  amux account <subcommand> [arguments]
-
-Subcommands:
-  list, ls                    List all accounts, emails, quotas, active state & auto-switch
-  switch, select <id>         Switch active account (updates native Keychain & IDE configs)
-  login, add [provider]       Add / authenticate a new account
-  logout, remove <id>         Remove an account and delete its profile bundle
-  on, enable <id>             Re-enable a previously disabled account
-  off, disable <id>           Temporarily disable an account from failover rotation
-  auto <id> [on|off]          Toggle automatic rotation eligibility for an account
-  threshold [id] [val]        Get or set failover quota threshold percentage
-  health                      Probe token validity and quota limits across all accounts
-  -h, --help                  Show this help message
-
-Examples:
-  amux account list           # Display all accounts and active pointers
-  amux account switch 01      # Switch to claude:code:01
-  amux account auto agy:01 on # Enable automatic failover rotation for an account
-  amux account threshold 90   # Set failover threshold to 90%
-`)
+	fmt.Print("Purpose:\n  List, turn on/off and remove accounts.\n\n")
+	cmdAccountHelp()
 }
 
 func helpHook() {
 	fmt.Print(`Purpose:
-  Inject AMUX Gateway endpoint into client IDE configurations for live failover and session routing.
+  Route a tool through the local gateway (optional).
 
 Usage:
-  amux hook [target|flags]
+  amux hook                 Show which tools are hooked
+  amux hook <tool>          claude | codex | cursor | agy | all
 
-Targets:
-  status, list, ls    Show current hook & interception status (default when no args)
-  --claude            Hook Claude Code (~/.claude/settings.json)
-  --cursor            Hook Cursor IDE
-  --codex             Hook Codex CLI
-  --agy               Hook Antigravity CLI
-  --all               Hook all detected IDEs
-  -h, --help          Show this help message
+Points the tool's config at the local gateway (http://127.0.0.1:8787), which
+must be running (amux start). amux only adds its own keys and never touches
+the rest of the config. Undo with: amux unhook <tool>
+
+Files changed:
+  claude   ~/.claude/settings.json  env.ANTHROPIC_BASE_URL, env.ANTHROPIC_AUTH_TOKEN
+  codex    ~/.codex/config.toml     openai_base_url
+  cursor   Cursor settings.json     cursor.openaiBaseUrl
+  agy      ~/.gemini/antigravity-cli/settings.json, shell rc block, launchctl env
 
 Examples:
-  amux hook                   # Show current hook & interception status
-  amux hook --all             # Direct all client IDE traffic through AMUX Gateway
-  amux hook --claude          # Hook only Claude Code
+  amux hook claude
+  amux hook all
 `)
 }
 
 func helpUnhook() {
 	fmt.Print(`Purpose:
-  Remove AMUX Gateway endpoint from client IDE configurations and restore direct upstream execution.
+  Undo 'amux hook' — the tool talks to its own provider again.
 
 Usage:
-  amux unhook [flags]
+  amux unhook [tool]        claude | codex | cursor | agy | all (default: all)
 
-Flags:
-  --claude            Unhook Claude Code (~/.claude/settings.json)
-  --cursor            Unhook Cursor IDE
-  --codex             Unhook Codex CLI
-  --agy               Unhook Antigravity CLI
-  --all               Unhook all detected IDEs
-  -h, --help          Show this help message
+Removes exactly what 'amux hook' added; values you set yourself are kept.
+To also stop the gateway in one step: amux off
 
 Examples:
-  amux unhook --all           # Restore direct native execution across all IDEs
-  amux unhook --claude        # Restore direct native execution for Claude Code
+  amux unhook claude
+  amux unhook
 `)
 }
 

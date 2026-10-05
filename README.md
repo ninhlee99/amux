@@ -1,161 +1,168 @@
-# AMUX — AI Developer Infrastructure & Identity Gateway
+# amux
 
-[![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/ninhlee99/amux)
-[![Security](https://img.shields.io/badge/security-AES--256--GCM-green.svg)](docs/security-model.md)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+Keep several AI accounts — Claude Code, Codex, Antigravity subscriptions, ChatGPT / Gemini / Meta Muse web sessions, API keys — on one machine and switch between them without logging in again. Optionally route tools through a local gateway, or expose the accounts as MCP tools to any agent.
 
-**AMUX** is an AI developer infrastructure and identity gateway. It lets you use your AI tools (Claude Code, Cursor, OpenAI Codex, Google Antigravity/Gemini) normally while managing identities, quotas, and execution securely behind the scenes.
+amux changes nothing on its own: a tool's login, config or account only changes when you run a command for it, and every change can be undone exactly.
 
-```
-AI Clients & IDEs
-  (Claude Code, Cursor, Codex CLI, Antigravity/AGY, Gemini Web, ChatGPT Web)
-                           │
-                           ▼
-                    AMUX AI Gateway
-  ┌─────────────────────────────────────────────────────────────┐
-  │  • Flat Identity Lifecycle & Instant Multi-Account Switch   │
-  │  • Native OS Keychain Sync (Zero-reauth required)           │
-  │  • Localhost Streaming Reverse Proxy (:8787)                │
-  │  • Encrypted-at-Rest Secret Vault (AES-256-GCM)             │
-  └──────────────────────────────┬──────────────────────────────┘
-                                 │
-                                 ▼
-                     Native Tools & Upstreams
-  (IDE Tools, MCP Servers, OS Keychain, Claude/OpenAI/Gemini APIs)
-```
+## Install
 
----
+Requires Go 1.22+ on macOS or Linux.
 
-## 🧭 Why AMUX? (Frequently Asked by Developers)
-
-### 1. "Why do I need this?"
-If you use multiple AI coding tools or multiple subscriptions (e.g., personal Claude Code + company Claude Code + Google Antigravity), switching accounts normally requires logging out in the browser, losing active session state, or re-authenticating repeatedly. AMUX manages these identities as first-class objects on your machine, enabling **instant zero-touch switching** between accounts without browser popups or lost tokens.
-
-### 2. "Why should I trust it with my credentials?"
-AMUX enforces a strict, local-only trust model:
-- **Zero unencrypted storage**: All tokens and session cookies in `~/.amux/` are sealed with **AES-256-GCM authenticated encryption** using a master key derived from the OS Keychain.
-- **Localhost only**: The gateway binds exclusively to `127.0.0.1:8787`.
-- **No telemetry exfiltration**: Your code, prompts, and tokens never leave your local machine.
-👉 Read the complete [AMUX Security & Trust Model](docs/security-model.md).
-
-### 3. "What happens when AMUX crashes or is stopped?"
-**Your tools keep working natively.** In zero-touch mode, AMUX synchronizes credentials directly into the native OS Keychain (`Claude Code-credentials`, `antigravity-service`) and IDE config files. If AMUX is stopped, Claude Code and Codex continue running directly against upstream APIs without any dependency on the AMUX daemon.
-
----
-
-## 📊 Implementation Status
-
-To provide full transparency between current production features and future roadmap items, AMUX categorizes capabilities into three distinct tiers:
-
-### ✅ Stable (Production Ready)
-- **Flat Identity Model**: Unified configuration schema (`~/.amux/identities.json`) with strict 1-account-per-provider deduplication.
-- **Native OS Keychain Sync**: Instant switching (`amux switch <id>`) between Claude Code, AGY, and Codex accounts with zero browser re-login.
-- **Encrypted Vault at Rest**: `AMENC1:` envelope format with AES-256-GCM cipher and 0600 file permission enforcement.
-- **Local Gateway Daemon**: Background proxy daemon on `127.0.0.1:8787` with lifecycle management (`start`, `stop`, `restart`, `status`).
-- **Client IDE Hooks**: Transparent config patching and restoration for Claude Code, Cursor, and Codex.
-
-### 🧪 Experimental (Active Evaluation)
-- **Web Session Pool**: Cookie-based failover pool for ChatGPT Web and Gemini Web sessions.
-- **Adaptive Quota Thresholds**: Auto-rotation triggers when an active identity hits its defined usage threshold (default: 95.0%).
-- **Context Deduplication (`pkg/ctxshrink`)**: Prompt and response caching to reduce token retransmission overhead.
-
-### 🚧 Planned Roadmap
-- **Universal Tool IR**: Normalized intermediate representation for cross-tool translation between Anthropic `tool_use` and OpenAI `tool_calls`.
-- **Cross-Dialect Multi-Provider Failover**: Dynamic automatic fallback routing across disparate model families during major cloud outages.
-- **Cross-Machine Vault Sync**: End-to-end encrypted backup of identity configurations across developer workstations.
-
----
-
-## 🚀 2-Minute Quickstart
-
-### 1. Installation (macOS & Linux)
 ```bash
-# Clone and build binary
-git clone https://github.com/ninhlee99/amux.git
-cd amux
-go build -o amux .
-sudo cp amux /usr/local/bin/amux
+git clone https://github.com/ninhlee99/amux.git && cd amux
+go build -o amux . && sudo cp amux /usr/local/bin/
+amux help
 ```
 
-### 2. Authenticate Your Accounts
+## Switch accounts without logging in again
+
 ```bash
-amux login claude       # Claude Code OAuth PKCE or browser login
-amux login codex        # OpenAI Codex CLI authentication
-amux login agy          # Google Antigravity / Google account snapshot
-amux login chatgpt      # ChatGPT Web session pool
-amux login api          # Custom OpenAI-compatible endpoints (DeepSeek, Ollama)
+amux login claude          # log in account A (browser); it becomes Claude Code's login
+amux login claude          # log in account B; A is saved first
+amux account list          # see both
+amux switch claude:code:01 # Claude Code is back on account A — no browser
 ```
 
-### 3. Start the Gateway Daemon
+```
+ID                       EMAIL              TYPE  ACTIVE  POOL  USAGE   THRESHOLD  RESETS IN
+claude:code:01           alice@company.com  sub   yes     no    12%     100.0%     4h10m
+claude:code:02           alice@gmail.com    sub   -       no    0%      100.0%     unknown
+```
+
+- Works the same for `codex` and `agy` (Antigravity). `amux switch` with no id shows a numbered picker.
+- The login you leave is saved first, so refreshed tokens are never lost and switching back always works.
+- Only the account keys are swapped: for Claude Code that is the keychain item and `oauthAccount` in `~/.claude.json`; MCP servers, projects and settings in that file stay as they are.
+- Running sessions keep their account until restarted (`claude --continue` resumes).
+- If a switch fails, that account's login has expired: `amux login <tool>` once more.
+
+## Rotation pool
+
+The pool is the set of accounts amux may switch between **by itself** when one reaches its limit.
+
 ```bash
-amux start              # Starts background daemon on http://127.0.0.1:8787
+amux pool                                    # who is in / out
+amux pool add claude:code:01 claude:code:02  # allow automatic switching between them
+amux pool remove claude:code:02              # back to manual only
 ```
 
-### 4. Direct Your IDE to the Gateway (Optional)
+Rules:
+
+1. Subscriptions (Claude Code, Codex, Antigravity) are **never** in the pool unless you add them. Logging in does not add them.
+2. amux only switches from a pooled account to another pooled account. An account outside the pool is never switched to, and never switched away from, automatically — when it hits its limit, it stays limited until you `amux switch`.
+3. Web and API-key accounts are in the pool by default; take one out with `amux pool remove <id>`.
+4. A pooled account hands over at 95% usage (100% when it is the only pooled account of its provider). Change it with `amux account threshold <id> <pct>` or globally with `amux threshold <pct>`.
+5. Automatic switching happens for traffic that goes through the gateway (below). Without the gateway, nothing is switched automatically.
+
+`amux account off <id>` turns an account off entirely (never used, not even by `amux switch`) until `amux account on <id>`.
+
+## Gateway (optional)
+
+A local server on `http://127.0.0.1:8787` that speaks the Anthropic, OpenAI (chat + responses) and Gemini APIs and serves them from your accounts.
+
 ```bash
-amux hook --all         # Automatically hooks detected IDEs (Claude Code, Cursor, Codex)
+amux start            # run it in the background
+amux hook claude      # point Claude Code at it (also: codex, cursor, agy, all)
+amux status           # gateway, hooked tools, accounts
+amux unhook claude    # undo one tool
+amux off              # unhook every tool and stop the gateway
 ```
-*You can now run your tools natively (e.g. `claude` or `codex`). AMUX manages accounts and quotas in the background.*
 
----
+What `hook` writes — and `unhook` removes again, leaving everything you set yourself:
 
-## 🛠️ CLI Command Reference
+| Tool | File | Keys |
+| :--- | :--- | :--- |
+| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN` (placeholder) |
+| Codex | `~/.codex/config.toml` | `openai_base_url` |
+| Cursor | Cursor `User/settings.json` | `cursor.openaiBaseUrl` |
+| Antigravity | `~/.gemini/antigravity-cli/settings.json`, a marked block in your shell rc, launchctl | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` (only if unset), `modelProvider` (only if unset) |
 
-### Identity & Account Management
-| Command | Description |
+A hooked tool needs the gateway running. `amux stop` warns about tools that are still hooked; `amux off` is the one-step way back to native.
+
+Pin a request to one account or one family with the `X-Provider` header (`gemini:web:01` = that account only; `gemini:web`, `chatgpt`, `muse:web` = amux picks a healthy one in that family):
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions -H "Content-Type: application/json" \
+  -H "X-Provider: gemini:web" -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+```
+
+## MCP
+
+Use your accounts as tools from any MCP-capable agent: Claude Code, Claude Desktop, Cursor, Windsurf, VS Code (Copilot agent), Gemini CLI, Antigravity, Codex, opencode, Zed.
+
+```bash
+amux mcp install all       # register in every detected host (or name hosts: claude cursor …)
+amux mcp status            # where it is registered
+amux mcp uninstall         # remove it from every host it is registered in
+```
+
+Install edits only the `amux` entry, keeps a `.amux.bak` of the original until uninstall, and never rewrites a config with comments (it prints the snippet instead: `amux mcp config <host>`). Uninstall removes the entry, the backup, and the file itself if amux created it.
+
+| Tool | Purpose |
 | :--- | :--- |
-| `amux login [provider]` | Interactive or direct authentication for a provider |
-| `amux id list` (or `amux account`) | Display all identities, models, quotas, active state & auto-switch |
-| `amux switch <id>` | Instantly switch active account (updates OS Keychain & IDE configs) |
-| `amux id remove <id>` | Remove identity and safely purge its credentials |
-| `amux id enable <id>` | Re-enable an identity in the failover rotation pool |
-| `amux id disable <id>` | Temporarily disable an identity from failover rotation |
-| `amux id auto <id> [on\|off]` | Toggle auto-failover eligibility |
-| `amux id threshold [id] [val]` | Get or set account failover quota threshold (default: 95.0%) |
+| `amux_ask` | Ask another model. `provider` = an exact id (pinned) or a family (`gemini:web`, `chatgpt`, `muse:web`). Subscriptions are used only when pinned or in the pool. |
+| `amux_providers`, `amux_status` | Usable accounts; gateway URLs per client |
+| `muse_chat`, `muse_new_chat`, `muse_chats`, `muse_open_chat`, `muse_read_chat`, `muse_read_last`, `muse_media` | Meta Muse chat, history, attachments, generated media |
+| `muse_status`, `muse_login`, `muse_dump_dom`, `muse_close` | Muse session and diagnostics |
 
-### Gateway Daemon Management
-| Command | Description |
-| :--- | :--- |
-| `amux start [-f]` | Start gateway daemon (`-f` foreground mode) |
-| `amux stop` | Gracefully stop background daemon |
-| `amux restart` | Stop and restart background daemon |
-| `amux status` | Real-time status dashboard of identities, active hooks, and daemon |
-| `amux hook [flags]` | Hook IDE configurations (`--claude`, `--cursor`, `--codex`, `--agy`, `--all`) |
-| `amux unhook [flags]` | Restore IDE configurations to direct upstream connections |
-
-### Diagnostics & Security
-| Command | Description |
-| :--- | :--- |
-| `amux doctor` | Deep diagnostics: network, keychain access, tools & daemon health |
-| `amux usage [day\|week\|month]` | Token usage analytics, cost estimates & request history |
-| `amux config [property]` | Inspect or modify configuration properties |
-| `amux migrate` | Non-destructive migration from legacy accounts to flat Identity model |
-| `amux uninstall [--purge]` | Uninstall AMUX binary and hooks (`--purge` wipes `~/.amux`) |
-
----
-
-## 🔄 Multi-Account Switching Workflow
-
-When working with multiple subscriptions (e.g. personal and company Claude Code accounts):
+## Other accounts
 
 ```bash
-# 1. List all configured identities
-$ amux id list
-ID                   EMAIL                      MODEL              THRESHOLD      USAGE    ACTIVE   AUTO-SWITCH  RESETS IN
-claude:code:01       alice@company.com          claude-3-7-sonnet  90.0%          12.4%    YES *    ON           unknown
-claude:code:02       alice.personal@gmail.com   claude-3-7-sonnet  90.0%          0.0%     NO       ON           unknown
-
-# 2. Switch to personal account instantly
-$ amux switch claude:code:02
-✓ Current active account credentials snapshotted
-✓ Native credentials updated for anthropic execution
-✓ Account "claude:code:02" is now ACTIVE.
+amux login chatgpt      # ChatGPT web session
+amux login gemini-web   # Gemini web session
+amux login muse         # Meta Muse, in amux's own browser profile (no keychain)
+amux login groq --token gsk_...   # API keys: gemini, groq, kimi, grok, github, cursor
 ```
-**Zero browser re-login is required.** Tokens are preserved and loaded directly into the native runtime.
 
----
+Meta Muse has no API; amux drives the web app over the Chrome DevTools Protocol. `AMUX_MUSE_CDP=http://127.0.0.1:9222` attaches to a Chrome you already run; `AMUX_MUSE_HEADLESS=1` runs headless after the first login.
 
-## 📄 License
+## Secrets
 
-Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+Everything in `~/.amux` is encrypted (AES-256-GCM, files `0600`); the gateway listens on `127.0.0.1` only. The master key lives in the OS keychain, or — after `amux config secret-store file` — in `~/.amux/master.key` (or `$AMUX_MASTER_KEY`), so amux never touches the keychain. Details: [docs/security-model.md](docs/security-model.md).
+
+## Removing amux
+
+| Command | Removes | Keeps |
+| :--- | :--- | :--- |
+| `amux unhook [tool]` | The gateway keys `hook` added | Everything else in the tool's config |
+| `amux off` | All hooks; stops the gateway | Accounts, MCP registrations |
+| `amux mcp uninstall [host]` | The `amux` MCP entry and its backups | Other MCP servers |
+| `amux account remove <id>` | That account and its saved login | The tool's current login |
+| `amux uninstall` | Hooks, gateway, session hooks / status lines, MCP entries, `/amux` slash commands, auto-update agent, the binary | `~/.amux` |
+| `amux uninstall --purge` | All of the above, `~/.amux`, amux's master key in the keychain | — |
+
+None of these touch the tools' own logins: Claude Code, Codex and Antigravity keep working with whatever account they are on. Restart open sessions afterwards.
+
+## Commands
+
+| Command | Does |
+| :--- | :--- |
+| `amux login [provider]` | Add an account |
+| `amux account list` (`amux ls`) | List accounts |
+| `amux switch [id]` | Make an account the active login of its tool |
+| `amux account off\|on <id>` | Turn an account off / on |
+| `amux account remove <id>` | Delete an account |
+| `amux account threshold [id] [pct]` | Hand-over threshold for pooled accounts |
+| `amux account health` | Check every saved login |
+| `amux pool [add\|remove] <id>` | Manage the rotation pool |
+| `amux start \| stop \| restart` | Run the gateway (`start -f` foreground) |
+| `amux hook [tool]`, `amux unhook [tool]` | Route a tool through the gateway / undo |
+| `amux off` | Unhook all and stop the gateway |
+| `amux status` | Gateway, hooks, accounts |
+| `amux mcp install\|uninstall\|status\|config\|tools` | MCP server and host registration |
+| `amux usage [day\|week\|month]` | Token usage per account |
+| `amux doctor` | Diagnose keychain, tools, gateway |
+| `amux config secret-store file\|keychain` | Where secrets are kept |
+| `amux update`, `amux uninstall [--purge]` | Update / remove amux |
+
+`amux <command> --help` shows details and examples for each.
+
+## Troubleshooting
+
+- **A tool fails right after `amux stop`** — it is still hooked: `amux start`, or `amux off` to go native.
+- **`amux switch` says the login expired** — `amux login <tool>` for that account once; switching works again afterwards.
+- **Port 8787 in use** — `lsof -i :8787`, stop the other process, `amux start`.
+- **Something else** — `amux doctor`, then `amux feedback` to file an issue.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -9,11 +9,11 @@ import (
 
 // CmdSetup runs the guided setup wizard.
 func CmdSetup(args []string) {
-	fmt.Println("== AMUX Zero-Touch Runtime & Gateway Setup ==")
-	fmt.Println("1. AMUX operates non-invasively by default.")
-	fmt.Println("   Your IDEs (Claude Code, Codex, Cursor) read native credentials from macOS Keychain.")
-	fmt.Println("2. When subscription accounts reach capacity (95% multi-account / 100% single-account),")
-	fmt.Println("   AMUX rotates credentials silently in the Keychain or conditionally activates the Gateway.")
+	fmt.Println("== amux setup ==")
+	fmt.Println("Your tools keep using their own logins; amux changes nothing until you ask:")
+	fmt.Println("  amux switch <id>    change a tool's login")
+	fmt.Println("  amux pool add <id>  allow automatic switching for that account")
+	fmt.Println("  amux hook <tool>    route a tool through the gateway")
 
 	autoUpdate := false
 	for _, a := range args {
@@ -46,5 +46,5 @@ func CmdSetup(args []string) {
 	}
 
 	fmt.Println("\nSetup complete! You can run your IDEs normally (e.g. `claude`, `codex`, `cursor`).")
-	fmt.Println("Manage identities with: `amux id list` or `amux id add [provider]`.")
+	fmt.Println("Accounts: amux account list   Add one: amux login")
 }

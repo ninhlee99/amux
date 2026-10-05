@@ -97,6 +97,7 @@ type AccountPoolRouter struct {
 	cooldownMap      map[string]time.Time
 	tierIndices      map[types.AccountType]int
 	autoRotateFilter func(id string) bool
+	subPoolFilter    func(id string) bool
 }
 
 // NewAccountPoolRouter builds a router over adapters, sorted once by
@@ -140,11 +141,29 @@ func (r *AccountPoolRouter) SetAutoRotateFilter(fn func(id string) bool) {
 	r.autoRotateFilter = fn
 }
 
-func (r *AccountPoolRouter) canAutoRotate(id string) bool {
+// SetSubscriptionPoolFilter sets the predicate that admits subscription
+// adapters (Claude Code / Codex / Antigravity plans) into automatic
+// selection. Without it, or when it returns false, a subscription adapter is
+// reachable only by an explicit pin — amux never rotates onto a user's IDE
+// plan unless the user put it in the pool by hand.
+func (r *AccountPoolRouter) SetSubscriptionPoolFilter(fn func(id string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.subPoolFilter = fn
+}
+
+func (r *AccountPoolRouter) canAutoRotate(a types.ProviderAdapter) bool {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.autoRotateFilter != nil {
-		return r.autoRotateFilter(id)
+	filter, subPool := r.autoRotateFilter, r.subPoolFilter
+	r.mu.RUnlock()
+	id := a.ID()
+	if AdapterAccountType(a) == types.AccountTypeSubscription {
+		if subPool == nil || !subPool(id) {
+			return false
+		}
+	}
+	if filter != nil {
+		return filter(id)
 	}
 	return true
 }
@@ -259,6 +278,77 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	r.lastUsed = id
 	r.mu.Unlock()
 	return ch, nil
+}
+
+// SendProvider routes to an explicitly requested account or account family.
+// An exact id behaves like SendNamed (that account only). Otherwise target
+// is a family prefix — "gemini:web", "gemini:web:*", "chatgpt" — and amux
+// picks among the matching accounts itself, with the same affinity,
+// cooldown, quarantine and failover rules as Send.
+func (r *AccountPoolRouter) SendProvider(ctx context.Context, target string, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	target = strings.TrimSpace(target)
+	r.mu.RLock()
+	_, exact := r.directory[target]
+	r.mu.RUnlock()
+	if exact {
+		return r.SendNamed(ctx, target, req)
+	}
+	candidates := r.FamilyMembers(target)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("provider %q matches no account (see: amux account list)", target)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	applyTaskClassification(req)
+	redactBeforeSend(req)
+
+	r.mu.RLock()
+	preferredID, manual := r.preferred, r.manualPin
+	r.mu.RUnlock()
+	if !containsAdapter(candidates, preferredID) {
+		preferredID, manual = "", false
+	}
+	return r.sendAmong(ctx, req, candidates, preferredID, manual)
+}
+
+// FamilyMembers returns the addressable accounts whose id equals family or
+// continues it with ":" (case-insensitive; a trailing ":*" or ":" is
+// ignored), sorted by priority.
+func (r *AccountPoolRouter) FamilyMembers(family string) []types.ProviderAdapter {
+	f := strings.ToLower(strings.TrimSpace(family))
+	f = strings.TrimSuffix(strings.TrimSuffix(f, "*"), ":")
+	if f == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []types.ProviderAdapter
+	for id, a := range r.directory {
+		l := strings.ToLower(id)
+		if l == f || strings.HasPrefix(l, f+":") {
+			out = append(out, a)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Priority() != out[j].Priority() {
+			return out[i].Priority() < out[j].Priority()
+		}
+		return out[i].ID() < out[j].ID()
+	})
+	return out
+}
+
+func containsAdapter(list []types.ProviderAdapter, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, a := range list {
+		if a.ID() == id {
+			return true
+		}
+	}
+	return false
 }
 
 // SetPreferred sets a MANUAL pin (`am sw <provider>`). New sessions stick
@@ -407,6 +497,13 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 	copy(adapters, r.adapters)
 	r.mu.RUnlock()
 
+	return r.sendAmong(ctx, req, adapters, preferredID, manual)
+}
+
+// sendAmong is the selection core shared by Send (whole rotate pool) and
+// SendProvider (one account family): manual pin / session affinity first,
+// then tiers in order with round-robin, cooldown, quarantine and failover.
+func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatRequest, adapters []types.ProviderAdapter, preferredID string, manual bool) (<-chan types.StreamChunk, error) {
 	sessionKey := guard.ExtractSessionKey(nil, req)
 
 	// 1. Affinity wins for an in-flight session (unless the account died).
@@ -523,6 +620,11 @@ func (r *AccountPoolRouter) Send(ctx context.Context, req *types.ChatRequest) (<
 				continue
 			}
 			if r.cooling(a.ID()) {
+				continue
+			}
+			// Manual-only accounts (outside the pool) are never picked
+			// automatically; only an explicit pin reaches them.
+			if !r.canAutoRotate(a) {
 				continue
 			}
 			isWeb := tier == types.AccountTypeWeb

@@ -150,15 +150,8 @@ func TestAccountLifecycle_AccountRecovery(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	origBase := os.Getenv("AMUX_DIR")
-	_ = os.Setenv("AMUX_DIR", tmpDir)
-	defer func() {
-		if origBase != "" {
-			_ = os.Setenv("AMUX_DIR", origBase)
-		} else {
-			_ = os.Unsetenv("AMUX_DIR")
-		}
-	}()
+	// AMUX_HOME is what types.BaseDir honours; anything else leaks into the real ~/.amux.
+	t.Setenv("AMUX_HOME", tmpDir)
 
 	// Save profile directly into profile store
 	entries := []types.ProfileEntry{

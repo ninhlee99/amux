@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/auth"
+
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -84,8 +86,14 @@ func KnownBrowsers() []BrowserInfo {
 // user hasn't granted Safe Storage keychain access.
 func ExtractCookie(domainFilter, cookieName string) (string, string, error) {
 	var lastErr error
+	keychainFree := auth.UsesFileSecretStore()
 	for _, b := range KnownBrowsers() {
 		if _, err := os.Stat(b.CookiePath); err != nil {
+			continue
+		}
+		if keychainFree && b.KeychainService != "" {
+			// Chromium cookie DBs are encrypted with a key held in the OS
+			// keychain ("<Browser> Safe Storage"); keychain-free mode skips them.
 			continue
 		}
 		var val string
@@ -103,10 +111,32 @@ func ExtractCookie(domainFilter, cookieName string) (string, string, error) {
 			return val, b.Name, nil
 		}
 	}
+	// amux's own login profile (opened by `amux login <web>`) is read over
+	// DevTools: no keychain and no system-browser cookie decryption.
+	if t, ok := loginTargetForDomain(domainFilter); ok && ProfileExists(t.Profile) {
+		if got, err := RefreshWebAuthFromProfile(t, 20*time.Second); err == nil && got != nil {
+			if v := ParseCookieHeader(got.CookieHeader, cookieName); v != "" {
+				return v, "amux profile " + t.Profile, nil
+			}
+		} else if err != nil {
+			lastErr = err
+		}
+	}
 	if lastErr != nil {
 		return "", "", fmt.Errorf("cookie %q for %q not found: %w", cookieName, domainFilter, lastErr)
 	}
 	return "", "", fmt.Errorf("cookie %q for %q not found in any browser", cookieName, domainFilter)
+}
+
+// loginTargetForDomain maps a cookie domain to the amux login profile for it.
+func loginTargetForDomain(domain string) (WebLoginTarget, bool) {
+	d := strings.TrimPrefix(strings.ToLower(domain), ".")
+	for _, t := range []WebLoginTarget{ChatGPTWebLogin, ClaudeWebLogin, GeminiWebLogin} {
+		if d == t.CookieHost || strings.HasSuffix(d, "."+t.CookieHost) {
+			return t, true
+		}
+	}
+	return WebLoginTarget{}, false
 }
 
 // ParseCookieHeader pulls one named cookie out of a raw Cookie header

@@ -30,8 +30,13 @@ func MasterKey() ([]byte, error) {
 		}
 	}
 
-	// 1. Try system keyring
-	s, err := keyring.Get(keyringService, keyringUser)
+	// 1. Try system keyring — unless the user opted out of the OS keychain.
+	fileOnly := UsesFileSecretStore()
+	err := keyring.ErrNotFound
+	var s string
+	if !fileOnly {
+		s, err = keyring.Get(keyringService, keyringUser)
+	}
 	if err == nil {
 		k, decErr := base64.StdEncoding.DecodeString(s)
 		if decErr == nil && len(k) == 32 {
@@ -58,8 +63,10 @@ func MasterKey() ([]byte, error) {
 	encoded := base64.StdEncoding.EncodeToString(k)
 
 	// Try keyring first
-	if setErr := keyring.Set(keyringService, keyringUser, encoded); setErr == nil {
-		return k, nil
+	if !fileOnly {
+		if setErr := keyring.Set(keyringService, keyringUser, encoded); setErr == nil {
+			return k, nil
+		}
 	}
 
 	// Fallback to file storage if keyring is not available
@@ -118,4 +125,14 @@ func Decrypt(enc []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decrypt (wrong master key?): %w", err)
 	}
 	return out, nil
+}
+
+// DeleteMasterKey removes amux's own master key from the OS keychain
+// (`amux uninstall --purge`). It never touches the tools' login items.
+func DeleteMasterKey() error {
+	err := keyring.Delete(keyringService, keyringUser)
+	if err == keyring.ErrNotFound {
+		return nil
+	}
+	return err
 }

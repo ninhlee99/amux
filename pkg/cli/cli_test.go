@@ -75,10 +75,11 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 	})
 
 	categories := []string{
-		"Gateway Daemon:",
-		"Account Management:",
-		"Diagnostics & Security:",
-		"Examples:",
+		"Accounts",
+		"Pool (automatic switching)",
+		"Gateway",
+		"MCP",
+		"Examples",
 	}
 	for _, cat := range categories {
 		if !strings.Contains(out, cat) {
@@ -223,16 +224,25 @@ func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
 		CmdID([]string{"list"})
 	})
 
-	if !strings.Contains(out, "ACTIVE") || !strings.Contains(out, "AUTO-SWITCH") {
-		t.Errorf("expected header with ACTIVE and AUTO-SWITCH, got:\n%s", out)
+	if !strings.Contains(out, "ACTIVE") || !strings.Contains(out, "POOL") {
+		t.Errorf("expected header with ACTIVE and POOL, got:\n%s", out)
 	}
-	// claude-1 is Active=true, AutoRotate=default(true)
-	if !strings.Contains(out, "claude-1") || !strings.Contains(out, "YES") || !strings.Contains(out, "ON") {
-		t.Errorf("expected claude-1 to show YES for ACTIVE and ON for AUTO-SWITCH, got:\n%s", out)
+	rowOf := func(id string) []string {
+		for _, l := range strings.Split(out, "\n") {
+			if f := strings.Fields(l); len(f) > 0 && f[0] == id {
+				return f
+			}
+		}
+		t.Fatalf("no row for %s in:\n%s", id, out)
+		return nil
 	}
-	// claude-vip is Active=false, AutoRotate=false
-	if !strings.Contains(out, "claude-vip") || !strings.Contains(out, "NO") || !strings.Contains(out, "OFF") {
-		t.Errorf("expected claude-vip to show NO for ACTIVE and OFF for AUTO-SWITCH, got:\n%s", out)
+	// columns: ID EMAIL TYPE ACTIVE POOL ...
+	// claude-1: active, and — being a subscription — not in the pool by default.
+	if r := rowOf("claude-1"); r[2] != "sub" || r[3] != "yes" || r[4] != "no" {
+		t.Errorf("claude-1 row = %v, want sub/yes/no", r)
+	}
+	if r := rowOf("claude-vip"); r[3] != "-" || r[4] != "no" {
+		t.Errorf("claude-vip row = %v, want -/no", r)
 	}
 	if !strings.Contains(out, "THRESHOLD") {
 		t.Errorf("expected THRESHOLD in header, got:\n%s", out)
@@ -264,6 +274,7 @@ func TestCmdStatus_ThresholdColumn(t *testing.T) {
 				UsagePercent: 30.0,
 				Active:       true,
 				ThresholdPct: &customThresh,
+				AutoRotate:   identity.Pooled(),
 			},
 			{
 				ID:           "claude-2",
@@ -271,6 +282,7 @@ func TestCmdStatus_ThresholdColumn(t *testing.T) {
 				Tier:         identity.TierSubscription,
 				UsagePercent: 10.0,
 				Active:       false,
+				AutoRotate:   identity.Pooled(),
 			},
 		},
 	}
@@ -285,8 +297,8 @@ func TestCmdStatus_ThresholdColumn(t *testing.T) {
 	if !strings.Contains(out, "THRESHOLD") {
 		t.Errorf("expected THRESHOLD in CmdStatus output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "AUTO-SWITCH") {
-		t.Errorf("expected AUTO-SWITCH in CmdStatus output, got:\n%s", out)
+	if !strings.Contains(out, "POOL") {
+		t.Errorf("expected POOL in CmdStatus output, got:\n%s", out)
 	}
 	if strings.Contains(out, "TIER") {
 		t.Errorf("expected TIER to be removed from CmdStatus output, got:\n%s", out)
@@ -298,8 +310,8 @@ func TestCmdStatus_ThresholdColumn(t *testing.T) {
 			if strings.Contains(l, "PROVIDER") {
 				t.Errorf("expected PROVIDER to be removed from header line, got: %s", l)
 			}
-			if !strings.Contains(l, "AUTO-SWITCH") {
-				t.Errorf("expected AUTO-SWITCH in header line, got: %s", l)
+			if !strings.Contains(l, "POOL") {
+				t.Errorf("expected POOL in header line, got: %s", l)
 			}
 		}
 	}
@@ -376,10 +388,10 @@ func TestCmdAccount_AliasesAndSubcommands(t *testing.T) {
 	out := captureStdout(func() {
 		CmdAccount([]string{"help"})
 	})
-	if !strings.Contains(out, "Usage: amux account <subcommand>") {
+	if !strings.Contains(out, "Usage: amux account <command>") {
 		t.Errorf("expected CmdAccount help text, got:\n%s", out)
 	}
-	if !strings.Contains(out, "switch, select <id>") {
+	if !strings.Contains(out, "switch <id>") {
 		t.Errorf("expected switch command in help, got:\n%s", out)
 	}
 
@@ -387,13 +399,13 @@ func TestCmdAccount_AliasesAndSubcommands(t *testing.T) {
 	outID := captureStdout(func() {
 		CmdID([]string{"help"})
 	})
-	if !strings.Contains(outID, "Usage: amux account <subcommand>") {
+	if !strings.Contains(outID, "Usage: amux account <command>") {
 		t.Errorf("expected CmdID to delegate to CmdAccount")
 	}
 }
 
 func TestCli_PerCommandHelp(t *testing.T) {
-	commands := []string{"start", "stop", "restart", "status", "login", "switch", "account", "hook", "unhook", "doctor", "usage"}
+	commands := []string{"start", "stop", "restart", "status", "login", "switch", "account", "hook", "unhook", "doctor", "usage", "pool", "off"}
 	for _, cmd := range commands {
 		out := captureStdout(func() {
 			Run([]string{"amux", cmd, "--help"})

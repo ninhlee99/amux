@@ -30,8 +30,8 @@ _amux_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart status hook unhook env login account id switch doctor audit usage setup config threshold migrate update uninstall feedback completion vault"
-    local providers="claude codex antigravity gemini chatgpt api cursor"
+    local commands="start stop restart status off hook unhook pool env login account switch doctor audit usage setup config threshold migrate update uninstall feedback completion vault mcp"
+    local providers="claude codex agy chatgpt gemini-web muse gemini groq kimi grok github cursor"
 
     if [[ ${cword} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -44,15 +44,22 @@ _amux_completions() {
                 COMPREPLY=( $(compgen -W "${providers}" -- "${cur}") )
             fi
             ;;
-        switch|account|id)
+        switch|account|id|pool)
+            local ids=$(amux account list 2>/dev/null | awk 'NR>1 && $1 ~ /:/ {print $1}')
+            local subcmds=""
             if [[ ${cword} -eq 2 ]]; then
-                local ids=$(amux account list 2>/dev/null | awk 'NR>2 {print $1}')
-                local subcmds="list switch add remove logout on off auto threshold health"
-                COMPREPLY=( $(compgen -W "${subcmds} ${ids}" -- "${cur}") )
+                case "${words[1]}" in
+                    account|id) subcmds="list switch add remove on off threshold health" ;;
+                    pool) subcmds="add remove" ;;
+                esac
             fi
+            COMPREPLY=( $(compgen -W "${subcmds} ${ids}" -- "${cur}") )
             ;;
         hook|unhook)
-            COMPREPLY=( $(compgen -W "--claude --cursor --codex --agy --all" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "claude cursor codex agy all" -- "${cur}") )
+            ;;
+        mcp)
+            COMPREPLY=( $(compgen -W "install uninstall status config tools" -- "${cur}") )
             ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "${cur}") )
@@ -77,13 +84,15 @@ _amux() {
         'start:Start gateway daemon in background or foreground'
         'stop:Stop gateway background daemon'
         'restart:Restart gateway daemon'
-        'status:Real-time dashboard of accounts and gateway state'
-        'login:Authenticate account via OAuth or API key'
-        'switch:Switch active account in Keychain & IDE configs'
-        'account:Manage accounts, quotas, and failover status'
-        'id:Alias for account management'
-        'hook:Hook IDE settings to gateway proxy'
-        'unhook:Restore IDE settings to direct upstream'
+        'status:Gateway, hooked tools and accounts'
+        'off:Unhook every tool and stop the gateway'
+        'login:Add an account'
+        'switch:Make an account the active login (no re-login)'
+        'account:List, turn on/off or remove accounts'
+        'pool:Accounts amux may switch between automatically'
+        'hook:Point a tool at the gateway'
+        'unhook:Undo hook'
+        'mcp:Serve or install the amux MCP server'
         'env:Output shell export variables'
         'doctor:Run system and credential diagnostics'
         'audit:Verify vault encryption and security posture'
@@ -102,10 +111,12 @@ _amux() {
     providers=(
         'claude:Anthropic Claude Code OAuth'
         'codex:OpenAI Codex CLI'
-        'antigravity:Google Antigravity / Gemini'
+        'agy:Google Antigravity'
         'gemini:Google Gemini API'
         'chatgpt:ChatGPT Web Session'
-        'api:Generic OpenAI/Anthropic Compatible API'
+        'muse:Meta Muse web'
+        'gemini-web:Gemini web session'
+        'groq:Groq API key'
     )
 
     _arguments -C \
@@ -121,18 +132,16 @@ _amux() {
                 login)
                     _describe -t providers 'provider' providers
                     ;;
-                switch)
+                switch|pool|account)
                     local -a ids
-                    ids=(${(f)"$(amux account list 2>/dev/null | awk 'NR>2 {print $1}')"})
+                    ids=(${(f)"$(amux account list 2>/dev/null | awk 'NR>1 && $1 ~ /:/ {print $1}')"})
                     _describe -t ids 'account id' ids
                     ;;
                 hook|unhook)
-                    _values 'targets' \
-                        '--claude[Hook Claude Code]' \
-                        '--cursor[Hook Cursor IDE]' \
-                        '--codex[Hook OpenAI Codex CLI]' \
-                        '--agy[Hook Google Antigravity]' \
-                        '--all[Hook all supported IDEs]'
+                    _values 'targets' 'claude' 'cursor' 'codex' 'agy' 'all'
+                    ;;
+                mcp)
+                    _values 'subcommands' 'install' 'uninstall' 'status' 'config' 'tools'
                     ;;
                 completion)
                     _values 'shells' 'bash' 'zsh' 'fish'
@@ -150,7 +159,7 @@ _amux "$@"
 
 const fishCompletionScript = `# fish completion for amux
 
-set -l commands start stop restart status login switch account id hook unhook env doctor audit usage setup config threshold migrate vault completion update uninstall
+set -l commands start stop restart status off login switch account id pool hook unhook env doctor audit usage setup config threshold migrate vault completion update uninstall mcp
 
 complete -c amux -f
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a start -d "Start gateway daemon"
@@ -160,15 +169,20 @@ complete -c amux -n "not __fish_seen_subcommand_from $commands" -a status -d "In
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a login -d "Authenticate an account"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a switch -d "Switch active account"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a account -d "Manage accounts and quotas"
+complete -c amux -n "not __fish_seen_subcommand_from $commands" -a off -d "Unhook everything and stop the gateway"
+complete -c amux -n "not __fish_seen_subcommand_from $commands" -a pool -d "Accounts amux may switch between automatically"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a hook -d "Hook IDE settings to gateway"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a unhook -d "Restore IDE settings to direct"
+complete -c amux -n "not __fish_seen_subcommand_from $commands" -a mcp -d "Serve or install the amux MCP server"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a doctor -d "Run diagnostic checks"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a audit -d "Security posture audit"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a vault -d "Export or import vault"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a completion -d "Generate shell completion"
 
 # Completion for login providers
-complete -c amux -n "__fish_seen_subcommand_from login" -a "claude codex antigravity gemini chatgpt api"
+complete -c amux -n "__fish_seen_subcommand_from login" -a "claude codex agy chatgpt gemini-web muse gemini groq kimi grok github cursor"
+complete -c amux -n "__fish_seen_subcommand_from hook unhook" -a "claude cursor codex agy all"
+complete -c amux -n "__fish_seen_subcommand_from pool" -a "add remove"
 
 # Completion for completion shells
 complete -c amux -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"

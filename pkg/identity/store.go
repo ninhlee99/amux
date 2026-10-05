@@ -453,7 +453,8 @@ func CanAutoRotateByID(path string, id string) bool {
 
 // SetEnabled hard-enables or hard-disables an identity by ID.
 // disabled=true  → identity is completely blocked from routing (rotator + pool skip it).
-// disabled=false → identity is restored to its prior auto-rotate state.
+// disabled=false → identity is usable again (pool membership and the active
+// account are left as they were).
 // Unlike SetAutoRotate (soft exclusion for manual-only), this is a hard off/on switch.
 func SetEnabled(path string, id string, enabled bool) error {
 	cfg, err := LoadConfig(path)
@@ -473,7 +474,6 @@ func SetEnabled(path string, id string, enabled bool) error {
 		}
 		if enabled {
 			delete(item.Metadata, "disabled")
-			item.Active = true
 		} else {
 			item.Metadata["disabled"] = true
 			item.Active = false
@@ -518,6 +518,73 @@ func AutoRotateFilter(path string) func(id string) bool {
 		}
 		return true
 	}
+}
+
+// PoolMemberFilter reports whether id names a known identity that is in the
+// rotation pool. Unlike AutoRotateFilter it never defaults to true: an
+// account amux has no record of is not in the pool. The router uses it for
+// subscription adapters, which may only be picked automatically after the
+// user added them with `amux pool add`.
+func PoolMemberFilter(path string) func(id string) bool {
+	return func(id string) bool {
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			return false
+		}
+		for _, ident := range cfg.Identities {
+			if ident.ID == id {
+				return ident.CanAutoRotate()
+			}
+		}
+		return false
+	}
+}
+
+// ProfileThreshold returns the hand-over threshold (percent) of the
+// subscription identity behind a saved CLI profile; ok is false when the
+// profile has no identity.
+func ProfileThreshold(path, tool, name, account string) (float64, bool) {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return 0, false
+	}
+	if ident := findProfileIdentity(cfg, tool, name, account); ident != nil {
+		return GetAccountThreshold(*ident, cfg.Identities, cfg.ThresholdPct), true
+	}
+	return 0, false
+}
+
+func findProfileIdentity(cfg *Config, tool, name, account string) *Identity {
+	canon := CanonicalProvider(tool)
+	for i := range cfg.Identities {
+		ident := &cfg.Identities[i]
+		if CanonicalProvider(ident.Provider) != canon || !ident.IsSubscription() {
+			continue
+		}
+		if ident.Metadata != nil {
+			if p, ok := ident.Metadata["profile_name"].(string); ok && p != "" && p == name {
+				return ident
+			}
+		}
+		if account != "" && strings.EqualFold(ident.Email(), account) {
+			return ident
+		}
+	}
+	return nil
+}
+
+// ProfileInPool reports whether the saved CLI profile name (or its account
+// email) of tool belongs to a subscription identity that is in the rotation pool.
+// Profiles with no matching identity are not in the pool.
+func ProfileInPool(path, tool, name, account string) bool {
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return false
+	}
+	if ident := findProfileIdentity(cfg, tool, name, account); ident != nil {
+		return ident.CanAutoRotate()
+	}
+	return false
 }
 
 // SetThreshold updates the threshold percentage for an identity by ID, email, or profile name.

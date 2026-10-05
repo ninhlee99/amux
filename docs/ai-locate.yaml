@@ -45,6 +45,12 @@ layers:
   - id: types
     path: pkg/types/
     role: "Contracts — no internal pkg imports"
+  - id: mcp
+    path: pkg/mcp/
+    role: "MCP stdio server, amux_*/muse_* tools, installer cho MCP host"
+  - id: muse
+    path: pkg/muse/
+    role: "Driver Meta Muse qua CDP (browser.Session/Page)"
 
 data_paths:
   config_dir: "~/.amux"
@@ -221,6 +227,63 @@ tasks:
     symbols: [CmdProxyDownPublic, SaveBindPublic, ClearAuthToken]
     tests: [pkg/proxy/client_test.go, pkg/cli/cli_test.go]
 
+  - id: mcp-server
+    keywords: [mcp, amux mcp, tools/list, amux_ask, mcp install, claude desktop, windsurf, opencode, zed, vscode]
+    read_first:
+      - pkg/mcp/server.go
+      - pkg/mcp/tools.go
+      - pkg/mcp/install.go
+      - pkg/cli/mcp.go
+    symbols: [Serve, RegisterAmuxTools, RegisterMuseTools, Targets, PoolMemberFilter]
+    tests: [pkg/mcp/server_test.go, pkg/mcp/install_test.go]
+
+  - id: rotation-pool
+    keywords: [pool, amux pool, auto switch, rotate, subscription, manual only, threshold, switch, re-login]
+    read_first:
+      - pkg/cli/pool.go
+      - pkg/identity/store.go
+      - pkg/proxy/rotator.go
+      - pkg/router/pool.go
+    symbols: [CanAutoRotate, PoolMemberFilter, ProfileInPool, ProfileThreshold, SetSubscriptionPoolFilter, SwitchProfile]
+    tests: [pkg/router/send_provider_test.go, pkg/proxy/rotator_test.go, pkg/identity/identity_test.go]
+
+  - id: clean-removal
+    keywords: [off, unhook, uninstall, mcp uninstall, purge, cleanup, hook state]
+    read_first:
+      - pkg/cli/system.go
+      - pkg/cli/gateway.go
+      - pkg/gateway/hook.go
+      - pkg/mcp/install.go
+    symbols: [CmdOff, cmdUninstall, UnhookAgy, UnhookCodex, Target.Uninstall, removeAmuxClaudeEnv]
+    tests: [pkg/gateway/unhook_clean_test.go, pkg/mcp/install_test.go]
+
+  - id: muse-web
+    keywords: [muse, meta muse, muse.ai, cdp page, devtools, muse_web]
+    read_first:
+      - pkg/muse/driver.go
+      - pkg/provider/muse_web.go
+      - pkg/browser/cdp_page.go
+    symbols: [Driver, Chat, Shared, MuseWebAdapter, OpenSession, DialPage]
+    tests: [pkg/muse/driver_test.go, pkg/provider/muse_web_test.go, pkg/browser/cdp_page_test.go]
+
+  - id: secret-store
+    keywords: [keychain, secret store, vault, master key, keychain-free, AMUX_SECRET_STORE]
+    read_first:
+      - pkg/auth/secretstore.go
+      - pkg/auth/crypto.go
+      - pkg/browser/cookies.go
+    symbols: [SecretStore, KCGet, KCSet, SetSecretStore, UsesFileSecretStore]
+    tests: [pkg/auth/secretstore_test.go]
+
+  - id: model-catalog
+    keywords: [model id, default model, claude-opus-5-5, gpt-6, gemini-3.8, retired model]
+    read_first:
+      - pkg/tools/claude_models.go
+      - pkg/provider/codex_cli.go
+      - pkg/bridge/openai.go
+    symbols: [DefaultClaudeModel, DefaultClaudeSonnetModel, ClaudeModelGeneration, codexDefaultModel]
+    tests: [pkg/tools/claude_models_test.go, pkg/tools/model_ids_test.go]
+
 invariants:
   - "Tools thực thi trên client CLI — proxy không exec shell/file"
   - "Không invent /_am/* cho từng Claude slash command"
@@ -228,3 +291,6 @@ invariants:
   - "Claude subscription group không làm pool proxy cho Claude IDE client"
   - "pkg/types không import pkg nội bộ khác"
   - "Toàn bộ lệnh CLI sử dụng amux binary thay cho am cũ"
+  - "amux mcp: stdout chỉ cho JSON-RPC"
+  - "Chế độ secret-store file không gọi Keychain/keyring"
+  - "Chỉ dùng model id đã xác minh; không ship id đã khai tử"

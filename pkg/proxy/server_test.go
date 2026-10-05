@@ -538,6 +538,7 @@ func TestHandler_ClaudeResetSwitchesBackFromPool(t *testing.T) {
 		autoSwitches:   map[string]int{},
 		manualSwitches: map[string]int{},
 		usedThreshold:  DefaultUsedThreshold,
+		inPool:         allPooled,
 	}
 	h, _ := newHandlerWithRotator(t, rot, []types.ProviderAdapter{&stubAdapter{id: "stub"}})
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))

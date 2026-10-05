@@ -55,7 +55,7 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
 | **Domain Contracts** | `pkg/types` | Hạt nhân độc lập: Định nghĩa `ChatRequest`, `ChatMessage`, `StreamChunk`, `ProviderAdapter`, và `BaseDir()` (`~/.amux`). Tuyệt đối không import package nội bộ khác. |
 | **Security & Identity** | `pkg/identity` & `pkg/auth` | Quản lý danh tính phẳng (`identities.json`), đọc/ghi an toàn qua macOS Keychain, mã hóa AES-256-GCM, quản lý vòng đời OAuth PKCE token và tính toán ngưỡng failover. |
 | **Universal Gateway** | `pkg/proxy` & `pkg/gateway` | Máy chủ Reverse Proxy HTTP tại cổng `:8787`, cơ chế bảo mật Public Gateway bằng Ephemeral Bearer Token (`amux-<hex>`), bộ đệm chống brute-force (10 lỗi/phút), và chuyển tiếp bitwise 1:1. |
-| **Multi-Tier Router** | `pkg/router` | Điều phối thứ tự ưu tiên 3 tầng (Subscription → Web → API Key), quản lý cooldown tự thích ứng theo header `Retry-After`, phân loại tác vụ (`classifier.go`), và loại trừ tài khoản `AUTO-SWITCH: OFF`. |
+| **Multi-Tier Router** | `pkg/router` | Điều phối thứ tự ưu tiên 3 tầng (Subscription → Web → API Key), quản lý cooldown tự thích ứng theo header `Retry-After`, phân loại tác vụ (`classifier.go`), và chỉ tự chọn tài khoản trong pool (subscription chỉ vào pool khi `amux pool add`). |
 | **Protocol Bridges** | `pkg/bridge` | Cầu nối đa giao thức: OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini `/v1beta/models/...`, bảo toàn CoT Thinking và Gemini Thought Signatures. |
 | **Anti-Ban Defense** | `pkg/guard` | Lớp phòng vệ 5 tầng: Header Sanitizer, Micro-jitter Pacing, Circuit Breaker, Session Affinity, và Egress Proxy riêng biệt. |
 | **Context Optimization** | `pkg/ctxshrink` | Bảo tồn Prompt Cache Prefix cho Subscription accounts; chỉ kích hoạt nén ngữ cảnh có chọn lọc trên Web accounts hẹp. |
@@ -171,6 +171,6 @@ flowchart TD
 3. **Bảo Toàn Prompt Cache Tuyệt Đối**:
    - Khi chuyển đổi giữa các tài khoản Subscription, AMUX giữ nguyên 100% nội dung và thứ tự tin nhắn lịch sử để tận dụng chiết khấu 90% từ Anthropic Prompt Cache.
 4. **Loại Trừ Nghiêm Ngặt Tài Khoản OFF**:
-   - Tài khoản có `AUTO-SWITCH: OFF` (chế độ Manual Only) tuyệt đối không bao giờ bị auto-switch hoặc tự động chọn từ pool, áp dụng cho cả Subscription, Web và API accounts.
+   - Tài khoản ngoài pool không bao giờ bị auto-switch hoặc tự động chọn. Subscription mặc định ngoài pool (chỉ thêm thủ công bằng `amux pool add`); Web/API mặc định trong pool.
 5. **Real-time Statusline Trực Quan**:
    - Cung cấp thông tin tài khoản đang phục vụ, dung lượng token và thanh đo hạn mức 5h/7d trực tiếp trên thanh trạng thái của IDE theo thời gian thực.

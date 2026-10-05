@@ -120,6 +120,7 @@ func RunProxy(addr, upstream string) error {
 	adapters, _ := provider.LoadAccounts(provider.DefaultAccountsPath())
 	pool := router.NewAccountPoolRouter(adapters)
 	pool.SetAutoRotateFilter(identity.AutoRotateFilter(""))
+	pool.SetSubscriptionPoolFilter(identity.PoolMemberFilter(""))
 	if all, err := provider.LoadAllAddressable(provider.DefaultAccountsPath()); err == nil {
 		pool.SetDirectory(all)
 	}
@@ -655,7 +656,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 
 			// Model safeguard & default:
 			// If ANTHROPIC_MODEL is not explicitly set to an Opus model by the user,
-			// always default and downgrade to claude-sonnet-5. Never upgrade to Opus on fallback.
+			// always default and downgrade to the current Sonnet. Never upgrade to Opus on fallback.
 			envModel := strings.ToLower(strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
 			userExplicitOpus := strings.Contains(envModel, "opus")
 			if !userExplicitOpus {
@@ -665,9 +666,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 				if currentModel == "" || currentModel == "default" || strings.Contains(currentModel, "opus") {
 					if parsedReq != nil {
-						parsedReq.Model = "claude-sonnet-5"
+						parsedReq.Model = tools.DefaultClaudeSonnetModel
 					}
-					body = rewriteClaudeModelInBody(body, "claude-sonnet-5")
+					body = rewriteClaudeModelInBody(body, tools.DefaultClaudeSonnetModel)
 					r.Body = io.NopCloser(bytes.NewReader(body))
 					r.ContentLength = int64(len(body))
 					r.Header.Set("Content-Length", strconv.Itoa(len(body)))

@@ -39,20 +39,25 @@ type Identity struct {
 	UsagePercent float64                `json:"usage_percent"` // 0.0 to 100.0
 	ResetAt      int64                  `json:"reset_at,omitempty"`
 	Active       bool                   `json:"active"`
-	AutoRotate   *bool                  `json:"auto_rotate,omitempty"` // true by default; if false, excluded from auto-rotation/switch
+	AutoRotate   *bool                  `json:"auto_rotate,omitempty"` // pool membership; nil = default (web/API in, subscription out)
 	ThresholdPct *float64               `json:"threshold_pct,omitempty"` // Per-account threshold override (0.0 to 100.0); nil uses default
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Config represents the system-wide flat identity configuration.
 type Config struct {
+	Version      int        `json:"version,omitempty"`
 	ThresholdPct float64    `json:"threshold_pct"` // Default 95.0
 	Identities   []Identity `json:"identities"`
 }
 
-// CanAutoRotate reports whether this identity is eligible for automatic rotation/failover.
-// Defaults to true unless explicitly set to false in AutoRotate, Metadata["manual_only"],
-// or hard-disabled via Metadata["disabled"].
+// CanAutoRotate reports whether this identity is in the rotation pool, i.e.
+// amux may pick it (or switch to it) without being told to.
+//
+// Web and API-key accounts are in the pool unless taken out. Subscription
+// accounts (the user's own Claude Code / Codex / Antigravity plans) are
+// never in it by default: they join only when added by hand
+// (`amux pool add <id>`). Hard-disabled accounts are never in it.
 func (id Identity) CanAutoRotate() bool {
 	if id.Metadata != nil {
 		if v, ok := id.Metadata["disabled"].(bool); ok && v {
@@ -68,8 +73,11 @@ func (id Identity) CanAutoRotate() bool {
 	if id.AutoRotate != nil {
 		return *id.AutoRotate
 	}
-	return true
+	return !id.IsSubscription()
 }
+
+// InPool is CanAutoRotate under the name the CLI uses.
+func (id Identity) InPool() bool { return id.CanAutoRotate() }
 
 // IsSubscription reports whether this identity is billed as a fixed-cost subscription.
 func (id Identity) IsSubscription() bool {
@@ -145,15 +153,15 @@ func (id Identity) ModelName() string {
 	p := strings.ToLower(id.ID)
 	switch {
 	case strings.HasPrefix(p, "claude") || strings.HasPrefix(p, "anthropic"):
-		return "claude-3-7-sonnet"
+		return "claude-opus-5-5"
 	case strings.HasPrefix(p, "chatgpt"):
-		return "gpt-4o"
+		return "gpt-6-luna"
 	case strings.HasPrefix(p, "codex"):
-		return "gpt-5.6-terra"
+		return "gpt-6.1-sol"
 	case strings.HasPrefix(p, "gemini") || strings.HasPrefix(p, "antigravity") || strings.HasPrefix(p, "agy"):
-		return "gemini-2.5-flash"
+		return "gemini-3.8-flash"
 	case strings.HasPrefix(p, "openai"):
-		return "gpt-4o"
+		return "gpt-6.1-sol"
 	case strings.HasPrefix(p, "openrouter"):
 		return "openrouter/auto"
 	default:
@@ -166,3 +174,9 @@ func (id Identity) GetThreshold(identities []Identity, baseThreshold float64) fl
 	return GetAccountThreshold(id, identities, baseThreshold)
 }
 
+
+// Pooled returns a pointer to true for Identity.AutoRotate (manual pool add).
+func Pooled() *bool {
+	v := true
+	return &v
+}

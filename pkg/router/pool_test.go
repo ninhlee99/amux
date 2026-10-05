@@ -321,6 +321,8 @@ func TestAccountPoolRouter_TierStrictPriority(t *testing.T) {
 
 	adapters := []types.ProviderAdapter{aWeb, aAPI, aSub}
 	r := router.NewAccountPoolRouter(adapters)
+	// Subscriptions rotate only after a manual `amux pool add`.
+	r.SetSubscriptionPoolFilter(func(id string) bool { return id == "codex-sub-1" })
 
 	send := func() string {
 		ch, err := r.Send(context.Background(), &types.ChatRequest{Messages: []types.ChatMessage{{Role: "user", Content: "hi"}}})
@@ -351,5 +353,3 @@ func TestAccountPoolRouter_TierStrictPriority(t *testing.T) {
 		t.Fatalf("expected api_key tier last, got %q", got)
 	}
 }
-
-

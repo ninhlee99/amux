@@ -86,8 +86,8 @@ func TestHandler_OpusModelRewrittenToSonnet(t *testing.T) {
 		t.Fatalf("failed to parse captured body: %v", err)
 	}
 
-	if parsed["model"] != "claude-sonnet-5" {
-		t.Fatalf("expected model in captured request to be rewritten to claude-sonnet-5, got %v", parsed["model"])
+	if parsed["model"] != "claude-sonnet-5-5" {
+		t.Fatalf("expected model in captured request to be rewritten to claude-sonnet-5-5, got %v", parsed["model"])
 	}
 }
 

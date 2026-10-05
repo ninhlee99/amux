@@ -43,6 +43,7 @@ var CompactPrefixMigrate = map[string]string{
 	"chatgptweb": "chatgpt",
 	"geminiapi":  "gemini:api",
 	"geminiweb":  "gemini:web",
+	"museweb":    "muse:web",
 	"codexcli":   "codex",
 	"claudecli":  "claude:code",
 	"geminicli":  "antigravity",

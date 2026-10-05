@@ -230,9 +230,11 @@ func finishClaudeLogin(ctx context.Context, tokenResp *auth.OAuthRefreshResponse
 	updatedJSON, _ := json.MarshalIndent(claudeDoc, "", "  ")
 	_ = os.WriteFile(claudeJSONPath, updatedJSON, 0o600)
 
+	// Same keychain item Claude Code itself reads (account = OS user), so
+	// `amux switch` back to this profile really changes Claude Code's login.
 	entries := []types.ProfileEntry{
 		{
-			Artifact: types.Artifact{Kind: "keychain", Service: auth.ClaudeKeychainService, Account: accountEmail},
+			Artifact: types.Artifact{Kind: "keychain", Service: auth.ClaudeKeychainService, Account: types.CurrentUser()},
 			Data:     credsBytes,
 		},
 		{
@@ -244,8 +246,9 @@ func finishClaudeLogin(ctx context.Context, tokenResp *auth.OAuthRefreshResponse
 		fmt.Printf("Warning: saving profile bundle: %v\n", err)
 	}
 
-	// Also install to Keychain if Keychain is available on the system
-	_ = auth.KCSet(auth.ClaudeKeychainService, accountEmail, string(credsBytes))
+	// Like `claude /login`: the new account becomes Claude Code's login (the
+	// previous one was saved by SyncActiveFromSystem before the flow began).
+	_ = auth.KCSet(auth.ClaudeKeychainService, types.CurrentUser(), string(credsBytes))
 
 	tok := &types.Token{
 		Access:    tokenResp.AccessToken,

@@ -271,8 +271,8 @@ func TestBuildAdapter_DefaultsAndMissing(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	oa := a1.(*OpenAICompatibleAdapter)
-	if oa.TargetModel != "gpt-4o" {
-		t.Errorf("expected default model gpt-4o, got %s", oa.TargetModel)
+	if oa.TargetModel != "gpt-6.1-sol" {
+		t.Errorf("expected default model gpt-6.1-sol, got %s", oa.TargetModel)
 	}
 
 	grouped, err := BuildAdapter(ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.test.com", Group: "codex_sub"})

@@ -271,6 +271,7 @@ func TestAccountLifecycle_ThresholdAutoRotation(t *testing.T) {
 			ID:           "claude:code:01",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 96.0, // Above 90% threshold!
 			Active:       true,
 		},
@@ -278,6 +279,7 @@ func TestAccountLifecycle_ThresholdAutoRotation(t *testing.T) {
 			ID:           "claude:code:02",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 10.0, // Healthy under threshold
 			Active:       false,
 		},

@@ -307,6 +307,26 @@ func CmdSwitch(tool, name string) {
 	fmt.Printf("switched to %s (no restart needed)\n", name)
 }
 
+// SwitchProfile installs a saved login of tool as the active one. For
+// Claude with the gateway running, the switch goes through the gateway so
+// its rotator snapshots the outgoing account and installs the new one in
+// one place (doing both here and there would race on the keychain).
+func SwitchProfile(tool, name string) error {
+	if tool != "claude" || !ProxyUp() {
+		return profile.CmdUse(tool, name)
+	}
+	resp, err := http.Post(ProxyBase()+"/_am/switch?to="+url.QueryEscape(name), "", nil)
+	if err != nil {
+		return fmt.Errorf("gateway switch: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s", strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 func CmdSwitchProvider(name string) {
 	if !ProxyUp() {
 		fmt.Fprintf(os.Stderr, "amux: proxy not running — start a session or run 'amux proxy' first\n")

@@ -162,7 +162,11 @@ func TestMigrateLegacyAccounts_SubBeatsWebForSameEmail(t *testing.T) {
 	if winner.Active {
 		t.Errorf("expected subscription account to have Active=false, got true")
 	}
-	if winner.Metadata == nil || winner.Metadata["disabled"] != true {
-		t.Errorf("expected subscription account to have metadata.disabled=true, got %v", winner.Metadata)
+	// Out of the rotation pool by default, but not turned off.
+	if winner.CanAutoRotate() {
+		t.Errorf("subscription must not join the rotation pool automatically")
+	}
+	if !identity.IsEnabled(winner) {
+		t.Errorf("subscription must not be disabled by migration, got %v", winner.Metadata)
 	}
 }

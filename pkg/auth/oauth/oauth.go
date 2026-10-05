@@ -123,6 +123,13 @@ func InteractiveOAuthWithOptions(target string, opts OAuthOptions) error {
 	}
 
 	fmt.Printf("\n✓ Successfully authenticated %s (%s)!\n", target, result)
-	fmt.Println("Account is now active in your amux pool and proxy daemon.")
+	switch target {
+	case "claude", "codex", "antigravity":
+		fmt.Println("It is now the active login of", target+"; the previous login was saved.")
+		fmt.Println("Switch between saved logins: amux switch <id>   (ids: amux account list)")
+		fmt.Println("Subscriptions are not added to the rotation pool; to allow automatic switching: amux pool add <id>")
+	default:
+		fmt.Println("Saved. See it with: amux account list")
+	}
 	return nil
 }

@@ -15,6 +15,7 @@ func TestIdentity_ThresholdRules(t *testing.T) {
 			ID:           "sub-1",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 96.0,
 			Active:       true,
 		},
@@ -34,6 +35,7 @@ func TestIdentity_ThresholdRules(t *testing.T) {
 			ID:           "sub-1",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 96.0,
 			Active:       true,
 		},
@@ -41,6 +43,7 @@ func TestIdentity_ThresholdRules(t *testing.T) {
 			ID:           "sub-2",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 10.0,
 			Active:       false,
 		},
@@ -123,6 +126,7 @@ func TestIdentity_AutoRotateExclusion(t *testing.T) {
 			ID:           "sub-1",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 96.0,
 			Active:       true,
 		},
@@ -138,6 +142,7 @@ func TestIdentity_AutoRotateExclusion(t *testing.T) {
 			ID:           "sub-3-auto",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 20.0,
 			Active:       false,
 		},
@@ -170,6 +175,7 @@ func TestIdentity_PerAccountThreshold(t *testing.T) {
 			ID:           "sub-custom",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 82.0,
 			Active:       true,
 			ThresholdPct: &customThresh,
@@ -178,6 +184,7 @@ func TestIdentity_PerAccountThreshold(t *testing.T) {
 			ID:           "sub-default",
 			Provider:     "anthropic",
 			Tier:         identity.TierSubscription,
+			AutoRotate:   identity.Pooled(),
 			UsagePercent: 88.0,
 			Active:       false,
 		},
@@ -273,3 +280,80 @@ func TestIdentity_SubBeatsWebForSameEmail(t *testing.T) {
 	}
 }
 
+func TestIdentity_PoolDefaults(t *testing.T) {
+	sub := identity.Identity{ID: "codex:01", Provider: "openai", Tier: identity.TierSubscription}
+	web := identity.Identity{ID: "chatgpt:web:01", Provider: "openai", Tier: identity.TierWeb}
+	if sub.CanAutoRotate() {
+		t.Fatal("subscriptions must not be in the pool until added by hand")
+	}
+	if !web.CanAutoRotate() {
+		t.Fatal("web accounts are in the pool by default")
+	}
+	sub.AutoRotate = identity.Pooled()
+	if !sub.CanAutoRotate() {
+		t.Fatal("manually pooled subscription must rotate")
+	}
+	sub.Metadata = map[string]interface{}{"disabled": true}
+	if sub.CanAutoRotate() {
+		t.Fatal("a disabled account is never in the pool")
+	}
+}
+
+func TestIdentity_PoolLookups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identities.json")
+	cfg := &identity.Config{Identities: []identity.Identity{
+		{ID: "claude:code:01", Provider: "anthropic", Tier: identity.TierSubscription, AutoRotate: identity.Pooled(),
+			Metadata: map[string]interface{}{"profile_name": "a@x.com", "email": "a@x.com"}},
+		{ID: "claude:code:02", Provider: "anthropic", Tier: identity.TierSubscription,
+			Metadata: map[string]interface{}{"profile_name": "b@x.com", "email": "b@x.com"}},
+		// A web account with the same email must not make the subscription count as pooled.
+		{ID: "claude:web:01", Provider: "anthropic", Tier: identity.TierWeb,
+			Metadata: map[string]interface{}{"email": "b@x.com"}},
+	}}
+	if err := identity.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !identity.ProfileInPool(path, "claude", "a@x.com", "") {
+		t.Fatal("pooled profile not found")
+	}
+	if identity.ProfileInPool(path, "claude", "b@x.com", "b@x.com") {
+		t.Fatal("unpooled subscription reported as pooled")
+	}
+	if identity.ProfileInPool(path, "claude", "unknown", "u@x.com") {
+		t.Fatal("unknown profile must not be pooled")
+	}
+	in := identity.PoolMemberFilter(path)
+	if !in("claude:code:01") || in("claude:code:02") || in("nope:01") {
+		t.Fatal("PoolMemberFilter mismatch")
+	}
+}
+
+func TestMigrate_V2ClearsLegacySubscriptionDisable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "identities.json")
+	cfg := &identity.Config{Identities: []identity.Identity{
+		{ID: "codex:01", Provider: "openai", Tier: identity.TierSubscription,
+			Credentials: map[string]string{"refresh_token": "r"},
+			Metadata:    map[string]interface{}{"disabled": true, "email": "a@x.com"}},
+	}}
+	if err := identity.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.MigrateLegacyAccounts(filepath.Join(dir, "none.json"), path); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := identity.LoadConfig(path)
+	if got.Version != 2 || !identity.IsEnabled(got.Identities[0]) {
+		t.Fatalf("legacy migration-set disable not cleared: v=%d %+v", got.Version, got.Identities[0].Metadata)
+	}
+	if got.Identities[0].CanAutoRotate() {
+		t.Fatal("clearing the flag must not put the subscription in the pool")
+	}
+	// Running again keeps a real `account off`.
+	_ = identity.SetEnabled(path, "codex:01", false)
+	_, _ = identity.MigrateLegacyAccounts(filepath.Join(dir, "none.json"), path)
+	got, _ = identity.LoadConfig(path)
+	if identity.IsEnabled(got.Identities[0]) {
+		t.Fatal("a user's off must survive later migrations")
+	}
+}

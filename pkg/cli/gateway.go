@@ -140,7 +140,54 @@ func cmdGatewayStop(args []string) {
 	if err := gateway.Stop(); err != nil {
 		die("failed to stop gateway: %v", err)
 	}
-	fmt.Println("✓ Gateway stopped gracefully.")
+	fmt.Println("✓ Gateway stopped.")
+	if hooked := hookedTools(); len(hooked) > 0 {
+		fmt.Printf("  ⚠ Still hooked: %s — they will fail until `amux start`.\n", strings.Join(hooked, ", "))
+		fmt.Println("    To go back to native instead: amux off")
+	}
+}
+
+// hookedTools lists the tools whose config currently points at the gateway.
+func hookedTools() []string {
+	st := gateway.GetStatus()
+	var out []string
+	if st.ClaudeHooked {
+		out = append(out, "Claude Code")
+	}
+	if st.CursorHooked {
+		out = append(out, "Cursor")
+	}
+	if st.CodexHooked {
+		out = append(out, "Codex")
+	}
+	if st.AgyHooked {
+		out = append(out, "Antigravity")
+	}
+	return out
+}
+
+// CmdOff returns every tool to native mode: removes all gateway hooks and
+// stops the gateway. Accounts, saved logins and MCP registrations are kept.
+func CmdOff(_ []string) {
+	hooked := hookedTools()
+	if err := gateway.Unhook(gateway.TargetAll); err != nil {
+		die("unhook: %v", err)
+	}
+	if len(hooked) > 0 {
+		fmt.Printf("✓ Unhooked: %s\n", strings.Join(hooked, ", "))
+	}
+	wasRunning := gateway.IsRunning()
+	if wasRunning {
+		if err := gateway.Stop(); err != nil {
+			die("stop gateway: %v", err)
+		}
+		fmt.Println("✓ Gateway stopped.")
+	}
+	if len(hooked) == 0 && !wasRunning {
+		fmt.Println("amux is already off — no tool is hooked and the gateway is not running.")
+		return
+	}
+	fmt.Println("✓ amux is off — every tool uses its own login directly. Restart open sessions to pick this up.")
 }
 
 func cmdGatewayRestart(args []string) {
@@ -202,6 +249,13 @@ func cmdGatewayHook(args []string) {
 		return
 	}
 
+	// Session hooks from older versions run `amux hook <tool> start|stop`
+	// when a session opens or closes. Hooking is an explicit user action
+	// now, so those calls must not re-hook a tool the user unhooked.
+	if len(args) > 1 && (args[1] == "start" || args[1] == "stop") {
+		return
+	}
+
 	target := gateway.TargetAll
 	switch args[0] {
 	case "--claude", "-c", "claude":
@@ -221,10 +275,9 @@ func cmdGatewayHook(args []string) {
 	if err := gateway.Hook(target, ""); err != nil {
 		die("hook error: %v", err)
 	}
-	fmt.Printf("✓ Injected gateway hook into %s settings.\n", target)
+	fmt.Printf("✓ Hooked %s → gateway. Undo with: amux unhook %s\n", target, target)
 	if !gateway.IsRunning() {
-		fmt.Println("Notice: AMUX Gateway daemon is currently STOPPED.")
-		fmt.Println("  Run 'amux start' to start the gateway background daemon, or run 'amux unhook' to restore direct upstream connection.")
+		fmt.Println("  ⚠ The gateway is not running, so hooked tools will fail. Run: amux start")
 	}
 }
 
@@ -257,7 +310,7 @@ func cmdGatewayHookStatus() {
 			Name:     "Codex CLI",
 			Detected: hook.CodexAvailable(),
 			Hooked:   st.CodexHooked,
-			Config:   gateway.CodexConfigPath(),
+			Config:   gateway.CodexTomlPath(),
 		},
 		{
 			Name:     "Antigravity (AGY)",
@@ -309,10 +362,25 @@ func cmdGatewayUnhook(args []string) {
 		}
 	}
 
+	before := hookedTools()
 	if err := gateway.Unhook(target); err != nil {
 		die("unhook error: %v", err)
 	}
-	fmt.Printf("✓ Removed gateway hook from %s settings (restored native execution).\n", target)
+	after := map[string]bool{}
+	for _, t := range hookedTools() {
+		after[t] = true
+	}
+	var removed []string
+	for _, t := range before {
+		if !after[t] {
+			removed = append(removed, t)
+		}
+	}
+	if len(removed) == 0 {
+		fmt.Println("Nothing to unhook — no tool points at the gateway.")
+		return
+	}
+	fmt.Printf("✓ Unhooked %s — back to native. Restart open sessions to pick this up.\n", strings.Join(removed, ", "))
 }
 
 func cmdGatewayRunDaemon() {

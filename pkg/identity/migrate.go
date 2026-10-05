@@ -129,6 +129,23 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	}
 	cfg.Identities = cleaned
 
+	// Schema v2: earlier versions marked every subscription "disabled" here to
+	// keep it out of rotation, which also made `amux account on` impossible to
+	// keep. Pool membership now has its own default (subscriptions are out of
+	// the pool until `amux pool add`), so drop that legacy flag once; a
+	// profile the user really turned off is re-flagged from its bundle below.
+	if cfg.Version < 2 {
+		for i := range cfg.Identities {
+			if cfg.Identities[i].IsSubscription() && cfg.Identities[i].Metadata != nil {
+				if _, ok := cfg.Identities[i].Metadata["disabled"]; ok {
+					delete(cfg.Identities[i].Metadata, "disabled")
+					changed = true
+				}
+			}
+		}
+		cfg.Version = 2
+	}
+
 	migratedCount := 0
 
 	// 1. Read accounts.json
@@ -194,7 +211,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 				if p.BaseURL != "" {
 					meta["endpoint"] = p.BaseURL
 				}
-				if tier == TierSubscription || p.Disabled {
+				if p.Disabled {
 					meta["disabled"] = true
 				}
 
@@ -206,14 +223,10 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 							cfg.Identities[idx].Tier = TierSubscription
 							cfg.Identities[idx].AuthType = authType
 							cfg.Identities[idx].Active = false
-							if cfg.Identities[idx].Metadata == nil {
-								cfg.Identities[idx].Metadata = make(map[string]interface{})
-							}
-							cfg.Identities[idx].Metadata["disabled"] = true
 							seenIDs[p.ID] = idx
 						}
 						enrichIdentityFromProvider(&cfg.Identities[idx], p)
-						if cfg.Identities[idx].IsSubscription() || p.Disabled {
+						if p.Disabled {
 							cfg.Identities[idx].Active = false
 							if cfg.Identities[idx].Metadata == nil {
 								cfg.Identities[idx].Metadata = make(map[string]interface{})
@@ -226,7 +239,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 
 				if idx, exists := seenIDs[p.ID]; exists {
 					enrichIdentityFromProvider(&cfg.Identities[idx], p)
-					if cfg.Identities[idx].IsSubscription() || p.Disabled {
+					if p.Disabled {
 						cfg.Identities[idx].Active = false
 						if cfg.Identities[idx].Metadata == nil {
 							cfg.Identities[idx].Metadata = make(map[string]interface{})
@@ -307,15 +320,11 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 					cfg.Identities[targetIdx].Tier = TierSubscription
 					cfg.Identities[targetIdx].AuthType = bundleAuth
 					cfg.Identities[targetIdx].Active = false
-					if cfg.Identities[targetIdx].Metadata == nil {
-						cfg.Identities[targetIdx].Metadata = make(map[string]interface{})
-					}
-					cfg.Identities[targetIdx].Metadata["disabled"] = true
 					seenIDs[pm.ID] = targetIdx
 				}
 				pe := profile.LoadProfileEntries(tool, pm.Name)
 				enrichIdentityFromProfile(&cfg.Identities[targetIdx], tool, pm, pe)
-				if cfg.Identities[targetIdx].IsSubscription() || pm.Disabled {
+				if pm.Disabled {
 					cfg.Identities[targetIdx].Active = false
 					if cfg.Identities[targetIdx].Metadata == nil {
 						cfg.Identities[targetIdx].Metadata = make(map[string]interface{})
@@ -346,7 +355,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 
 			// Determine active status from the profile's .active pointer
 			activeName := profile.ReadActivePointer(tool)
-			isActive := activeName == pm.Name && !pm.Disabled && bundleTier != TierSubscription
+			isActive := activeName == pm.Name && !pm.Disabled
 
 			meta := map[string]interface{}{
 				"migrated_from": "profile_bundle",
@@ -354,7 +363,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 				"email":         pm.Account,
 				"plan":          pm.Plan,
 			}
-			if bundleTier == TierSubscription || pm.Disabled {
+			if pm.Disabled {
 				isActive = false
 				meta["disabled"] = true
 			}
@@ -469,11 +478,15 @@ func enrichIdentityFromProfile(target *Identity, tool string, pm types.ProfileMe
 	if pm.Plan != "" && (target.Metadata["plan"] == nil || target.Metadata["plan"] == "") {
 		target.Metadata["plan"] = pm.Plan
 	}
+	// The CLI's own active pointer is the truth for which saved login is
+	// installed right now.
 	activeName := profile.ReadActivePointer(tool)
-	if activeName == pm.Name && !pm.Disabled && target.Tier != TierSubscription {
+	if target.IsSubscription() {
+		target.Active = activeName == pm.Name && !pm.Disabled
+	} else if activeName == pm.Name && !pm.Disabled {
 		target.Active = true
 	}
-	if pm.Disabled || target.Tier == TierSubscription {
+	if pm.Disabled {
 		target.Active = false
 		target.Metadata["disabled"] = true
 	}

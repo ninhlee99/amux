@@ -118,8 +118,9 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 		model = req.Model
 	}
 	if model == "" {
-		model = "claude-3-7-sonnet-20250219"
+		model = DefaultClaudeModel
 	}
+	gen := ClaudeModelGeneration(model)
 
 	maxTokens := 8192
 	if req.MaxTokens > 0 {
@@ -134,19 +135,31 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 	if !req.Stream {
 		payload["stream"] = false
 	}
-	if req.Temperature > 0 {
+	if req.Temperature > 0 && gen.AcceptsSampling() {
 		payload["temperature"] = req.Temperature
 	}
-	if req.Thinking && req.ThinkingBudget > 0 {
-		payload["thinking"] = map[string]any{
-			"type":          "enabled",
-			"budget_tokens": req.ThinkingBudget,
+	if req.Thinking {
+		switch {
+		case gen.AdaptiveThinking():
+			// budget_tokens is rejected (400) from the 4.7 generation on;
+			// adaptive thinking replaces it.
+			payload["thinking"] = map[string]any{"type": "adaptive"}
+		case req.ThinkingBudget > 0:
+			payload["thinking"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": req.ThinkingBudget,
+			}
 		}
 	}
 	if len(req.Tools) > 0 {
 		payload["tools"] = ToClaudeTools(req.Tools)
 		if req.ToolChoice != nil {
 			if tc := normalizeClaudeToolChoice(req.ToolChoice); tc != nil {
+				if t := toolChoiceType(tc); !gen.AcceptsForcedToolChoice() && (t == "any" || t == "tool") {
+					// Forced tool use is a 400 on the newest models; auto + the
+					// client's own instructions is the supported equivalent.
+					tc = map[string]string{"type": "auto"}
+				}
 				payload["tool_choice"] = tc
 			}
 		}
@@ -330,4 +343,15 @@ func normalizeClaudeToolChoice(tc any) any {
 		return v
 	}
 	return map[string]string{"type": "auto"}
+}
+
+func toolChoiceType(tc any) string {
+	switch v := tc.(type) {
+	case map[string]string:
+		return v["type"]
+	case map[string]any:
+		t, _ := v["type"].(string)
+		return t
+	}
+	return ""
 }

@@ -41,7 +41,7 @@ const (
 	// Public client_id Codex CLI itself uses for its device/refresh OAuth
 	// flow — not a secret, it's baked into the open-source codex binary.
 	codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexDefaultModel  = "gpt-5.6-terra"
+	codexDefaultModel  = "gpt-6.1-sol" // Codex list: gpt-6-astra, gpt-6.1-sol, gpt-6-luna
 	codexRefreshLead   = 2 * time.Minute
 )
 
