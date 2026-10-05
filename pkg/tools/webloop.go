@@ -90,7 +90,7 @@ func catalogBlock(defs []types.ToolDef) string {
 
 // catalogLine is "Name" or "Name:key:type,..." — live tools[], typed required args.
 func catalogLine(d types.ToolDef) string {
-	keys := schemaKeyTypes(d.InputSchema, 6)
+	keys := schemaKeyTypes(d.InputSchema, 24)
 	if len(keys) == 0 {
 		return d.Name
 	}

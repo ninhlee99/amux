@@ -99,6 +99,14 @@ func TestSchemaKeyTypes_RequiredNeverTruncated(t *testing.T) {
 	}
 }
 
+func TestCatalogLine_ExpandedOptionalProps(t *testing.T) {
+	raw := []byte(`{"properties":{"opt1":{"type":"string"},"opt2":{"type":"string"},"opt3":{"type":"string"},"opt4":{"type":"string"},"opt5":{"type":"string"},"opt6":{"type":"string"},"opt7":{"type":"string"},"opt8":{"type":"string"}}}`)
+	line := catalogLine(types.ToolDef{Name: "ComplexTool", InputSchema: raw})
+	if !strings.Contains(line, "opt7:string") || !strings.Contains(line, "opt8:string") {
+		t.Fatalf("expected catalogLine to retain optional properties beyond 6, got: %s", line)
+	}
+}
+
 func TestParseWebTools_RejectsUnknown(t *testing.T) {
 	defs := []types.ToolDef{{Name: "Read"}}
 	calls := ParseWebTools("```bash\nrm -rf /\n```", defs)
