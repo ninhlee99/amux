@@ -137,6 +137,7 @@ func cmdUninstall(purge bool) {
 		amuxDir := types.BaseDir()
 		step(true, "Deleted "+amuxDir, os.RemoveAll(amuxDir))
 		_ = os.RemoveAll(filepath.Join(home, ".am"))
+		cleanGlobalEnvAndShellRC()
 	} else {
 		fmt.Printf("  • Kept %s (accounts and saved logins). Delete it too: amux uninstall --purge\n", types.BaseDir())
 	}

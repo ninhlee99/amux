@@ -9,16 +9,11 @@ set -euo pipefail
 REPO_URL="${AMUX_REPO_URL:-https://github.com/ninhlee99/amux.git}"
 
 if [ -z "${AMUX_INSTALL_DIR:-}" ]; then
-  if [ -d "$HOME/.local/bin" ] && [ -w "$HOME/.local/bin" ] && [[ ":$PATH:" == *":$HOME/.local/bin:"* ]]; then
-    INSTALL_DIR="$HOME/.local/bin"
-  elif [ -w "/usr/local/bin" ]; then
-    INSTALL_DIR="/usr/local/bin"
-  else
-    INSTALL_DIR="$HOME/.local/bin"
-    mkdir -p "$INSTALL_DIR"
-  fi
+  INSTALL_DIR="$HOME/.local/bin"
+  mkdir -p "$INSTALL_DIR"
 else
   INSTALL_DIR="$AMUX_INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
 fi
 
 say() { printf '%s\n' "$*" >&2; }
@@ -223,13 +218,36 @@ fi
 
 if [ -w "$INSTALL_DIR" ]; then
   mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
+  chmod 755 "$INSTALL_DIR/amux"
 else
   say "need sudo to write to $INSTALL_DIR..."
   sudo mv "$tmp/amux-accounts/amux" "$INSTALL_DIR/amux"
+  sudo chmod 755 "$INSTALL_DIR/amux"
 fi
 
-if [ "$INSTALL_DIR" != "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-  cp "$INSTALL_DIR/amux" "/usr/local/bin/amux" 2>/dev/null || true
+# Clean up legacy /usr/local/bin/amux if present to prevent PATH shadowing
+if [ "$INSTALL_DIR" = "$HOME/.local/bin" ] && [ -w "/usr/local/bin/amux" ]; then
+  rm -f "/usr/local/bin/amux" 2>/dev/null || true
+  rm -f "/usr/local/bin/am" 2>/dev/null || true
+fi
+
+# Ensure ~/.local/bin is in PATH permanently
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  shell_rc=""
+  user_shell="$(basename "${SHELL:-zsh}")"
+  if [ "$user_shell" = "zsh" ]; then
+    shell_rc="$HOME/.zshrc"
+  elif [ "$user_shell" = "bash" ]; then
+    shell_rc="$HOME/.bashrc"
+  fi
+
+  if [ -n "$shell_rc" ]; then
+    if ! grep -qs 'PATH=.*\.local/bin' "$shell_rc"; then
+      say "Adding $INSTALL_DIR to PATH in $shell_rc..."
+      printf '\n# User local binaries (amux)\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$shell_rc"
+    fi
+  fi
+  export PATH="$INSTALL_DIR:$PATH"
 fi
 
 say "✓ Installed amux -> $INSTALL_DIR/amux"
@@ -238,8 +256,8 @@ if command -v amux >/dev/null 2>&1; then
   say "running 'amux setup $AUTO_UPDATE_FLAG'..."
   amux setup $AUTO_UPDATE_FLAG || say "amux setup reported an issue — you can re-run it any time: amux setup $AUTO_UPDATE_FLAG"
 else
-  say "warning: $INSTALL_DIR isn't on PATH — add it, then run: amux setup $AUTO_UPDATE_FLAG"
+  "$INSTALL_DIR/amux" setup $AUTO_UPDATE_FLAG || true
 fi
 
 say ""
-say "Installation complete. Next: amux id add [provider] (register your accounts)"
+say "Installation complete. Next: amux login [provider] (register your accounts)"

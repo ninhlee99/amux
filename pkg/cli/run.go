@@ -105,9 +105,9 @@ func ResolveBinaryPath(binName string) (string, error) {
 	home, _ := os.UserHomeDir()
 	// Fallback check standard binary paths in case shell PATH is stripped
 	commonBinDirs := []string{
+		filepath.Join(home, ".local", "bin"),
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
-		filepath.Join(home, ".local", "bin"),
 		filepath.Join(home, ".npm-global", "bin"),
 	}
 	for _, dir := range commonBinDirs {

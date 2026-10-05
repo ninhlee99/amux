@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
@@ -42,6 +45,17 @@ func CmdSetup(args []string) {
 			fmt.Printf("Auto-update error: %v\n", err)
 		} else {
 			fmt.Println("✓ Auto-update enabled via LaunchAgent.")
+		}
+	}
+
+	// Verify ~/.local/bin is in PATH and ensure shell rc includes it
+	home, _ := os.UserHomeDir()
+	localBin := filepath.Join(home, ".local", "bin")
+	_ = os.MkdirAll(localBin, 0o755)
+	if !strings.Contains(":"+os.Getenv("PATH")+":", ":"+localBin+":") {
+		if rc := hook.ShellRC(); rc != "" && !hook.RCHasLine(rc, localBin) {
+			_ = hook.AppendLine(rc, fmt.Sprintf("\n# User local binaries (amux)\nexport PATH=\"%s:$PATH\"\n", localBin))
+			fmt.Printf("✓ Added %s to PATH in %s\n", localBin, rc)
 		}
 	}
 

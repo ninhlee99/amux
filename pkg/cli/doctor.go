@@ -104,6 +104,33 @@ func CmdDoctor(args []string) {
 		fmt.Printf("WARN (%v)\n", err)
 	}
 
+	// 3.5. Binary Location and PATH
+	fmt.Print("[Binary & PATH] Checking amux installation... ")
+	home, _ := os.UserHomeDir()
+	localBin := filepath.Join(home, ".local", "bin")
+	localBinAmux := filepath.Join(localBin, "amux")
+	selfExe, _ := os.Executable()
+	selfExe, _ = filepath.EvalSymlinks(selfExe)
+
+	if _, err := os.Stat(localBinAmux); err == nil {
+		fmt.Printf("OK (~/.local/bin/amux)\n")
+	} else if selfExe != "" {
+		fmt.Printf("OK (%s)\n", selfExe)
+	} else {
+		fmt.Printf("WARN (Not found at ~/.local/bin/amux)\n")
+	}
+
+	pathEnv := os.Getenv("PATH")
+	if !strings.Contains(":"+pathEnv+":", ":"+localBin+":") {
+		fmt.Printf("  ⚠ Warning: %s is not in PATH. Run 'amux doctor --fix' to auto-configure.\n", localBin)
+		if autoFix {
+			if rc := hook.ShellRC(); rc != "" && !hook.RCHasLine(rc, localBin) {
+				_ = hook.AppendLine(rc, fmt.Sprintf("\n# User local binaries (amux)\nexport PATH=\"%s:$PATH\"\n", localBin))
+				fmt.Printf("  ✓ [Self-Healing] Appended PATH export to %s\n", rc)
+			}
+		}
+	}
+
 	// 4. Client Tools Compatibility
 	fmt.Println("\n== Client IDE & Tool Detection ==")
 	checkTool("Claude Code", "claude", hook.ClaudeAvailable())
@@ -118,7 +145,6 @@ func CmdDoctor(args []string) {
 
 	// 5. MCP Host Integrations
 	fmt.Println("\n== MCP Host Integrations ==")
-	home, _ := os.UserHomeDir()
 	if home != "" {
 		hasAny := false
 		for _, target := range mcp.Targets() {
