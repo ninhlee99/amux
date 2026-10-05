@@ -47,10 +47,7 @@ layers:
     role: "Contracts — no internal pkg imports"
   - id: mcp
     path: pkg/mcp/
-    role: "MCP stdio server, amux_*/muse_* tools, installer cho MCP host"
-  - id: muse
-    path: pkg/muse/
-    role: "Driver Meta Muse qua CDP (browser.Session/Page)"
+    role: "MCP stdio server, amux_* tools, installer cho MCP host"
 
 data_paths:
   config_dir: "~/.amux"
@@ -234,7 +231,7 @@ tasks:
       - pkg/mcp/tools.go
       - pkg/mcp/install.go
       - pkg/cli/mcp.go
-    symbols: [Serve, RegisterAmuxTools, RegisterMuseTools, Targets, PoolMemberFilter]
+    symbols: [Serve, RegisterAmuxTools, Targets, PoolMemberFilter]
     tests: [pkg/mcp/server_test.go, pkg/mcp/install_test.go]
 
   - id: rotation-pool
@@ -256,15 +253,6 @@ tasks:
       - pkg/mcp/install.go
     symbols: [CmdOff, cmdUninstall, UnhookAgy, UnhookCodex, Target.Uninstall, removeAmuxClaudeEnv]
     tests: [pkg/gateway/unhook_clean_test.go, pkg/mcp/install_test.go]
-
-  - id: muse-web
-    keywords: [muse, meta muse, muse.ai, cdp page, devtools, muse_web]
-    read_first:
-      - pkg/muse/driver.go
-      - pkg/provider/muse_web.go
-      - pkg/browser/cdp_page.go
-    symbols: [Driver, Chat, Shared, MuseWebAdapter, OpenSession, DialPage]
-    tests: [pkg/muse/driver_test.go, pkg/provider/muse_web_test.go, pkg/browser/cdp_page_test.go]
 
   - id: secret-store
     keywords: [keychain, secret store, vault, master key, keychain-free, AMUX_SECRET_STORE]
