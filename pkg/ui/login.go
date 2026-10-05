@@ -135,23 +135,54 @@ func CmdLogin(args []string) {
 	var flags loginFlags
 	if len(args) == 0 {
 		fmt.Println("Select provider to login:")
-		fmt.Println("  [1] claude (Claude Code OAuth / Web)")
-		fmt.Println("  [2] codex  (OpenAI Codex OAuth)")
-		fmt.Println("  [3] gemini (Google AI Studio / Antigravity OAuth)")
-		fmt.Println("  [4] cursor (Cursor API Key / Token)")
-		ans := strings.TrimSpace(term.ReadLine("Select [1-4] (claude/codex/gemini/cursor): "))
+		fmt.Println("  -- Subscriptions (IDE Plans) --")
+		fmt.Println("  [1] claude       Claude Code OAuth / Web")
+		fmt.Println("  [2] codex        OpenAI Codex OAuth")
+		fmt.Println("  [3] agy          Google Antigravity OAuth")
+		fmt.Println("  [4] cursor       Cursor Token / API Key")
+		fmt.Println("  -- Free Web Accounts (AI Gateway Rotation) --")
+		fmt.Println("  [5] chatgpt      ChatGPT Web (Browser / Session)")
+		fmt.Println("  [6] gemini-web   Gemini Web (Browser / Cookies)")
+		fmt.Println("  [7] claude-web   Claude Web (Session Key)")
+		fmt.Println("  -- Metered API Keys --")
+		fmt.Println("  [8] openai       OpenAI API Key")
+		fmt.Println("  [9] gemini       Google AI Studio API Key")
+		fmt.Println("  [10] groq        Groq API Key")
+		fmt.Println("  [11] kimi        Moonshot / Kimi API Key")
+		fmt.Println("  [12] grok        xAI / Grok API Key")
+		ans := strings.TrimSpace(term.ReadLine("Select [1-12] (or provider name): "))
 		switch strings.ToLower(ans) {
 		case "1", "claude":
 			target = "claude"
 		case "2", "codex":
 			target = "codex"
-		case "3", "gemini":
-			target = "gemini"
+		case "3", "agy", "antigravity":
+			target = "agy"
 		case "4", "cursor":
 			target = "cursor"
+		case "5", "chatgpt", "chatgpt-web":
+			target = "chatgpt"
+		case "6", "gemini-web":
+			target = "gemini-web"
+		case "7", "claude-web":
+			target = "claude-web"
+		case "8", "openai":
+			target = "openai"
+		case "9", "gemini":
+			target = "gemini"
+		case "10", "groq":
+			target = "groq"
+		case "11", "kimi":
+			target = "kimi"
+		case "12", "grok":
+			target = "grok"
 		default:
-			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor")
-			return
+			if ans != "" {
+				target = strings.ToLower(ans)
+			} else {
+				fmt.Println("Invalid selection. Supported providers: claude, codex, agy, cursor, chatgpt, gemini-web, claude-web, openai, gemini, groq, kimi, grok")
+				return
+			}
 		}
 	} else {
 		target, flags, _ = parseLoginFlags(args)
@@ -230,8 +261,10 @@ func CmdLogin(args []string) {
 		}
 	case "cursor":
 		loginCursor(flags)
+	case "openai", "openai-api":
+		loginOpenAI(flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, gemini-web, chatgpt, cursor, github, groq, kimi, grok (or run: amux login)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, codex, agy, gemini, gemini-web, chatgpt, claude-web, cursor, openai, groq, kimi, grok (or run: amux login)\n", target)
 	}
 }
 
@@ -781,6 +814,17 @@ func loginGrok(f loginFlags) {
 		DefaultModel: "grok-4.7",
 		IDPrefix:     "grok:api",
 		Priority:     provider.PriorityAPIGrok,
+	}, f)
+}
+
+func loginOpenAI(f loginFlags) {
+	loginOpenAICompat(openAICompatSpec{
+		Name:         "OpenAI",
+		EnvVar:       "OPENAI_API_KEY",
+		DefaultURL:   "https://api.openai.com/v1",
+		DefaultModel: "gpt-6.1-sol",
+		IDPrefix:     "openai:api",
+		Priority:     provider.PriorityAPIOpenAI,
 	}, f)
 }
 

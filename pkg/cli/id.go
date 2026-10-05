@@ -203,7 +203,10 @@ func cmdIDSelect(args []string) {
 		fmt.Println("Which account should be active?")
 		for i, item := range cfg.Identities {
 			activeTag := ""
-			if item.Active {
+			switch {
+			case !identity.IsEnabled(item):
+				activeTag = " (turned off)"
+			case item.Active:
 				activeTag = " (current active)"
 			}
 			emailTag := ""
@@ -246,7 +249,24 @@ func cmdIDSelect(args []string) {
 	}
 
 	if !identity.IsEnabled(*target) {
-		die("%s is turned off. Turn it back on first: amux account on %s", target.ID, target.ID)
+		fmt.Printf("Account %s was turned off. Re-enabling...\n", target.ID)
+		if err := identity.SetEnabled("", target.ID, true); err != nil {
+			die("failed to enable %s: %v", target.ID, err)
+		}
+		if strings.HasPrefix(target.ID, "claude:code") {
+			pName := ""
+			if target.Metadata != nil {
+				if v, ok := target.Metadata["profile_name"].(string); ok {
+					pName = v
+				}
+			}
+			if pName == "" {
+				pName = target.Email()
+			}
+			if pName != "" && pName != "-" {
+				_ = profile.SetDisabled("claude", pName, false)
+			}
+		}
 	}
 
 	pName := ""

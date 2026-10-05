@@ -315,3 +315,60 @@ func TestParseWebTools_UnescapedQuotesInsideBashCommand(t *testing.T) {
 		t.Fatalf("command not preserved byte-for-byte:\nwant=%q\ngot =%q", cmd, got.Command)
 	}
 }
+
+func TestParseWebTools_XMLAttributes(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Bash"}}
+
+	// Test 1: name attribute in <tool_call>
+	text1 := `<tool_call name="Bash">
+{"command": "git status"}
+</tool_call>`
+	calls1 := ParseWebTools(text1, defs)
+	if len(calls1) != 1 || calls1[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call, got: %+v", calls1)
+	}
+	if !strings.Contains(calls1[0].Arguments, "git status") {
+		t.Fatalf("expected git status argument, got: %s", calls1[0].Arguments)
+	}
+
+	// Test 2: name and id attributes in <tool_call>
+	text2 := `<tool_call name="Bash" id="toolu_custom_99">
+{"command": "echo hello"}
+</tool_call>`
+	calls2 := ParseWebTools(text2, defs)
+	if len(calls2) != 1 || calls2[0].Name != "Bash" || calls2[0].ID != "toolu_custom_99" {
+		t.Fatalf("expected 1 Bash call with id toolu_custom_99, got: %+v", calls2)
+	}
+
+	// Test 3: Markdown fence inside <tool_call>
+	text3 := "<tool_call>\n```json\n{\n  \"name\": \"Bash\",\n  \"arguments\": {\"command\": \"ls -lh\"}\n}\n```\n</tool_call>"
+	calls3 := ParseWebTools(text3, defs)
+	if len(calls3) != 1 || calls3[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from fenced block, got: %+v", calls3)
+	}
+	if !strings.Contains(calls3[0].Arguments, "ls -lh") {
+		t.Fatalf("expected ls -lh argument, got: %s", calls3[0].Arguments)
+	}
+
+	// Test 4: Anthropic <invoke> XML format with parameters
+	text4 := `<invoke name="Bash">
+<parameter name="command">git diff</parameter>
+</invoke>`
+	calls4 := ParseWebTools(text4, defs)
+	if len(calls4) != 1 || calls4[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from invoke, got: %+v", calls4)
+	}
+	if !strings.Contains(calls4[0].Arguments, "git diff") {
+		t.Fatalf("expected git diff argument, got: %s", calls4[0].Arguments)
+	}
+
+	// Test 5: Bracket alternate syntax [tool_call Bash {...}]
+	text5 := `[tool_call Bash {"command":"pwd"}]`
+	calls5 := ParseWebTools(text5, defs)
+	if len(calls5) != 1 || calls5[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from bracket alt, got: %+v", calls5)
+	}
+	if !strings.Contains(calls5[0].Arguments, "pwd") {
+		t.Fatalf("expected pwd argument, got: %s", calls5[0].Arguments)
+	}
+}

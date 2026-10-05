@@ -68,7 +68,7 @@ func TestInstallJSONPreservesOtherServers(t *testing.T) {
 
 func TestInstallCreatesMissingFile(t *testing.T) {
 	home := t.TempDir()
-	for _, name := range []string{"vscode", "opencode", "gemini", "agy", "windsurf", "claude-desktop"} {
+	for _, name := range []string{"vscode", "opencode", "gemini", "agy", "windsurf", "claude-desktop", "cline", "roo"} {
 		tg := mustTarget(t, name)
 		if _, err := tg.Install(home, "/opt/amux"); err != nil {
 			t.Fatalf("%s: %v", name, err)

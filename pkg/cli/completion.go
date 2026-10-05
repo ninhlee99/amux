@@ -30,8 +30,9 @@ _amux_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart status off hook unhook pool env login account switch doctor audit usage setup config threshold migrate update uninstall feedback completion vault mcp"
+    local commands="start stop restart status dashboard run off hook unhook pool env login account switch doctor audit usage setup config threshold migrate update uninstall feedback completion vault mcp"
     local providers="claude codex agy chatgpt gemini-web gemini groq kimi grok github cursor"
+    local ides="claude cursor windsurf codex agy"
 
     if [[ ${cword} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -39,6 +40,11 @@ _amux_completions() {
     fi
 
     case "${words[1]}" in
+        run)
+            if [[ ${cword} -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "${ides}" -- "${cur}") )
+            fi
+            ;;
         login)
             if [[ ${cword} -eq 2 ]]; then
                 COMPREPLY=( $(compgen -W "${providers}" -- "${cur}") )
@@ -85,6 +91,8 @@ _amux() {
         'stop:Stop gateway background daemon'
         'restart:Restart gateway daemon'
         'status:Gateway, hooked tools and accounts'
+        'dashboard:Live interactive TUI Dashboard'
+        'run:Run an IDE in a sandboxed gateway session'
         'off:Unhook every tool and stop the gateway'
         'login:Add an account'
         'switch:Make an account the active login (no re-login)'
@@ -128,6 +136,9 @@ _amux() {
             ;;
         args)
             case $line[1] in
+                run)
+                    _values 'ides' 'claude' 'cursor' 'windsurf' 'codex' 'agy'
+                    ;;
                 login)
                     _describe -t providers 'provider' providers
                     ;;
@@ -158,13 +169,15 @@ _amux "$@"
 
 const fishCompletionScript = `# fish completion for amux
 
-set -l commands start stop restart status off login switch account id pool hook unhook env doctor audit usage setup config threshold migrate vault completion update uninstall mcp
+set -l commands start stop restart status dashboard run off login switch account id pool hook unhook env doctor audit usage setup config threshold migrate vault completion update uninstall mcp
 
 complete -c amux -f
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a start -d "Start gateway daemon"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a stop -d "Stop gateway daemon"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a restart -d "Restart gateway daemon"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a status -d "Inspect accounts and gateway status"
+complete -c amux -n "not __fish_seen_subcommand_from $commands" -a dashboard -d "Open interactive TUI dashboard"
+complete -c amux -n "not __fish_seen_subcommand_from $commands" -a run -d "Run an IDE in a sandboxed gateway session"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a login -d "Authenticate an account"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a switch -d "Switch active account"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a account -d "Manage accounts and quotas"
@@ -177,6 +190,9 @@ complete -c amux -n "not __fish_seen_subcommand_from $commands" -a doctor -d "Ru
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a audit -d "Security posture audit"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a vault -d "Export or import vault"
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a completion -d "Generate shell completion"
+
+# Completion for run IDEs
+complete -c amux -n "__fish_seen_subcommand_from run" -a "claude cursor windsurf codex agy"
 
 # Completion for login providers
 complete -c amux -n "__fish_seen_subcommand_from login" -a "claude codex agy chatgpt gemini-web gemini groq kimi grok github cursor"

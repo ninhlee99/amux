@@ -104,6 +104,8 @@ func renderDashboardScreen() {
 	fmt.Println("  • Cursor IDE         (openai dialect / chat completions)")
 	fmt.Println("  • Google AGY         (gemini dialect / thought signature)")
 	fmt.Println("  • OpenAI Codex CLI   (responses dialect / tool harness)")
+	fmt.Println("  • Cline & Roo Code   (mcp / anthropic / openai dialect)")
+	fmt.Println("  • Windsurf & VS Code (mcp / copilot / openai dialect)")
 	fmt.Println()
 
 	fmt.Println("\033[90m[Auto-refreshing every 2s • Press Ctrl+C to exit]\033[0m")
@@ -120,7 +122,7 @@ func renderDashboardJSON() {
 		"timestamp":      time.Now().Unix(),
 		"accounts_count": len(cfg.Identities),
 		"accounts":       cfg.Identities,
-		"ides":           []string{"Claude Code", "Cursor", "AGY", "Codex"},
+		"ides":           []string{"Claude Code", "Cursor", "AGY", "Codex", "Cline", "Roo Code", "Windsurf", "VS Code"},
 	}
 
 	bytes, _ := json.MarshalIndent(data, "", "  ")

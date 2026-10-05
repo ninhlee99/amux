@@ -5,37 +5,22 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"amux-accounts/pkg/gateway"
+	"amux-accounts/pkg/identity"
 )
 
-// CmdRun executes a coding IDE agent (Claude Code, Cursor, AGY, Codex)
-// in an isolated sandbox environment with gateway variables injected into
-// the child process only, without mutating global system configurations or launchctl.
-func CmdRun(args []string) {
-	if len(args) == 0 {
-		fmt.Println("Usage: amux run <ide> [args...]")
-		fmt.Println("Supported IDEs: claude, cursor, codex, agy (antigravity)")
-		return
-	}
-
-	target := strings.ToLower(args[0])
-	extraArgs := args[1:]
-
-	// Determine binary name and environment overrides
-	var binName string
+// PrepareSandboxEnv computes the binary name and environment variables to inject.
+func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 	envOverrides := map[string]string{
 		"AMUX_SANDBOX": "1",
 	}
 
-	gatewayURL := "http://127.0.0.1:8787"
-	if customPort := os.Getenv("AMUX_PORT"); customPort != "" {
-		gatewayURL = "http://127.0.0.1:" + customPort
-	}
-
+	var binName string
 	switch target {
 	case "claude", "claude-code":
 		binName = "claude"
@@ -48,6 +33,16 @@ func CmdRun(args []string) {
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+	case "windsurf", "windsurf-cli":
+		binName = "windsurf"
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
 		}
 	case "codex", "codex-cli":
 		binName = "codex"
@@ -72,11 +67,75 @@ func CmdRun(args []string) {
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["GOOGLE_GEMINI_BASE_URL"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+		}
+		if os.Getenv("GEMINI_API_KEY") == "" {
+			envOverrides["GEMINI_API_KEY"] = "am-proxy"
+		}
+	}
+	return binName, envOverrides
+}
+
+// ResolveBinaryPath locates the target executable in PATH or standard application folders.
+func ResolveBinaryPath(binName string) (string, error) {
+	if p, err := exec.LookPath(binName); err == nil {
+		return p, nil
+	}
+	// Fallback check on macOS application bundles
+	home, _ := os.UserHomeDir()
+	var candidates []string
+	switch strings.ToLower(binName) {
+	case "cursor":
+		candidates = []string{
+			"/Applications/Cursor.app/Contents/MacOS/Cursor",
+			filepath.Join(home, "Applications/Cursor.app/Contents/MacOS/Cursor"),
+		}
+	case "windsurf":
+		candidates = []string{
+			"/Applications/Windsurf.app/Contents/MacOS/Windsurf",
+			filepath.Join(home, "Applications/Windsurf.app/Contents/MacOS/Windsurf"),
+		}
+	case "agy", "antigravity":
+		candidates = []string{
+			"/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+			filepath.Join(home, "Applications/Antigravity.app/Contents/MacOS/Antigravity"),
+		}
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("executable '%s' not found in PATH or standard applications", binName)
+}
+
+// CmdRun executes a coding IDE agent (Claude Code, Cursor, Windsurf, AGY, Codex)
+// in an isolated sandbox environment with gateway variables injected into
+// the child process only, without mutating global system configurations or launchctl.
+func CmdRun(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: amux run <ide> [args...]")
+		fmt.Println("Supported IDEs: claude, cursor, windsurf, codex, agy (antigravity)")
+		return
 	}
 
-	binPath, err := exec.LookPath(binName)
+	target := strings.ToLower(args[0])
+	extraArgs := args[1:]
+
+	gatewayURL := "http://127.0.0.1:8787"
+	if customPort := os.Getenv("AMUX_PORT"); customPort != "" {
+		gatewayURL = "http://127.0.0.1:" + customPort
+	}
+
+	binName, envOverrides := PrepareSandboxEnv(target, gatewayURL)
+
+	binPath, err := ResolveBinaryPath(binName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "amux run: executable '%s' not found in PATH\n", binName)
+		fmt.Fprintf(os.Stderr, "amux run: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -97,7 +156,17 @@ func CmdRun(args []string) {
 		}
 	}
 
+	// Check if accounts exist to give immediate helpful guidance
+	if cfg, err := identity.LoadConfig(""); err == nil && len(cfg.Identities) == 0 {
+		fmt.Println("⚠ Notice: No accounts configured in AMUX yet. Run 'amux login' to connect Claude, ChatGPT, Gemini, or an API key.")
+	}
+
 	fmt.Printf("⚡ AMUX Sandbox: %s → %s (isolated session)\n", binName, gatewayURL)
+	if target == "cursor" {
+		fmt.Printf("💡 Tip: For Cursor GUI AI Chat, ensure Cursor Settings > Models > 'Override OpenAI Base URL' is set to %s/v1\n", gatewayURL)
+	} else if target == "windsurf" {
+		fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, configure OpenAI Base URL to %s/v1 in Settings > Models\n", gatewayURL)
+	}
 
 	// Build process environment
 	cmdEnv := os.Environ()
@@ -133,12 +202,14 @@ func CmdRun(args []string) {
 
 func helpRun() {
 	fmt.Println("Usage: amux run <ide> [args...]")
-	fmt.Println("  Runs the selected IDE (claude, cursor, codex, agy) in a sandboxed session")
+	fmt.Println("  Runs the selected IDE (claude, cursor, windsurf, codex, agy) in a sandboxed session")
 	fmt.Println("  pointing to the AMUX Gateway without altering global system files.")
 	fmt.Println()
 	fmt.Println("Supported IDE targets:")
-	fmt.Println("  claude   - Runs Claude Code CLI with ANTHROPIC_BASE_URL injected")
-	fmt.Println("  cursor   - Runs Cursor IDE with OPENAI_BASE_URL injected")
-	fmt.Println("  codex    - Runs OpenAI Codex CLI with OPENAI_BASE_URL injected")
-	fmt.Println("  agy      - Runs Google Antigravity CLI with GEMINI_BASE_URL injected")
+	fmt.Println("  claude    - Runs Claude Code CLI with ANTHROPIC_BASE_URL injected")
+	fmt.Println("  cursor    - Runs Cursor IDE with OPENAI_BASE_URL injected")
+	fmt.Println("  windsurf  - Runs Windsurf IDE with OPENAI_BASE_URL & ANTHROPIC_BASE_URL injected")
+	fmt.Println("  codex     - Runs OpenAI Codex CLI with OPENAI_BASE_URL injected")
+	fmt.Println("  agy       - Runs Google Antigravity CLI with GEMINI_BASE_URL injected")
+	fmt.Println("  <cmd>     - Arbitrary agent or tool with all AI proxy variables preconfigured")
 }

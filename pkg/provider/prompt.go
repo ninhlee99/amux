@@ -261,6 +261,15 @@ func isClientHarness(s string) bool {
 	if strings.Contains(s, "You are Codex") || strings.Contains(s, "OpenAI Codex") || strings.Contains(s, "codex_cli") {
 		return true
 	}
+	if strings.Contains(s, "You are Cursor") || strings.Contains(s, "Cursor AI") {
+		return true
+	}
+	if strings.Contains(s, "You are Cline") || strings.Contains(s, "Cline, a helpful") {
+		return true
+	}
+	if strings.Contains(s, "You are Roo") || strings.Contains(s, "Roo Code") {
+		return true
+	}
 	low := strings.ToLower(s)
 	if strings.Contains(s, "permission mode") && strings.Contains(low, "tool") {
 		return true

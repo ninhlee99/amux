@@ -677,7 +677,32 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 		}
 	}
 	if len(errs) == 0 {
-		return nil, fmt.Errorf("router: no adapters configured, or all in cooldown")
+		if len(adapters) == 0 {
+			return nil, fmt.Errorf("router: no adapters configured (run 'amux login' to add an account)")
+		}
+		var excludedSubs []string
+		var coolingOrQuarantined []string
+		for _, a := range adapters {
+			if isQ, _, reason := guard.IsQuarantined(a.ID()); isQ {
+				coolingOrQuarantined = append(coolingOrQuarantined, a.ID()+" (quarantined: "+reason+")")
+				continue
+			}
+			if r.cooling(a.ID()) {
+				coolingOrQuarantined = append(coolingOrQuarantined, a.ID()+" (cooling down)")
+				continue
+			}
+			if !r.canAutoRotate(a) && AdapterAccountType(a) == types.AccountTypeSubscription {
+				excludedSubs = append(excludedSubs, a.ID())
+			}
+		}
+		if len(excludedSubs) > 0 {
+			return nil, fmt.Errorf("router: no active accounts in rotation pool (%d subscription account(s) found: %s; subscription auto-rotation is disabled by default to protect IDE plans). Run 'amux pool add %s' to enable auto-rotation, use 'amux switch %s' to pin it, or run 'amux login' to add a web/API account",
+				len(excludedSubs), strings.Join(excludedSubs, ", "), excludedSubs[0], excludedSubs[0])
+		}
+		if len(coolingOrQuarantined) > 0 {
+			return nil, fmt.Errorf("router: all %d configured adapters are temporarily unavailable: %s", len(coolingOrQuarantined), strings.Join(coolingOrQuarantined, ", "))
+		}
+		return nil, fmt.Errorf("router: no adapters configured, or all in cooldown (see: amux status)")
 	}
 	return nil, errors.Join(errs...)
 }

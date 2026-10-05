@@ -17,5 +17,11 @@ func TestCmdCompletion(t *testing.T) {
 		if !strings.Contains(out, "amux") {
 			t.Errorf("expected completion script for %s to reference 'amux'", sh)
 		}
+		if !strings.Contains(out, "run") || !strings.Contains(out, "dashboard") {
+			t.Errorf("expected completion script for %s to contain 'run' and 'dashboard'", sh)
+		}
+		if !strings.Contains(out, "windsurf") {
+			t.Errorf("expected completion script for %s to contain 'windsurf'", sh)
+		}
 	}
 }

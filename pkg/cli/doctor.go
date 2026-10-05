@@ -13,6 +13,7 @@ import (
 	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/mcp"
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/types"
 )
@@ -109,12 +110,37 @@ func CmdDoctor(args []string) {
 	checkTool("Codex CLI", "codex", hook.CodexAvailable())
 	checkTool("Cursor", "cursor", hook.CursorAvailable())
 	checkTool("Gemini / AGY", "agy", hook.GeminiAvailable())
+	_, errWindsurf := exec.LookPath("windsurf")
+	checkTool("Windsurf", "windsurf", errWindsurf == nil)
+	_, errCode := exec.LookPath("code")
+	checkTool("VS Code", "code", errCode == nil)
+	_, errZed := exec.LookPath("zed")
+	checkTool("Zed", "zed", errZed == nil)
 
-	// 5. Identities Health Check
+	// 5. MCP Host Integrations
+	fmt.Println("\n== MCP Host Integrations ==")
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		hasAny := false
+		for _, target := range mcp.Targets() {
+			if target.Installed(home) {
+				fmt.Printf("✓ %-14s: Configured (amux MCP registered)\n", target.Label)
+				hasAny = true
+			} else if target.Detected(home) {
+				fmt.Printf("- %-14s: Detected (run 'amux mcp install %s' to register)\n", target.Label, target.Name)
+				hasAny = true
+			}
+		}
+		if !hasAny {
+			fmt.Println("No supported MCP hosts detected. Run 'amux mcp install --all' once IDEs are installed.")
+		}
+	}
+
+	// 6. Identities Health Check
 	fmt.Println("\n== Identity Health Check ==")
 	reports, err := identity.CheckAllHealth("")
 	if err != nil || len(reports) == 0 {
-		fmt.Println("No identities configured. (Add with 'amux id add [provider]')")
+		fmt.Println("No accounts configured. (Add with 'amux login [provider]')")
 	} else {
 		for _, r := range reports {
 			fmt.Printf(" - [%s] %s (%s): %s [%s]\n", r.Provider, r.ID, r.Tier, r.Status, r.Message)

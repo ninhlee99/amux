@@ -14,6 +14,7 @@ import (
 
 	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/guard"
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/types"
 )
@@ -96,7 +97,7 @@ func (p ProviderConfig) ToAccount() types.Account {
 	case "chatgpt_web", "claude_web", "gemini_web":
 		authType = "cdp"
 		typ = types.AccountTypeWeb
-	case "codex_cli", "antigravity", "agy", "claude_code":
+	case "codex", "codex_cli", "antigravity", "agy", "claude", "claude_code", "claude_oauth":
 		authType = "oauth"
 		typ = types.AccountTypeSubscription
 	}
@@ -111,7 +112,7 @@ func (p ProviderConfig) ToAccount() types.Account {
 	if authType != "api_key" && typ != types.AccountTypeAPIKey {
 		if strings.TrimSpace(p.Account) != "" {
 			email = strings.TrimSpace(p.Account)
-		} else if p.Type == "codex_cli" {
+		} else if p.Type == "codex" || p.Type == "codex_cli" {
 			if spec, ok := profile.LookupToolSpec("codex"); ok {
 				if detected := profile.DetectAccount(spec); detected != "" {
 					email = detected
@@ -119,6 +120,12 @@ func (p ProviderConfig) ToAccount() types.Account {
 			}
 		} else if p.Type == "antigravity" || p.Type == "agy" {
 			if spec, ok := profile.LookupToolSpec("antigravity"); ok {
+				if detected := profile.DetectAccount(spec); detected != "" {
+					email = detected
+				}
+			}
+		} else if p.Type == "claude" || p.Type == "claude_code" || p.Type == "claude_oauth" {
+			if spec, ok := profile.LookupToolSpec("claude"); ok {
 				if detected := profile.DetectAccount(spec); detected != "" {
 					email = detected
 				}
@@ -140,7 +147,7 @@ func (p ProviderConfig) ToAccount() types.Account {
 // HasCredentials reports whether secrets/config look usable (ignores Enabled).
 func (p ProviderConfig) HasCredentials() bool {
 	switch p.Type {
-	case "openai_compatible", "gemini":
+	case "openai_compatible", "gemini", "openai", "cursor", "groq", "github", "github_models", "kimi", "moonshot", "grok", "xai", "claude_api":
 		return ResolveSecret(p.APIKey) != ""
 	case "chatgpt_web":
 		return ResolveSecret(p.SessionToken) != ""
@@ -148,10 +155,12 @@ func (p ProviderConfig) HasCredentials() bool {
 		return ResolveSecret(p.SessionKey) != ""
 	case "gemini_web":
 		return strings.TrimSpace(p.Cookies) != "" || ResolveSecret(p.SessionKey) != ""
-	case "codex_cli":
+	case "codex", "codex_cli":
 		return CodexAuthAvailable()
 	case "antigravity", "agy":
 		return AGYAuthAvailable()
+	case "claude", "claude_code", "claude_oauth":
+		return ClaudeAuthAvailable()
 	}
 	return false
 }
@@ -582,6 +591,101 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			GroupLabel:  p.Group,
 		}, nil
 
+	case "openai", "cursor":
+		baseURL := p.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		model := p.Model
+		if model == "" {
+			model = "gpt-6.1-sol"
+		}
+		return &OpenAICompatibleAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			BaseURL:     baseURL,
+			APIKey:      ResolveSecret(p.APIKey),
+			TargetModel: model,
+			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
+		}, nil
+
+	case "groq":
+		baseURL := p.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.groq.com/openai/v1"
+		}
+		model := p.Model
+		if model == "" {
+			model = "llama-3.3-70b-versatile"
+		}
+		return &OpenAICompatibleAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			BaseURL:     baseURL,
+			APIKey:      ResolveSecret(p.APIKey),
+			TargetModel: model,
+			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
+		}, nil
+
+	case "github", "github_models":
+		baseURL := p.BaseURL
+		if baseURL == "" {
+			baseURL = "https://models.inference.ai.azure.com"
+		}
+		model := p.Model
+		if model == "" {
+			model = "gpt-6.1-sol"
+		}
+		return &OpenAICompatibleAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			BaseURL:     baseURL,
+			APIKey:      ResolveSecret(p.APIKey),
+			TargetModel: model,
+			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
+		}, nil
+
+	case "kimi", "moonshot":
+		baseURL := p.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.moonshot.cn/v1"
+		}
+		model := p.Model
+		if model == "" {
+			model = "moonshot-v1-auto"
+		}
+		return &OpenAICompatibleAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			BaseURL:     baseURL,
+			APIKey:      ResolveSecret(p.APIKey),
+			TargetModel: model,
+			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
+		}, nil
+
+	case "grok", "xai":
+		baseURL := p.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.x.ai/v1"
+		}
+		model := p.Model
+		if model == "" {
+			model = "grok-4.7"
+		}
+		return &OpenAICompatibleAdapter{
+			AdapterID:   p.ID,
+			PriorityLvl: p.Priority,
+			BaseURL:     baseURL,
+			APIKey:      ResolveSecret(p.APIKey),
+			TargetModel: model,
+			HTTPClient:  proxyClient,
+			GroupLabel:  p.Group,
+		}, nil
+
 	case "gemini":
 		model := p.Model
 		if model == "" {
@@ -631,7 +735,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			HTTPClient:  proxyClient,
 		}, nil
 
-	case "codex_cli":
+	case "codex", "codex_cli":
 		model := p.Model
 		if model == "" {
 			model = codexDefaultModel
@@ -713,37 +817,33 @@ func LookupAdapter(path, id string) (types.ProviderAdapter, error) {
 
 func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error) {
 	var adapters []types.ProviderAdapter
-
 	var providers []ProviderConfig
-	b, err := readAccountsFileBytes(path)
-	if err == nil {
-		var f AccountsFile
-		if err := json.Unmarshal(b, &f); err == nil {
-			NormalizeAccountsFile(&f)
-			providers = f.Providers
-			for _, p := range f.Providers {
-				// A disabled ("am off") provider is never addressable, in
-				// or out of the rotate pool — X-Provider must not be a way
-				// to reach an account the user turned off.
-				if !p.InRotatePool() {
-					continue
-				}
-				if rotateOnly {
-					if !p.IsConfigured() {
-						continue
-					}
-				} else {
-					if !p.HasCredentials() {
-						continue
-					}
-				}
-				a, err := BuildAdapter(p)
-				if err != nil {
-					log.Printf("amux: skip provider %q (type=%q): %v", p.ID, p.Type, err)
-					continue
-				}
-				adapters = append(adapters, a)
+
+	f, err := LoadConfigFile(path)
+	if err == nil && f != nil {
+		providers = f.Providers
+		for _, p := range f.Providers {
+			// A disabled ("am off") provider is never addressable, in
+			// or out of the rotate pool — X-Provider must not be a way
+			// to reach an account the user turned off.
+			if !p.InRotatePool() {
+				continue
 			}
+			if rotateOnly {
+				if !p.IsConfigured() {
+					continue
+				}
+			} else {
+				if !p.HasCredentials() {
+					continue
+				}
+			}
+			a, err := BuildAdapter(p)
+			if err != nil {
+				log.Printf("amux: skip provider %q (type=%q): %v", p.ID, p.Type, err)
+				continue
+			}
+			adapters = append(adapters, a)
 		}
 	}
 
@@ -805,6 +905,7 @@ func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error)
 //	Web sessions (ChatGPT/Claude/Codex)  20–49
 const (
 	PriorityAPIGitHub  = 1
+	PriorityAPIOpenAI  = 2
 	PriorityAPIGemini  = 2
 	PriorityAPIGroq    = 3
 	PriorityAPIKimi    = 4
@@ -1005,16 +1106,133 @@ func claudePoolID() string {
 }
 
 
+// IdentityToProviderConfig converts a flat Identity into a ProviderConfig row.
+func IdentityToProviderConfig(id identity.Identity, priority int) ProviderConfig {
+	active := id.Active
+	cfg := ProviderConfig{
+		ID:       id.ID,
+		Priority: priority,
+		Model:    id.Model,
+		Enabled:  &active,
+	}
+	email := id.Email()
+	if email != "" && email != "-" {
+		cfg.Account = email
+	}
+
+	canon := identity.CanonicalProvider(id.Provider)
+	switch canon {
+	case "anthropic":
+		switch id.Tier {
+		case identity.TierWeb:
+			cfg.Type = "claude_web"
+			cfg.SessionToken = id.Credentials["session_key"]
+			if cfg.SessionToken == "" {
+				cfg.SessionToken = id.Credentials["sessionKey"]
+			}
+		case identity.TierSubscription:
+			cfg.Type = "claude"
+			cfg.SessionToken = id.Credentials["access_token"]
+			cfg.RefreshToken = id.Credentials["refresh_token"]
+		default:
+			cfg.Type = "claude_api"
+			cfg.APIKey = id.Credentials["api_key"]
+		}
+	case "openai":
+		switch id.Tier {
+		case identity.TierWeb:
+			cfg.Type = "chatgpt_web"
+			cfg.SessionToken = id.Credentials["access_token"]
+			cfg.RefreshToken = id.Credentials["refresh_token"]
+			if cfg.SessionToken == "" {
+				cfg.SessionToken = id.Credentials["session_token"]
+			}
+		case identity.TierSubscription:
+			cfg.Type = "codex"
+			cfg.SessionToken = id.Credentials["access_token"]
+			cfg.RefreshToken = id.Credentials["refresh_token"]
+		default:
+			cfg.Type = "openai_compatible"
+			cfg.APIKey = id.Credentials["api_key"]
+			if b := id.Credentials["base_url"]; b != "" {
+				cfg.BaseURL = b
+			}
+		}
+	case "gemini":
+		switch id.Tier {
+		case identity.TierWeb:
+			cfg.Type = "gemini_web"
+			cfg.SessionToken = id.Credentials["cookie"]
+		case identity.TierSubscription:
+			cfg.Type = "antigravity"
+			cfg.SessionToken = id.Credentials["access_token"]
+			cfg.RefreshToken = id.Credentials["refresh_token"]
+		default:
+			cfg.Type = "gemini"
+			cfg.APIKey = id.Credentials["api_key"]
+		}
+	case "cursor":
+		cfg.Type = "openai_compatible"
+		cfg.APIKey = id.Credentials["api_key"]
+		if b := id.Credentials["base_url"]; b != "" {
+			cfg.BaseURL = b
+		}
+	default:
+		cfg.Type = "openai_compatible"
+		cfg.APIKey = id.Credentials["api_key"]
+		if b := id.Credentials["base_url"]; b != "" {
+			cfg.BaseURL = b
+		}
+	}
+	return cfg
+}
+
 func LoadConfigFile(path string) (*AccountsFile, error) {
-	b, err := readAccountsFileBytes(path)
-	if err != nil {
-		return &AccountsFile{}, err
-	}
 	var f AccountsFile
-	if err := json.Unmarshal(b, &f); err != nil {
-		return nil, err
+	var fileErr error
+	b, err := readAccountsFileBytes(path)
+	if err == nil {
+		if uerr := json.Unmarshal(b, &f); uerr == nil {
+			NormalizeAccountsFile(&f)
+		} else {
+			fileErr = uerr
+		}
+	} else {
+		fileErr = err
 	}
-	NormalizeAccountsFile(&f)
+
+	// Unify with identities.json: merge identities not present in accounts.json for default paths
+	isDefault := path == "" || path == DefaultAccountsPath() || filepath.Base(filepath.Dir(path)) == ".amux"
+	if isDefault {
+		if idCfg, idErr := identity.LoadConfig(""); idErr == nil && len(idCfg.Identities) > 0 {
+			seen := make(map[string]bool, len(f.Providers))
+			for _, p := range f.Providers {
+				seen[p.ID] = true
+			}
+			priorityFloor := 20
+			for _, p := range f.Providers {
+				if p.Priority >= priorityFloor {
+					priorityFloor = p.Priority + 5
+				}
+			}
+			for _, id := range idCfg.Identities {
+				if !seen[id.ID] {
+					p := IdentityToProviderConfig(id, priorityFloor)
+					f.Providers = append(f.Providers, p)
+					seen[id.ID] = true
+					priorityFloor += 5
+				}
+			}
+			NormalizeAccountsFile(&f)
+		}
+	}
+
+	if len(f.Providers) > 0 {
+		return &f, nil
+	}
+	if fileErr != nil {
+		return &AccountsFile{}, fileErr
+	}
 	return &f, nil
 }
 

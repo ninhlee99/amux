@@ -95,7 +95,19 @@ func Targets() []Target {
 		},
 		{
 			Name: "agy", Label: "Antigravity", Format: "json", Key: "mcpServers",
-			Path:  func(h string) string { return filepath.Join(h, ".gemini", "antigravity", "mcp_config.json") },
+			Path: func(h string) string {
+				for _, rel := range []string{
+					filepath.Join(".gemini", "config", "mcp_config.json"),
+					filepath.Join(".gemini", "antigravity", "mcp_config.json"),
+					filepath.Join(".gemini", "antigravity-cli", "mcp_config.json"),
+				} {
+					p := filepath.Join(h, rel)
+					if _, err := os.Stat(p); err == nil {
+						return p
+					}
+				}
+				return filepath.Join(h, ".gemini", "antigravity", "mcp_config.json")
+			},
 			Entry: stdioEntry,
 		},
 		{
@@ -116,6 +128,20 @@ func Targets() []Target {
 				return map[string]any{"source": "custom", "command": bin, "args": []string{"mcp"}}
 			},
 		},
+		{
+			Name: "cline", Label: "Cline", Format: "json", Key: "mcpServers",
+			Path: func(h string) string {
+				return filepath.Join(appSupport(h, "Code"), "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
+			},
+			Entry: stdioEntry,
+		},
+		{
+			Name: "roo", Label: "Roo Code", Format: "json", Key: "mcpServers",
+			Path: func(h string) string {
+				return filepath.Join(appSupport(h, "Code"), "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json")
+			},
+			Entry: stdioEntry,
+		},
 	}
 }
 
@@ -126,6 +152,7 @@ func FindTarget(name string) (Target, bool) {
 		"claude-code": "claude", "cc": "claude", "desktop": "claude-desktop",
 		"code": "vscode", "copilot": "vscode", "antigravity": "agy",
 		"gemini-cli": "gemini", "codex-cli": "codex",
+		"roo-code": "roo", "roocode": "roo",
 	}
 	if a, ok := alias[n]; ok {
 		n = a
@@ -330,6 +357,9 @@ func editFile(path string, mutate func([]byte) ([]byte, error)) error {
 }
 
 func rewriteFile(path string, backup bool, mutate func([]byte) ([]byte, error)) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil && real != "" {
+		path = real
+	}
 	old, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err

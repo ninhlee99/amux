@@ -51,6 +51,16 @@ func TestRepair(t *testing.T) {
 			input:    "{\"command\": \"line 1\nline 2\"}",
 			validOut: true,
 		},
+		{
+			name:     "Markdown code fence ```json",
+			input:    "```json\n{\"name\":\"Bash\",\"arguments\":{\"command\":\"ls -la\"}}\n```",
+			validOut: true,
+		},
+		{
+			name:     "Markdown code fence ``` with trailing comma",
+			input:    "```\n{\"name\":\"Bash\",\"arguments\":{\"command\":\"ls -la\",},}\n```",
+			validOut: true,
+		},
 	}
 
 	for _, tc := range tests {
