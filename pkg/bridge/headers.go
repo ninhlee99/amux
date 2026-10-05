@@ -7,9 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
+	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/term"
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/usage"
 )
@@ -187,10 +191,41 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 	}
 	injectBtwMessages(req)
 	EnrichRequestMetadata(r, req)
+	var ch <-chan types.StreamChunk
+	var err error
 	if id := explicitProviderHeaders(r, req); id != "" {
-		return pool.SendProvider(r.Context(), id, req)
+		ch, err = pool.SendProvider(r.Context(), id, req)
+	} else {
+		ch, err = pool.Send(r.Context(), req)
 	}
-	return pool.Send(r.Context(), req)
+	if err != nil && req != nil {
+		switch req.ClientDialect {
+		case tools.DialectCodex, tools.DialectCursor:
+			if provider.CodexAuthAvailable() {
+				term.LogProxy("⚠️ Pool router failed (%v) -> activating fail-safe fallback to direct Codex credentials", err)
+				codexAdapter := &provider.CodexCLIAdapter{
+					AdapterID:   "keychain:codex",
+					TargetModel: req.Model,
+				}
+				if fallbackStream, ferr := codexAdapter.SendMessageStream(r.Context(), req); ferr == nil && fallbackStream != nil {
+					return fallbackStream, nil
+				}
+			}
+		default:
+			if tok := auth.LiveKeychainToken(); tok != nil && tok.Access != "" {
+				term.LogProxy("⚠️ Pool router failed (%v) -> activating fail-safe fallback to direct Claude credentials", err)
+				directAdapter := &provider.ClaudeAdapter{
+					AdapterID:   "keychain:direct",
+					APIKey:      tok.Access,
+					TargetModel: req.Model,
+				}
+				if fallbackStream, ferr := directAdapter.SendMessageStream(r.Context(), req); ferr == nil && fallbackStream != nil {
+					return fallbackStream, nil
+				}
+			}
+		}
+	}
+	return ch, err
 }
 
 // EnrichRequestMetadata populates SessionID and project metadata on req from HTTP headers and client connection.

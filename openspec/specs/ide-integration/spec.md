@@ -37,7 +37,7 @@ Besides env/config hooks, amux SHALL offer `amux mcp install` so any MCP-capable
 
 #### Scenario: Agent without base-URL support
 - **WHEN** an agent cannot point its model traffic at the gateway but supports MCP
-- **THEN** after `amux mcp install <host>` it can call `amux_ask` and `muse_chat`
+- **THEN** after `amux mcp install <host>` it can call `amux_ask` and inspect providers via `amux_providers`
 
 ### Requirement: Back to native in one step
 `amux off` SHALL unhook every tool and stop the gateway, keeping accounts and MCP registrations. `amux stop` SHALL warn about tools that are still hooked.
@@ -52,4 +52,3 @@ Besides env/config hooks, amux SHALL offer `amux mcp install` so any MCP-capable
 #### Scenario: Uninstall keeps logins
 - **WHEN** Claude Code is logged in and the user runs `amux uninstall --purge`
 - **THEN** Claude Code is still logged in with the same account
-

@@ -78,7 +78,7 @@ What `hook` writes — and `unhook` removes again, leaving everything you set yo
 
 A hooked tool needs the gateway running. `amux stop` warns about tools that are still hooked; `amux off` is the one-step way back to native.
 
-Pin a request to one account or one family with the `X-Provider` header (`gemini:web:01` = that account only; `gemini:web`, `chatgpt`, `muse:web` = amux picks a healthy one in that family):
+Pin a request to one account or one family with the `X-Provider` header (`gemini:web:01` = that account only; `gemini:web`, `chatgpt` = amux picks a healthy one in that family):
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions -H "Content-Type: application/json" \
@@ -99,21 +99,16 @@ Install edits only the `amux` entry, keeps a `.amux.bak` of the original until u
 
 | Tool | Purpose |
 | :--- | :--- |
-| `amux_ask` | Ask another model. `provider` = an exact id (pinned) or a family (`gemini:web`, `chatgpt`, `muse:web`). Subscriptions are used only when pinned or in the pool. |
+| `amux_ask` | Ask another model. `provider` = an exact id (pinned) or a family (`gemini:web`, `chatgpt`). Subscriptions are used only when pinned or in the pool. |
 | `amux_providers`, `amux_status` | Usable accounts; gateway URLs per client |
-| `muse_chat`, `muse_new_chat`, `muse_chats`, `muse_open_chat`, `muse_read_chat`, `muse_read_last`, `muse_media` | Meta Muse chat, history, attachments, generated media |
-| `muse_status`, `muse_login`, `muse_dump_dom`, `muse_close` | Muse session and diagnostics |
 
 ## Other accounts
 
 ```bash
 amux login chatgpt      # ChatGPT web session
 amux login gemini-web   # Gemini web session
-amux login muse         # Meta Muse, in amux's own browser profile (no keychain)
 amux login groq --token gsk_...   # API keys: gemini, groq, kimi, grok, github, cursor
 ```
-
-Meta Muse has no API; amux drives the web app over the Chrome DevTools Protocol. `AMUX_MUSE_CDP=http://127.0.0.1:9222` attaches to a Chrome you already run; `AMUX_MUSE_HEADLESS=1` runs headless after the first login.
 
 ## Secrets
 

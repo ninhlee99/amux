@@ -11,12 +11,10 @@ import (
 	"syscall"
 
 	"amux-accounts/pkg/mcp"
-	"amux-accounts/pkg/muse"
 )
 
-const mcpInstructions = `amux connects this agent to the user's other AI chat accounts (ChatGPT, Claude, Gemini, Meta Muse web sessions, subscriptions and API keys).
-- amux_providers lists accounts; amux_ask sends a self-contained prompt to one (or lets amux pick, with failover). The other AI cannot see your files: include the context it needs.
-- muse_* tools drive Meta Muse in the user's logged-in browser profile (chat, attachments, generated images/video). If muse_status says loggedIn=false, call muse_login and ask the user to sign in in the opened window.`
+const mcpInstructions = `amux connects this agent to the user's other AI chat accounts (ChatGPT, Claude, Gemini web sessions, subscriptions and API keys).
+- amux_providers lists accounts; amux_ask sends a self-contained prompt to one (or lets amux pick, with failover). The other AI cannot see your files: include the context it needs.`
 
 // NewMCPServer builds the stdio MCP server with every amux tool registered.
 func NewMCPServer() *mcp.Server {
@@ -24,7 +22,6 @@ func NewMCPServer() *mcp.Server {
 	s.Instructions = mcpInstructions
 	s.Logger = log.New(os.Stderr, "amux-mcp: ", log.LstdFlags)
 	mcp.RegisterAmuxTools(s, &mcp.PoolBackend{})
-	mcp.RegisterMuseTools(s, func() mcp.MuseClient { return muse.Shared(muse.ConfigFromEnv()) })
 	return s
 }
 
@@ -200,7 +197,7 @@ func indent(s, pad string) string {
 func helpMCP() {
 	fmt.Printf(`Purpose:
   Run amux as a Model Context Protocol server so any MCP-capable coding agent can use
-  your chat accounts (ChatGPT / Claude / Gemini / Meta Muse web, subscriptions, API keys) as tools.
+  your chat accounts (ChatGPT / Claude / Gemini web, subscriptions, API keys) as tools.
 
 Usage:
   amux mcp                       Serve MCP over stdio (what IDE configs run)
@@ -214,18 +211,10 @@ Hosts:
   %s
 
 Tools:
-  amux_providers, amux_ask, amux_status,
-  muse_status, muse_login, muse_new_chat, muse_chat, muse_read_last, muse_chats,
-  muse_open_chat, muse_read_chat, muse_media, muse_dump_dom, muse_close
-
-Environment:
-  AMUX_MUSE_CDP=http://127.0.0.1:9222   Attach to a Chrome you already run (never killed)
-  AMUX_MUSE_HEADLESS=1                  Run the Muse browser headless (after first login)
-  AMUX_MUSE_PROFILE=<name>              Use another browser profile under ~/.amux/browser-profiles
-  AMUX_MUSE_URL=<url>                   Muse app root (default https://muse.ai/)
+  amux_providers, amux_ask, amux_status
 
 Examples:
-  amux login muse && amux mcp install claude cursor
+  amux mcp install claude cursor
   amux mcp install all
 `, strings.Join(mcp.TargetNames(), ", "))
 }

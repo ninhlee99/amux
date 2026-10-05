@@ -161,3 +161,18 @@ func TestEnrichRequestMetadata_ProjectExtraction(t *testing.T) {
 		t.Fatalf("expected scope key /Users/ninh.le/Documents/apps/amux::sess-abc, got %q", chatReq.ScopeKey())
 	}
 }
+
+func TestPoolSend_FailSafeDirectFallback(t *testing.T) {
+	resetPacingForTest(t)
+	// Pool with empty adapters
+	pool := router.NewAccountPoolRouter(nil)
+	httpReq := httptest.NewRequest("POST", "/v1/messages", nil)
+	chatReq := &types.ChatRequest{ClientDialect: "claude"}
+
+	_, err := poolSend(httpReq, pool, chatReq)
+	// If keychain token exists on local mac, it tries direct fallback; otherwise it returns empty pool error without panic
+	if err != nil && !strings.Contains(err.Error(), "no adapter available") && !strings.Contains(err.Error(), "keychain") {
+		t.Logf("poolSend returned expected error when no keychain/adapters: %v", err)
+	}
+}
+

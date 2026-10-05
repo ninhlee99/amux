@@ -95,6 +95,74 @@ func CompactTranscript(msgs []types.ChatMessage) []types.ChatMessage {
 	return CompactTranscriptWithTail(msgs, compactKeepTailTurns)
 }
 
+func extractMilestoneSummary(msgs []types.ChatMessage) string {
+	if len(msgs) == 0 {
+		return "[compact] earlier turns omitted to maintain token budget."
+	}
+	filesMap := make(map[string]bool)
+	var commands []string
+	var lastError string
+
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if tc.Name != "" {
+				var args map[string]any
+				if json.Unmarshal([]byte(tc.Arguments), &args) == nil {
+					for _, k := range []string{"file_path", "path", "AbsolutePath", "TargetFile", "file"} {
+						if v, ok := args[k].(string); ok && v != "" {
+							filesMap[v] = true
+						}
+					}
+					for _, k := range []string{"command", "CommandLine", "cmd"} {
+						if v, ok := args[k].(string); ok && v != "" {
+							cleanCmd := strings.TrimSpace(v)
+							if len(cleanCmd) > 60 {
+								cleanCmd = cleanCmd[:60] + "…"
+							}
+							if len(commands) < 5 {
+								commands = append(commands, cleanCmd)
+							}
+						}
+					}
+				}
+			}
+		}
+		if strings.EqualFold(m.Role, "tool") {
+			lower := strings.ToLower(m.Content)
+			if strings.Contains(lower, "error") || strings.Contains(lower, "fail") {
+				lines := strings.Split(m.Content, "\n")
+				if len(lines) > 0 && len(lines[0]) > 0 {
+					lastError = strings.TrimSpace(lines[0])
+					if len(lastError) > 80 {
+						lastError = lastError[:80] + "…"
+					}
+				}
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[compact] %d earlier turns omitted to maintain token budget. Key milestones:\n", len(msgs)))
+	if len(filesMap) > 0 {
+		filesList := make([]string, 0, len(filesMap))
+		for f := range filesMap {
+			filesList = append(filesList, f)
+			if len(filesList) >= 8 {
+				break
+			}
+		}
+		sb.WriteString("• Files referenced/edited: " + strings.Join(filesList, ", ") + "\n")
+	}
+	if len(commands) > 0 {
+		sb.WriteString("• Commands executed: " + strings.Join(commands, " ➔ ") + "\n")
+	}
+	if lastError != "" {
+		sb.WriteString("• Recent failure noted: " + lastError + "\n")
+	}
+	sb.WriteString("• Directive: Continue progressing toward the user's objective using latest context.")
+	return strings.TrimSpace(sb.String())
+}
+
 // CompactTranscriptWithTail keeps system messages, the first user prompt (initial task goal),
 // and the last tailTurns messages. Middle turns are summarized into a concise handoff note.
 func CompactTranscriptWithTail(msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
@@ -115,10 +183,10 @@ func CompactTranscriptWithTail(msgs []types.ChatMessage, tailTurns int) []types.
 	}
 	first := rest[0]
 	tail := rest[len(rest)-tailTurns:]
-	dropped := len(rest) - 1 - tailTurns
+	middle := rest[1 : len(rest)-tailTurns]
 	note := types.ChatMessage{
 		Role:    "user",
-		Content: fmt.Sprintf("[compact] %d earlier turns omitted to maintain token budget. Continue from latest context.", dropped),
+		Content: extractMilestoneSummary(middle),
 	}
 	out := make([]types.ChatMessage, 0, len(sys)+3+len(tail))
 	out = append(out, sys...)

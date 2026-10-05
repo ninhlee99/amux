@@ -220,196 +220,40 @@ Chưa đọc được repo.
 	}
 }
 
-func TestIsWebToolRefusal_LiveChatGPT_2031(t *testing.T) {
+func TestWrapWebStream_LiveRefusalPassesThroughCleanly(t *testing.T) {
 	text := "Không đọc được repo từ môi trường tool hiện tại. Tool shell đang chạy container khác, không thấy `/Users/ninh.le/Documents/apps/amux`, nên chưa thể review README/code thay đổi thật."
-	if !isWebToolRefusal(text) {
-		t.Fatal("20:31 phrasing must force tools")
-	}
-}
-
-func TestIsWebToolRefusal_LiveChatGPT_2107(t *testing.T) {
-	// requests.log 21:07:02 — ChatGPT asked the user to "re-run with tools"
-	// instead of emitting <tool_call>. Claude Code then sat on
-	// "Waiting for API response / check your network".
-	text := "Chưa có tool/repo output hợp lệ trong phiên này để lấy README.md, diff, và file code thay đổi. Chưa đủ bằng chứng path:line để review chính xác.\n\nCần chạy lại trong môi trường có repo tool access rồi review sẽ dựa trên:\n- README.md hiện tại\n- git diff"
-	if !shouldForceWebTools(text) {
-		t.Fatal("21:07 phrasing must force tools")
-	}
-}
-
-func TestWrapWebStream_Live2107RefusalBecomesToolUse(t *testing.T) {
-	text := "Chưa có tool/repo output hợp lệ trong phiên này để lấy README.md, diff, và file code thay đổi. Chưa đủ bằng chứng path:line để review chính xác.\n\nCần chạy lại trong môi trường có repo tool access."
 	inner := make(chan types.StreamChunk, 1)
 	inner <- types.StreamChunk{Content: text}
 	close(inner)
+
 	content, calls, reason := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), nil, inner))
-	if reason != "tool_calls" || len(calls) < 1 {
-		t.Fatalf("reason=%s calls=%+v", reason, calls)
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 forced tool calls, got: %+v", calls)
 	}
-	if strings.Contains(content, "Chưa có tool") || strings.Contains(content, "chạy lại") {
-		t.Fatalf("refusal leaked: %q", content)
+	if reason == "tool_calls" {
+		t.Fatalf("expected plain completion, got reason %q", reason)
 	}
-}
-
-func TestIsWebToolRefusal_LiveChatGPT_2052(t *testing.T) {
-	text := "Không lấy được output repo trong session này nên chưa có bằng chứng file/line để review. Cần chạy lại phiên có tool Read/repo access."
-	if !shouldForceWebTools(text) {
-		t.Fatal("20:52 phrasing must force tools")
+	if !strings.Contains(content, "Không đọc được repo") {
+		t.Fatalf("expected original text pass-through, got: %q", content)
 	}
 }
 
-func TestWrapWebStream_Live2122RefusalWithNonNilHistory(t *testing.T) {
-	hist := []types.ChatMessage{
-		{Role: "user", Content: "review code"},
-		{Role: "assistant", ToolCalls: []types.ToolCall{{Name: "Read", Arguments: `{"file_path":"README.md"}`}}},
-		{Role: "tool", ToolCallID: "t1", Content: "README content"},
-	}
-	text := "Không có output repo hợp lệ sau lần đọc này nên chưa có bằng chứng path:line để review README + code thay đổi.\n\nCần lấy được:\n- README.md\n- git diff / git status\n- file code thay đổi mới nhất"
-	inner := make(chan types.StreamChunk, 1)
-	inner <- types.StreamChunk{Content: text}
-	close(inner)
-	content, calls, reason := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), hist, inner))
-	if reason != "tool_calls" || len(calls) < 1 {
-		t.Fatalf("reason=%s calls=%+v", reason, calls)
-	}
-	if strings.Contains(content, "Không có output repo") {
-		t.Fatalf("refusal leaked: %q", content)
-	}
-}
-
-func TestWrapWebStream_Live2031RefusalBecomesToolUse(t *testing.T) {
-	inner := make(chan types.StreamChunk, 1)
-	inner <- types.StreamChunk{Content: "Không đọc được repo từ môi trường tool hiện tại. Tool shell đang chạy container khác, không thấy path, nên chưa thể review README."}
-	close(inner)
-	content, calls, reason := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), nil, inner))
-	if reason != "tool_calls" || len(calls) < 1 {
-		t.Fatalf("reason=%s calls=%+v", reason, calls)
-	}
-	if strings.Contains(content, "Không đọc") || strings.Contains(content, "container") {
-		t.Fatalf("refusal leaked: %q", content)
-	}
-}
-
-func TestWrapWebStream_ChecklistBecomesReads(t *testing.T) {
-	text := `Từ README + diff đã thấy, điểm cần kiểm tra tiếp:
-- go.mod Go version
-- install.sh
-- pkg/cli/cli.go am off/on
-Kết luận tạm: cần grep command definitions.`
-	inner := make(chan types.StreamChunk, 1)
-	inner <- types.StreamChunk{Content: text}
-	close(inner)
-	content, calls, reason := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), nil, inner))
-	if reason != "tool_calls" {
-		t.Fatalf("reason=%s", reason)
-	}
-	names := map[string]int{}
-	for _, c := range calls {
-		names[c.Name]++
-		if c.Name == "Read" && !strings.Contains(c.Arguments, "go.mod") && !strings.Contains(c.Arguments, "install.sh") && !strings.Contains(c.Arguments, "cli.go") {
-			t.Fatalf("unexpected read %s", c.Arguments)
-		}
-	}
-	if names["Read"] < 2 {
-		t.Fatalf("want extracted Reads, got %+v", calls)
-	}
-	if strings.Contains(content, "cần kiểm tra") {
-		t.Fatalf("checklist leaked: %q", content)
-	}
-}
-
-func TestExtractForcedTools_SkipsAlreadyRead(t *testing.T) {
-	hist := []types.ChatMessage{{
-		Role: "assistant",
-		ToolCalls: []types.ToolCall{
-			{Name: "Read", Arguments: `{"file_path":"README.md"}`},
-			{Name: "Read", Arguments: `{"file_path":"go.mod"}`},
-		},
-	}}
-	got := extractForcedTools("Cần kiểm tra go.mod và README.md.", claudeCatalog(), hist)
-	if len(got) != 0 {
-		t.Fatalf("already-read must not loop: %+v", got)
-	}
-}
-
-func TestIsWebWorkIncomplete(t *testing.T) {
-	if !isWebWorkIncomplete("Cần kiểm tra go.mod. Kết luận tạm.") {
-		t.Fatal("vn checklist")
-	}
-	if isWebWorkIncomplete(`{"title":"README dự án"}`) {
-		t.Fatal("title")
-	}
-	if shouldForceWebTools(`{"title":"README dự án"}`) {
-		t.Fatal("title must not force")
-	}
-}
-
-func TestWrapWebStream_RefusalDoesNotLeakAndSetsToolCalls(t *testing.T) {
-	inner := make(chan types.StreamChunk, 1)
-	inner <- types.StreamChunk{Content: "Chưa đọc được repo, không mount. Gửi cho tôi README.md rồi tôi review."}
-	close(inner)
-	content, calls, reason := collectStream(wrapWebStream("claude:web:01", claudeCatalog(), nil, inner))
-	if reason != "tool_calls" {
-		t.Fatalf("reason=%q", reason)
-	}
-	if len(calls) < 1 {
-		t.Fatal("expected fallback Read/Bash")
-	}
-	if strings.Contains(content, "Gửi cho tôi") || strings.Contains(content, "không mount") {
-		t.Fatalf("refusal leaked: %q", content)
-	}
-}
-
-func TestWrapWebStream_LiveReviewPostponementBecomesTools(t *testing.T) {
-	liveText := `Chưa đủ dữ liệu để chốt review. Kết quả hiện có mới cho thấy:
-
-- README.md có thay đổi lớn: 151 dòng thay đổi.
-- Code thêm nhiều phần mới:
+func TestWrapWebStream_ExplanatoryProsePassesThroughCleanly(t *testing.T) {
+	liveText := `Kết quả hiện có cho thấy:
+- README.md có 151 dòng thay đổi.
+- Code thêm các thành phần mới:
   - Gemini bridge (pkg/bridge/gemini.go)
-  - account CLI
-  - full IO monitoring
-- git status cho thấy README và code đang modified, nhưng chưa có toàn bộ diff README + các phần code liên quan để đối chiếu tính đúng/sai.
-
-Cần lấy tiếp:
-- full README.md
-- git diff README.md
-- diff các file thay đổi chính
-
-Sau đó mới kết luận được README thiếu gì, sai gì, lệch code chỗ nào.`
-
-	if !shouldForceWebTools(liveText) {
-		t.Fatal("shouldForceWebTools must return true for review postponement")
-	}
+  - Account CLI`
 
 	inner := make(chan types.StreamChunk, 1)
 	inner <- types.StreamChunk{Content: liveText}
 	close(inner)
 
-	content, calls, reason := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), nil, inner))
-	if reason != "tool_calls" {
-		t.Fatalf("want reason tool_calls, got %q", reason)
+	content, calls, _ := collectStream(wrapWebStream("chatgpt:01", claudeCatalog(), nil, inner))
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 tool calls on explanatory prose, got %+v", calls)
 	}
-	if len(calls) == 0 {
-		t.Fatal("expected tool calls extracted, got 0")
-	}
-	if strings.Contains(content, "Chưa đủ dữ liệu") || strings.Contains(content, "Cần lấy tiếp") {
-		t.Fatalf("postponement leaked to user content: %q", content)
-	}
-
-	hasReadREADME := false
-	hasGitDiff := false
-	for _, c := range calls {
-		if c.Name == "Read" && strings.Contains(c.Arguments, "README.md") {
-			hasReadREADME = true
-		}
-		if c.Name == "Bash" && strings.Contains(c.Arguments, "git diff") {
-			hasGitDiff = true
-		}
-	}
-	if !hasReadREADME {
-		t.Errorf("expected Read README.md in calls: %+v", calls)
-	}
-	if !hasGitDiff {
-		t.Errorf("expected Bash git diff in calls: %+v", calls)
+	if !strings.Contains(content, "Gemini bridge") {
+		t.Fatalf("expected content to be preserved, got: %q", content)
 	}
 }

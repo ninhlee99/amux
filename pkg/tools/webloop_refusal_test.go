@@ -8,12 +8,9 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-func TestWebloop_OpenPRReviewRefusal_Interception(t *testing.T) {
-	refusalText := `I can’t complete the /open-pr:review run in this chat because the required open-pr runtime (<op>, repository worktree checkout, PR context fetch, posting review, etc.) is not available to me here.
-
-The previous attempt also could not access the required plugin files (core/guardrails.md, core/cli.md) from the specified cache path, so I don’t have the execution context needed to safely perform the review flow or post a PR review.
-
-If you run this in the environment where the open-pr plugin is installed, it should be able to execute the review steps. Alternatively, provide the PR diff/context here and I can do a normal read-only code review without posting to GitHub.`
+func TestWebloop_OpenPRReviewRefusal_NoForcedHallucination(t *testing.T) {
+	refusalText := `I can’t complete the /open-pr:review run in this chat because the required open-pr runtime is not available to me here.
+Alternatively, provide the PR diff/context here and I can do a normal read-only code review without posting to GitHub.`
 
 	defs := []types.ToolDef{
 		{Name: "Bash"},
@@ -25,102 +22,47 @@ If you run this in the environment where the open-pr plugin is installed, it sho
 	}
 
 	calls, forced := tools.FinalizeWebToolCalls(refusalText, defs, hist)
-	if !forced || len(calls) == 0 {
-		t.Fatalf("expected forced tool exploration on open-pr refusal, got forced=%v, calls=%d", forced, len(calls))
-	}
-
-	hasPRCommand := false
-	for _, c := range calls {
-		if c.Name == "Bash" {
-			hasPRCommand = true
-			break
-		}
-	}
-	if !hasPRCommand {
-		t.Fatalf("expected Bash tool to fetch PR diff/context, got: %+v", calls)
+	if forced || len(calls) != 0 {
+		t.Fatalf("expected no forced tool calls on natural language refusal, got forced=%v, calls=%d (%+v)", forced, len(calls), calls)
 	}
 }
 
-func TestWebloop_PRReviewNumberRefusal_Interception(t *testing.T) {
+func TestWebloop_PRReviewNumberRefusal_NoForcedHallucination(t *testing.T) {
 	refusalText := `Mình thấy tin nhắn vừa rồi chỉ chứa phần CATALOG/tool schema và không có nội dung PR hoặc diff để review.
-
-Nếu bạn muốn mình tiếp tục review PR #39, vui lòng gửi lại:
-- link PR: https://github.com/ninhlee99/amux/pull/39 (nếu môi trường có quyền truy cập), hoặc
-- output của: git status
-kèm phần output.
-Mình sẽ review trực tiếp trên diff và trả về các finding cụ thể (nếu có).`
+Nếu bạn muốn mình tiếp tục review PR #39, vui lòng gửi lại link PR.`
 
 	defs := []types.ToolDef{
 		{Name: "Bash"},
 	}
 
 	hist := []types.ChatMessage{
-		{Role: "user", Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/39"},
+		{Role: "user", Content: "please review https://github.com/ninhlee99/amux/pull/39"},
 	}
 
 	calls, forced := tools.FinalizeWebToolCalls(refusalText, defs, hist)
-	if !forced || len(calls) == 0 {
-		t.Fatalf("expected forced tool exploration, got forced=%v, calls=%d", forced, len(calls))
-	}
-
-	hasPRDiff := false
-	for _, c := range calls {
-		if c.Name == "Bash" && (strings.Contains(c.Arguments, "open-pr.sh context") || strings.Contains(c.Arguments, "gh pr diff 39") || strings.Contains(c.Arguments, "git diff main...HEAD")) {
-			hasPRDiff = true
-			break
-		}
-	}
-	if !hasPRDiff {
-		t.Fatalf("expected PR context or diff fetching with PR 39, got: %+v", calls)
+	if forced || len(calls) != 0 {
+		t.Fatalf("expected no forced tool calls on plain text refusal, got forced=%v, calls=%d", forced, len(calls))
 	}
 }
 
-func TestWebloop_TruncatedDiffRefusal_TargetedDiff(t *testing.T) {
-	refusalText := `I can’t produce a reliable PR review from the available context: the provided diff output is truncated (only the README portion and PR metadata are visible), and the repository inspection commands did not return usable file contents in this session.
-
-A production-grade review requires the actual changed hunks, especially for the modified Go files:
-- pkg/provider/chatgpt_web.go
-- pkg/provider/claude_web.go
-- pkg/runtime/contract.go
-
-With the complete diff available, I’ll review for:
-- 🔴 MUST FIX
-- 🟠 SHOULD FIX
-- 🔵 SUGGESTION`
+func TestWebloop_ExplicitToolCall_ParsedCorrectly(t *testing.T) {
+	text := `Sure, let me check the git status first:
+<tool_call>
+{"name":"Bash","arguments":{"command":"git status"}}
+</tool_call>`
 
 	defs := []types.ToolDef{
 		{Name: "Bash"},
 	}
 
-	// History already has gh pr diff
-	hist := []types.ChatMessage{
-		{Role: "user", Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/39"},
-		{
-			Role: "assistant",
-			ToolCalls: []types.ToolCall{
-				{Name: "Bash", Arguments: `{"command":"gh pr diff 39"}`},
-			},
-		},
-		{
-			Role:    "tool",
-			Content: "<persisted-output>\nOutput too large (222.3KB). Full output saved to: /tmp/output.txt\nPreview:\ndiff --git a/README.md",
-		},
+	calls, forced := tools.FinalizeWebToolCalls(text, defs, nil)
+	if forced {
+		t.Fatalf("explicit tool call should not be marked forced")
 	}
-
-	calls, forced := tools.FinalizeWebToolCalls(refusalText, defs, hist)
-	if !forced || len(calls) == 0 {
-		t.Fatalf("expected forced tool exploration on truncated diff refusal, got forced=%v, calls=%d", forced, len(calls))
+	if len(calls) != 1 || calls[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash tool call, got: %+v", calls)
 	}
-
-	hasTargetedDiff := false
-	for _, c := range calls {
-		if c.Name == "Bash" && strings.Contains(c.Arguments, "git diff") && strings.Contains(c.Arguments, "pkg/provider/chatgpt_web.go") {
-			hasTargetedDiff = true
-			break
-		}
-	}
-	if !hasTargetedDiff {
-		t.Fatalf("expected targeted git diff for candidate files, got calls: %+v", calls)
+	if !strings.Contains(calls[0].Arguments, "git status") {
+		t.Fatalf("expected git status argument, got: %s", calls[0].Arguments)
 	}
 }
-

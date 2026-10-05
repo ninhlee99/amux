@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"amux-accounts/pkg/muse"
 )
 
 // ProviderInfo is one pool account as shown to MCP clients (no secrets).
@@ -44,20 +42,6 @@ type Backend interface {
 	Providers() ([]ProviderInfo, error)
 	Ask(ctx context.Context, req AskRequest, onDelta func(string)) (*AskResult, error)
 	Status(ctx context.Context) (map[string]any, error)
-}
-
-// MuseClient is the subset of *muse.Driver the muse_* tools call.
-type MuseClient interface {
-	Status(ctx context.Context) muse.Status
-	Login(ctx context.Context, timeout time.Duration) (muse.AuthState, error)
-	NewChat(ctx context.Context) (string, error)
-	OpenChat(ctx context.Context, target string) (string, error)
-	Chat(ctx context.Context, prompt string, o muse.ChatOptions) (*muse.ChatResult, error)
-	ReadChat(ctx context.Context, target string, max int) ([]muse.Message, string, error)
-	ListChats(ctx context.Context, query string) ([]muse.ChatInfo, error)
-	Media(ctx context.Context, target string, download bool, dir string) (*muse.MediaResult, error)
-	DumpDOM(ctx context.Context, maxChars int) (*muse.DOMDump, error)
-	Close()
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -102,11 +86,12 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		Title: "Ask another AI",
 		Description: "Send a self-contained prompt to another AI through amux's account pool and return its answer. " +
 			"Choose where it goes with provider (see amux_providers): an exact account id such as \"gemini:web:01\" pins that account; " +
-			"a family such as \"gemini:web\", \"chatgpt\" or \"muse:web\" lets amux pick among those accounts with failover; " +
+			"a family such as \"gemini:web\", \"chatgpt\" or \"claude:web\" lets amux pick among those accounts with failover; " +
 			"omit it to let amux pick from the whole pool. Good for second opinions, research and drafting. " +
 			"The other AI cannot see your files or conversation — include all context it needs.",
 		InputSchema: obj(map[string]any{
 			"prompt":      str("The full, self-contained question or task."),
+			"context":     str("Optional workspace context, active file content, or project structure."),
 			"system":      str("Optional system instructions."),
 			"provider":    str("Optional exact account id (pins it) or account family such as \"gemini:web\" (amux picks within it)."),
 			"model":       str("Optional model override for the chosen account."),
@@ -114,8 +99,8 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		}, "prompt"),
 		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
 			var a struct {
-				Prompt, System, Provider, Model string
-				TimeoutSec                      int `json:"timeout_sec"`
+				Prompt, Context, System, Provider, Model string
+				TimeoutSec                               int `json:"timeout_sec"`
 			}
 			if err := DecodeArgs(raw, &a); err != nil {
 				return nil, err
@@ -123,7 +108,197 @@ func RegisterAmuxTools(s *Server, b Backend) {
 			if strings.TrimSpace(a.Prompt) == "" {
 				return nil, errors.New("prompt is required")
 			}
-			req := AskRequest{Prompt: a.Prompt, System: a.System, Provider: a.Provider, Model: a.Model, Timeout: seconds(a.TimeoutSec, 5*time.Minute)}
+			fullPrompt := a.Prompt
+			if strings.TrimSpace(a.Context) != "" {
+				fullPrompt = "[Workspace Context]\n" + strings.TrimSpace(a.Context) + "\n\n[Task / Question]\n" + a.Prompt
+			}
+			req := AskRequest{Prompt: fullPrompt, System: a.System, Provider: a.Provider, Model: a.Model, Timeout: seconds(a.TimeoutSec, 5*time.Minute)}
+			ctx, cancel := context.WithTimeout(ctx, req.Timeout)
+			defer cancel()
+			return b.Ask(ctx, req, throttle(progress))
+		},
+	})
+	s.Register(Tool{
+		Name:  "amux_review",
+		Title: "Review code diff or snippet",
+		Description: "Send a git diff, pull request patch, or code snippet to an AI in the pool for independent code review (bugs, security, architecture, edge cases).",
+		InputSchema: obj(map[string]any{
+			"diff":        str("The git diff, patch, or code snippet to review."),
+			"focus":       str("Optional review focus (e.g., 'security', 'performance', 'style', 'bugs', 'architecture')."),
+			"context":     str("Optional background context, requirements, or architecture notes."),
+			"provider":    str("Optional exact account id or family (e.g., 'gemini:web', 'claude:web', 'chatgpt')."),
+			"timeout_sec": num("Give up after this many seconds (default 300)."),
+		}, "diff"),
+		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
+			var a struct {
+				Diff, Focus, Context, Provider string
+				TimeoutSec                     int `json:"timeout_sec"`
+			}
+			if err := DecodeArgs(raw, &a); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(a.Diff) == "" {
+				return nil, errors.New("diff is required")
+			}
+			sysPrompt := "You are an expert senior code reviewer. Review the provided code changes thoroughly. " +
+				"Identify bugs, security vulnerabilities, edge cases, regression risks, and architectural improvements. " +
+				"Provide clear, actionable feedback with code suggestions where appropriate."
+			if a.Focus != "" {
+				sysPrompt += " Focus especially on: " + a.Focus + "."
+			}
+			userPrompt := "Please review the following code changes:\n\n```diff\n" + a.Diff + "\n```"
+			if strings.TrimSpace(a.Context) != "" {
+				userPrompt = "[Context]\n" + strings.TrimSpace(a.Context) + "\n\n" + userPrompt
+			}
+			req := AskRequest{
+				Prompt:   userPrompt,
+				System:   sysPrompt,
+				Provider: a.Provider,
+				Timeout:  seconds(a.TimeoutSec, 5*time.Minute),
+			}
+			ctx, cancel := context.WithTimeout(ctx, req.Timeout)
+			defer cancel()
+			return b.Ask(ctx, req, throttle(progress))
+		},
+	})
+	s.Register(Tool{
+		Name:  "amux_diagnose",
+		Title: "Diagnose error or crash",
+		Description: "Investigate a bug, error message, failing test, or stack trace. Analyzes root cause, reproduction conditions, and outlines exact fixes.",
+		InputSchema: obj(map[string]any{
+			"error":       str("The error message, panic log, test failure, or stack trace."),
+			"code":        str("Optional code snippet or function implementation where the error occurred."),
+			"context":     str("Optional environment details, inputs, or steps that triggered the error."),
+			"provider":    str("Optional exact account id or family (e.g., 'gemini:web', 'claude:web', 'chatgpt')."),
+			"timeout_sec": num("Give up after this many seconds (default 300)."),
+		}, "error"),
+		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
+			var a struct {
+				Error, Code, Context, Provider string
+				TimeoutSec                     int `json:"timeout_sec"`
+			}
+			if err := DecodeArgs(raw, &a); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(a.Error) == "" {
+				return nil, errors.New("error is required")
+			}
+			sysPrompt := "You are a master software debugging specialist. Analyze the error carefully. " +
+				"1. Identify the exact root cause of the failure.\n" +
+				"2. Explain why it occurred given the code and context.\n" +
+				"3. Provide step-by-step instructions and code snippets to fix the bug permanently.\n" +
+				"4. Highlight edge cases or regression risks to verify."
+			var userPrompt strings.Builder
+			userPrompt.WriteString("[Error / Stack Trace]\n")
+			userPrompt.WriteString(strings.TrimSpace(a.Error))
+			if strings.TrimSpace(a.Code) != "" {
+				userPrompt.WriteString("\n\n[Relevant Code]\n```\n")
+				userPrompt.WriteString(strings.TrimSpace(a.Code))
+				userPrompt.WriteString("\n```")
+			}
+			if strings.TrimSpace(a.Context) != "" {
+				userPrompt.WriteString("\n\n[Context]\n")
+				userPrompt.WriteString(strings.TrimSpace(a.Context))
+			}
+			req := AskRequest{
+				Prompt:   userPrompt.String(),
+				System:   sysPrompt,
+				Provider: a.Provider,
+				Timeout:  seconds(a.TimeoutSec, 5*time.Minute),
+			}
+			ctx, cancel := context.WithTimeout(ctx, req.Timeout)
+			defer cancel()
+			return b.Ask(ctx, req, throttle(progress))
+		},
+	})
+	s.Register(Tool{
+		Name:  "amux_fix",
+		Title: "Generate bug fix or code patch",
+		Description: "Generate a precise code patch, refactor, or bug fix for a given file or function based on issue description.",
+		InputSchema: obj(map[string]any{
+			"file_content": str("The current code content of the file or function needing fixes."),
+			"issue":        str("Description of the bug, test failure, or requirement to implement."),
+			"instructions": str("Optional specific coding standards, constraints, or preferences."),
+			"provider":     str("Optional exact account id or family (e.g., 'gemini:web', 'claude:web', 'chatgpt')."),
+			"timeout_sec":  num("Give up after this many seconds (default 300)."),
+		}, "file_content", "issue"),
+		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
+			var a struct {
+				FileContent  string `json:"file_content"`
+				Issue        string `json:"issue"`
+				Instructions string `json:"instructions"`
+				Provider     string `json:"provider"`
+				TimeoutSec   int    `json:"timeout_sec"`
+			}
+			if err := DecodeArgs(raw, &a); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(a.FileContent) == "" || strings.TrimSpace(a.Issue) == "" {
+				return nil, errors.New("file_content and issue are required")
+			}
+			sysPrompt := "You are an expert senior software engineer. Fix the issue in the provided code. " +
+				"Return the complete corrected code or clean replacement chunk with explanation of what was changed and why."
+			var userPrompt strings.Builder
+			userPrompt.WriteString("[Issue to Fix]\n")
+			userPrompt.WriteString(strings.TrimSpace(a.Issue))
+			if strings.TrimSpace(a.Instructions) != "" {
+				userPrompt.WriteString("\n\n[Instructions / Constraints]\n")
+				userPrompt.WriteString(strings.TrimSpace(a.Instructions))
+			}
+			userPrompt.WriteString("\n\n[Current Code]\n```\n")
+			userPrompt.WriteString(strings.TrimSpace(a.FileContent))
+			userPrompt.WriteString("\n```")
+			req := AskRequest{
+				Prompt:   userPrompt.String(),
+				System:   sysPrompt,
+				Provider: a.Provider,
+				Timeout:  seconds(a.TimeoutSec, 5*time.Minute),
+			}
+			ctx, cancel := context.WithTimeout(ctx, req.Timeout)
+			defer cancel()
+			return b.Ask(ctx, req, throttle(progress))
+		},
+	})
+	s.Register(Tool{
+		Name:  "amux_analyze",
+		Title: "Analyze project architecture or design",
+		Description: "Analyze codebase structure, database schema, module relationships, or technical trade-offs for a project.",
+		InputSchema: obj(map[string]any{
+			"structure":   str("The file tree, module layout, API contracts, or schema to evaluate."),
+			"objective":   str("What you want to achieve, refactor, or evaluate (e.g. scalability, modularity, security)."),
+			"context":     str("Optional business requirements or tech stack constraints."),
+			"provider":    str("Optional exact account id or family (e.g., 'gemini:web', 'claude:web', 'chatgpt')."),
+			"timeout_sec": num("Give up after this many seconds (default 300)."),
+		}, "structure", "objective"),
+		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
+			var a struct {
+				Structure, Objective, Context, Provider string
+				TimeoutSec                              int `json:"timeout_sec"`
+			}
+			if err := DecodeArgs(raw, &a); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(a.Structure) == "" || strings.TrimSpace(a.Objective) == "" {
+				return nil, errors.New("structure and objective are required")
+			}
+			sysPrompt := "You are a Principal Software Architect. Evaluate the provided system structure and provide clear, actionable architectural guidance. " +
+				"Identify bottlenecks, coupling issues, layering violations, scalability concerns, and recommend concrete improvements."
+			var userPrompt strings.Builder
+			userPrompt.WriteString("[Objective]\n")
+			userPrompt.WriteString(strings.TrimSpace(a.Objective))
+			if strings.TrimSpace(a.Context) != "" {
+				userPrompt.WriteString("\n\n[Context]\n")
+				userPrompt.WriteString(strings.TrimSpace(a.Context))
+			}
+			userPrompt.WriteString("\n\n[System Structure / Schema]\n```\n")
+			userPrompt.WriteString(strings.TrimSpace(a.Structure))
+			userPrompt.WriteString("\n```")
+			req := AskRequest{
+				Prompt:   userPrompt.String(),
+				System:   sysPrompt,
+				Provider: a.Provider,
+				Timeout:  seconds(a.TimeoutSec, 5*time.Minute),
+			}
 			ctx, cancel := context.WithTimeout(ctx, req.Timeout)
 			defer cancel()
 			return b.Ask(ctx, req, throttle(progress))
@@ -137,221 +312,6 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		ReadOnly:    true,
 		Handler: func(ctx context.Context, _ json.RawMessage, _ func(string)) (any, error) {
 			return b.Status(ctx)
-		},
-	})
-}
-
-// RegisterMuseTools adds the Meta Muse tools. client is resolved lazily so
-// the browser only starts when a muse_* tool is actually used.
-func RegisterMuseTools(s *Server, client func() MuseClient) {
-	s.Register(Tool{
-		Name:        "muse_status",
-		Title:       "Muse status",
-		Description: "Start (or attach to) the Muse browser if needed and report login and composer state.",
-		InputSchema: obj(map[string]any{}),
-		ReadOnly:    true,
-		Handler: func(ctx context.Context, _ json.RawMessage, _ func(string)) (any, error) {
-			return client().Status(ctx), nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_login",
-		Title:       "Muse login",
-		Description: "Open muse.ai in amux's dedicated browser profile and wait for the user to finish signing in with their Meta account (the window is visible).",
-		InputSchema: obj(map[string]any{"timeout_sec": num("How long to wait for sign-in (default 300).")}),
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				TimeoutSec int `json:"timeout_sec"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			st, err := client().Login(ctx, seconds(a.TimeoutSec, 5*time.Minute))
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"loggedIn": st.OK, "viewerId": st.ViewerID}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_new_chat",
-		Title:       "Muse new chat",
-		Description: "Start a fresh Muse side chat and return its URL.",
-		InputSchema: obj(map[string]any{}),
-		Handler: func(ctx context.Context, _ json.RawMessage, _ func(string)) (any, error) {
-			u, err := client().NewChat(ctx)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"threadUrl": u}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:  "muse_chat",
-		Title: "Chat with Muse",
-		Description: "Send a prompt to Meta Muse and wait for the full reply. Muse can also generate images and video (it replies with links; use muse_media to download). " +
-			"Attach images/video/documents with files (absolute paths, file://, http(s):// or data: URLs). " +
-			"Target an existing chat with chat (title, sidebar index, thread URL or id) or start fresh with new_thread.",
-		InputSchema: obj(map[string]any{
-			"prompt":      str("Message to send (sent verbatim)."),
-			"files":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Attachments."},
-			"chat":        str("Chat to send in (title, index, thread URL or id). Default: current chat."),
-			"new_thread":  boolean("Start a new side chat first."),
-			"timeout_sec": num("Max seconds to wait for the reply (default 240)."),
-		}, "prompt"),
-		Handler: func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
-			var a struct {
-				Prompt     string   `json:"prompt"`
-				Files      []string `json:"files"`
-				Chat       string   `json:"chat"`
-				NewThread  bool     `json:"new_thread"`
-				TimeoutSec int      `json:"timeout_sec"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			return client().Chat(ctx, a.Prompt, muse.ChatOptions{
-				Timeout: seconds(a.TimeoutSec, 4*time.Minute), NewThread: a.NewThread, Chat: a.Chat,
-				Files: a.Files, OnDelta: throttle(progress),
-			})
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_read_last",
-		Title:       "Muse last reply",
-		Description: "Return the latest assistant message of a chat (current chat by default) without sending anything.",
-		InputSchema: obj(map[string]any{"chat": str("Optional chat (title, index, thread URL or id).")}),
-		ReadOnly:    true,
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				Chat string `json:"chat"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			msgs, u, err := client().ReadChat(ctx, a.Chat, 0)
-			if err != nil {
-				return nil, err
-			}
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role == "assistant" {
-					return map[string]any{"reply": msgs[i].Text, "media": msgs[i].Media, "threadUrl": u}, nil
-				}
-			}
-			return map[string]any{"reply": "", "threadUrl": u}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_chats",
-		Title:       "List Muse chats",
-		Description: "List Muse chats from the sidebar (Main chat, Channels, Side chats), optionally filtered by title.",
-		InputSchema: obj(map[string]any{"query": str("Case-insensitive title filter.")}),
-		ReadOnly:    true,
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				Query string `json:"query"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			chats, err := client().ListChats(ctx, a.Query)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"chats": chats}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_open_chat",
-		Title:       "Open Muse chat",
-		Description: "Open a Muse chat by title, sidebar index, thread URL or thread id (empty = main chat).",
-		InputSchema: obj(map[string]any{"target": str("Chat to open.")}, "target"),
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				Target string `json:"target"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			u, err := client().OpenChat(ctx, a.Target)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"threadUrl": u}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_read_chat",
-		Title:       "Read Muse chat",
-		Description: "Read the messages (all roles, with media links) of a Muse chat.",
-		InputSchema: obj(map[string]any{
-			"chat": str("Optional chat (title, index, thread URL or id). Default: current chat."),
-			"max":  num("Return at most this many most-recent messages (default 100)."),
-		}),
-		ReadOnly: true,
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				Chat string `json:"chat"`
-				Max  int    `json:"max"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			if a.Max <= 0 {
-				a.Max = 100
-			}
-			msgs, u, err := client().ReadChat(ctx, a.Chat, a.Max)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"messages": msgs, "count": len(msgs), "threadUrl": u}, nil
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_media",
-		Title:       "Muse media",
-		Description: "List image/video/attachment links in a Muse chat; with download=true save them locally (Muse links expire after about 2 days).",
-		InputSchema: obj(map[string]any{
-			"chat":     str("Optional chat (title, index, thread URL or id)."),
-			"download": boolean("Download the files."),
-			"dir":      str("Download directory (default ~/.amux/muse/media)."),
-		}),
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				Chat     string `json:"chat"`
-				Download bool   `json:"download"`
-				Dir      string `json:"dir"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			return client().Media(ctx, a.Chat, a.Download, a.Dir)
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_dump_dom",
-		Title:       "Muse DOM dump",
-		Description: "Diagnostics: element counts and transcript HTML, for re-verifying selectors when Muse changes its UI.",
-		InputSchema: obj(map[string]any{"max_chars": num("Truncate HTML to this many characters (default 20000).")}),
-		ReadOnly:    true,
-		Handler: func(ctx context.Context, raw json.RawMessage, _ func(string)) (any, error) {
-			var a struct {
-				MaxChars int `json:"max_chars"`
-			}
-			if err := DecodeArgs(raw, &a); err != nil {
-				return nil, err
-			}
-			return client().DumpDOM(ctx, a.MaxChars)
-		},
-	})
-	s.Register(Tool{
-		Name:        "muse_close",
-		Title:       "Close Muse browser",
-		Description: "Close the Muse tab. A browser amux launched is shut down; one it attached to is only disconnected.",
-		InputSchema: obj(map[string]any{}),
-		Handler: func(context.Context, json.RawMessage, func(string)) (any, error) {
-			client().Close()
-			return map[string]any{"ok": true}, nil
 		},
 	})
 }

@@ -41,13 +41,12 @@ func TestPTYHeartbeatMonitor_Lifecycle(t *testing.T) {
 	}
 
 	// 2. Wait to reach stale state
-	time.Sleep(70 * time.Millisecond)
-	staleList := m.GetStaleSessions()
-	if len(staleList) != 1 || staleList[0].SessionID != sessID {
-		t.Errorf("expected 1 stale session, got %d", len(staleList))
-	}
-	if !staleCalled.Load() {
-		t.Error("expected OnStale callback to be invoked")
+	staleOk := waitCondition(300*time.Millisecond, func() bool {
+		staleList := m.GetStaleSessions()
+		return len(staleList) == 1 && staleList[0].SessionID == sessID && staleCalled.Load()
+	})
+	if !staleOk {
+		t.Errorf("expected 1 stale session and callback invoked, got staleList=%+v staleCalled=%v", m.GetStaleSessions(), staleCalled.Load())
 	}
 
 	// 3. Heartbeat recovery
@@ -61,13 +60,12 @@ func TestPTYHeartbeatMonitor_Lifecycle(t *testing.T) {
 	}
 
 	// 4. Wait to reach hung state
-	time.Sleep(150 * time.Millisecond)
-	hungList := m.GetHungSessions()
-	if len(hungList) != 1 || hungList[0].SessionID != sessID {
-		t.Errorf("expected 1 hung session, got %d", len(hungList))
-	}
-	if !hungCalled.Load() {
-		t.Error("expected OnHung callback to be invoked")
+	hungOk := waitCondition(500*time.Millisecond, func() bool {
+		hungList := m.GetHungSessions()
+		return len(hungList) == 1 && hungList[0].SessionID == sessID && hungCalled.Load()
+	})
+	if !hungOk {
+		t.Errorf("expected 1 hung session and callback invoked, got hungList=%+v hungCalled=%v", m.GetHungSessions(), hungCalled.Load())
 	}
 
 	// 5. Unregister
@@ -129,3 +127,15 @@ func TestPTYHeartbeatMonitor_RecordIO(t *testing.T) {
 		t.Errorf("expected 1024 IO bytes recorded, got %d", sess.LastIOBytes)
 	}
 }
+
+func waitCondition(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
+}
+

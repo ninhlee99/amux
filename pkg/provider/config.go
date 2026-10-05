@@ -30,7 +30,7 @@ func (e *DuplicateAPIKeyError) Error() string {
 
 type ProviderConfig struct {
 	ID       string `json:"id"`
-	Type     string `json:"type"` // "openai_compatible" | "chatgpt_web" | "claude_web" | "gemini" | "gemini_web" | "muse_web"
+	Type     string `json:"type"` // "openai_compatible" | "chatgpt_web" | "claude_web" | "gemini" | "gemini_web"
 	Priority int    `json:"priority"`
 	Enabled  *bool  `json:"enabled,omitempty"`
 
@@ -70,11 +70,6 @@ type ProviderConfig struct {
 	// Gemini web: JSON array of chat.metadata (cid/rid/rcid/…).
 	MetadataJSON string `json:"metadataJson,omitempty"`
 
-	// muse_web: dedicated browser profile (~/.amux/browser-profiles/<name>,
-	// default "muse") and optional DevTools endpoint of a running Chrome.
-	BrowserProfile string `json:"browserProfile,omitempty"`
-	CDPEndpoint    string `json:"cdpEndpoint,omitempty"`
-
 	// Proxy specifies an egress proxy URL (http://, https://, socks5://) for this account/provider
 	Proxy string `json:"proxy,omitempty"`
 }
@@ -98,7 +93,7 @@ func (p ProviderConfig) ToAccount() types.Account {
 	authType := "api_key"
 	typ := types.AccountTypeAPIKey
 	switch p.Type {
-	case "chatgpt_web", "claude_web", "gemini_web", "muse_web":
+	case "chatgpt_web", "claude_web", "gemini_web":
 		authType = "cdp"
 		typ = types.AccountTypeWeb
 	case "codex_cli", "antigravity", "agy", "claude_code":
@@ -153,8 +148,6 @@ func (p ProviderConfig) HasCredentials() bool {
 		return ResolveSecret(p.SessionKey) != ""
 	case "gemini_web":
 		return strings.TrimSpace(p.Cookies) != "" || ResolveSecret(p.SessionKey) != ""
-	case "muse_web":
-		return strings.TrimSpace(p.CDPEndpoint) != "" || MuseProfileReady(p.BrowserProfile)
 	case "codex_cli":
 		return CodexAuthAvailable()
 	case "antigravity", "agy":
@@ -174,8 +167,6 @@ func InferIDE(providerType, group, id string) string {
 	case t == "chatgpt_web" || g == "chatgpt_web" || (strings.Contains(ident, "chatgpt") && !strings.Contains(ident, "codex")):
 		return "web"
 	case t == "gemini_web" || g == "gemini_web" || strings.Contains(ident, "gemini:web"):
-		return "web"
-	case t == "muse_web" || g == "muse_web" || strings.Contains(ident, "muse:web"):
 		return "web"
 	case t == "codex_cli" || strings.HasPrefix(g, "codex") || strings.HasPrefix(ident, "codex"):
 		return "codex"
@@ -270,7 +261,6 @@ var poolIDPrefix = map[string]string{
 	"chatgpt_web": "chatgpt",
 	"gemini":      "gemini:api",
 	"gemini_web":  "gemini:web",
-	"muse_web":    "muse:web",
 	"codex_cli":   "codex",
 	"codex":       "codex",
 	"antigravity": "antigravity",
@@ -641,15 +631,6 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			HTTPClient:  proxyClient,
 		}, nil
 
-	case "muse_web":
-		return &MuseWebAdapter{
-			AdapterID:   p.ID,
-			PriorityLvl: p.Priority,
-			TargetModel: p.Model,
-			Profile:     p.BrowserProfile,
-			Endpoint:    p.CDPEndpoint,
-		}, nil
-
 	case "codex_cli":
 		model := p.Model
 		if model == "" {
@@ -832,7 +813,6 @@ const (
 	PriorityWebChatGPT = 20
 	PriorityWebGemini  = 22
 	PriorityWebClaude  = 25
-	PriorityWebMuse    = 27 // browser-driven: slower per turn than HTTP web sessions
 	PriorityWebCodex   = 30
 )
 

@@ -26,7 +26,7 @@ The server SHALL process requests concurrently, cancel a running call on `notifi
 - **THEN** the response is a successful JSON-RPC result with `isError: true` and the reason as text
 
 ### Requirement: Pool tools
-The server SHALL expose `amux_providers` (accounts without secrets), `amux_status` (gateway URLs per client dialect and usable account counts) and `amux_ask` (send a self-contained prompt through the account pool). `amux_ask.provider` SHALL accept an exact account id (pins it) or an account family such as `gemini:web` (amux picks within it with failover). Automatic selection in `amux_ask` MUST exclude subscription accounts unless pinned or added to the pool with `amux pool add`.
+The server SHALL expose `amux_providers` (accounts without secrets), `amux_status` (gateway URLs per client dialect and usable account counts), `amux_ask` (send a self-contained prompt through the account pool with optional workspace context), `amux_review` (multi-file diff code analysis), `amux_diagnose` (error and stack trace investigation), `amux_fix` (code patch and bug fix generation), and `amux_analyze` (project architecture and design analysis). `amux_ask.provider` SHALL accept an exact account id (pins it) or an account family such as `gemini:web` (amux picks within it with failover). Automatic selection in pool tools MUST exclude subscription accounts unless pinned or added to the pool with `amux pool add`.
 
 #### Scenario: Ask with automatic selection
 - **WHEN** `amux_ask` is called without `provider` and the pool has a Claude subscription (not added to the pool) and a Gemini web account
@@ -35,6 +35,22 @@ The server SHALL expose `amux_providers` (accounts without secrets), `amux_statu
 #### Scenario: Ask a family
 - **WHEN** `amux_ask` is called with `provider: "chatgpt"` and two ChatGPT web accounts exist
 - **THEN** one of them answers, chosen by amux, and the result names it
+
+#### Scenario: Review code diff
+- **WHEN** `amux_review` is called with `diff` and `focus`
+- **THEN** a senior code review is routed through the pool and returned to the client
+
+#### Scenario: Diagnose error
+- **WHEN** `amux_diagnose` is called with `error` and relevant code
+- **THEN** an expert root cause analysis and resolution steps are returned
+
+#### Scenario: Fix bug
+- **WHEN** `amux_fix` is called with `file_content` and `issue`
+- **THEN** a corrected code patch is returned
+
+#### Scenario: Analyze architecture
+- **WHEN** `amux_analyze` is called with `structure` and `objective`
+- **THEN** architectural recommendations are returned
 
 ### Requirement: Muse tools
 The server SHALL expose `muse_status`, `muse_login`, `muse_new_chat`, `muse_chat`, `muse_read_last`, `muse_chats`, `muse_open_chat`, `muse_read_chat`, `muse_media`, `muse_dump_dom` and `muse_close`, starting the Muse browser lazily on first use.

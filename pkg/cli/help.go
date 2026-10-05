@@ -18,7 +18,7 @@ func usageHelp() {
 Usage: amux <command> [args]        Help for one command: amux <command> --help
 
 Accounts
-  login [provider]        Add an account: claude, codex, agy, chatgpt, gemini-web, muse
+  login [provider]        Add an account: claude, codex, agy, chatgpt, gemini-web
                           or an API key: gemini, groq, kimi, grok, github
   account list            Show all accounts (also: amux ls)
   switch <id>             Make <id> the active login of its tool — no re-login
@@ -176,13 +176,13 @@ Examples:
 
 func helpLogin() {
 	fmt.Print(`Purpose:
-  Authenticate and register AI provider accounts (Claude Code, Codex, Antigravity, Gemini, ChatGPT, Meta Muse).
+  Authenticate and register AI provider accounts (Claude Code, Codex, Antigravity, Gemini, ChatGPT).
 
 Usage:
   amux login [provider] [options]
 
 Arguments:
-  [provider]          claude, codex, agy, chatgpt, gemini-web, muse (accounts)
+  [provider]          claude, codex, agy, chatgpt, gemini-web (accounts)
                       gemini, groq, kimi, grok, github, cursor (API keys)
 
 Options:
@@ -198,7 +198,6 @@ Examples:
   amux login claude --device  # Device code flow for headless/SSH servers
   amux login codex            # Authenticate OpenAI Codex CLI
   amux login antigravity      # Snapshot active Antigravity IDE login
-  amux login muse             # Sign in to Meta Muse in amux's own browser profile (no keychain)
   amux login groq --token gsk_...
 
 Error Recovery:

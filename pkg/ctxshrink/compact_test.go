@@ -249,3 +249,68 @@ func TestSemanticSummarizerFallback(t *testing.T) {
 	}
 }
 
+func Test100StepMassiveTask_MilestoneRetention(t *testing.T) {
+	// Simulate 120 turns of agent actions (files read, edits, tests run)
+	msgs := []types.ChatMessage{
+		{Role: "system", Content: "You are an autonomous engineering agent."},
+		{Role: "user", Content: "Primary Goal: Migrate legacy monolith to microservices architecture."},
+	}
+
+	for step := 1; step <= 60; step++ {
+		output := fmt.Sprintf("=== RUN TestService%d\n--- PASS: TestService%d (0.01s)\n%s\nPASS\nok  	pkg/service%d	0.450s",
+			step, step, strings.Repeat("log: processing event batch item;\n", 20), step)
+		msgs = append(msgs, types.ChatMessage{
+			Role:    "assistant",
+			Content: fmt.Sprintf("Working on step %d: running test suite for service %d", step, step),
+			ToolCalls: []types.ToolCall{
+				{
+					ID:        fmt.Sprintf("call_step_%d", step),
+					Name:      "Bash",
+					Arguments: fmt.Sprintf(`{"command":"go test ./pkg/service%d/..."}`, step),
+				},
+			},
+		})
+		msgs = append(msgs, types.ChatMessage{
+			Role:       "tool",
+			ToolCallID: fmt.Sprintf("call_step_%d", step),
+			Content:    output,
+		})
+	}
+	msgs = append(msgs, types.ChatMessage{Role: "user", Content: "Now verify step 61"})
+
+	// Verify initial token count is large
+	initialTokens := EstimateMessagesTokens(msgs)
+	if initialTokens < 5000 {
+		t.Fatalf("expected >5000 tokens for 120 turns, got %d", initialTokens)
+	}
+
+	// Fit inside standard web budget (20,000 tokens)
+	shrunk := FitMessagesToTokenBudget(msgs, DefaultWebMaxTokens)
+	finalTokens := EstimateMessagesTokens(shrunk)
+	if finalTokens > DefaultWebMaxTokens {
+		t.Fatalf("tokens %d exceeded budget %d", finalTokens, DefaultWebMaxTokens)
+	}
+
+	// Compact down to strict 2,000 tokens
+	strictShrunk := FitMessagesToTokenBudget(msgs, 2000)
+	var joined strings.Builder
+	for _, m := range strictShrunk {
+		joined.WriteString(m.Content + "\n")
+	}
+	contentStr := joined.String()
+
+	// Verify System and Primary Goal
+	if !strings.Contains(contentStr, "autonomous engineering agent") {
+		t.Fatal("system prompt lost")
+	}
+	if !strings.Contains(contentStr, "Primary Goal: Migrate legacy monolith") {
+		t.Fatal("primary goal lost")
+	}
+
+	// Verify milestone extraction captured the commands run across the 100+ turns
+	if !strings.Contains(contentStr, "go test ./pkg/service") {
+		t.Fatalf("expected milestone commands in compacted summary, got:\n%s", contentStr)
+	}
+}
+
+

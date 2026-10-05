@@ -31,7 +31,7 @@ _amux_completions() {
     _init_completion || return
 
     local commands="start stop restart status off hook unhook pool env login account switch doctor audit usage setup config threshold migrate update uninstall feedback completion vault mcp"
-    local providers="claude codex agy chatgpt gemini-web muse gemini groq kimi grok github cursor"
+    local providers="claude codex agy chatgpt gemini-web gemini groq kimi grok github cursor"
 
     if [[ ${cword} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -114,7 +114,6 @@ _amux() {
         'agy:Google Antigravity'
         'gemini:Google Gemini API'
         'chatgpt:ChatGPT Web Session'
-        'muse:Meta Muse web'
         'gemini-web:Gemini web session'
         'groq:Groq API key'
     )
@@ -180,7 +179,7 @@ complete -c amux -n "not __fish_seen_subcommand_from $commands" -a vault -d "Exp
 complete -c amux -n "not __fish_seen_subcommand_from $commands" -a completion -d "Generate shell completion"
 
 # Completion for login providers
-complete -c amux -n "__fish_seen_subcommand_from login" -a "claude codex agy chatgpt gemini-web muse gemini groq kimi grok github cursor"
+complete -c amux -n "__fish_seen_subcommand_from login" -a "claude codex agy chatgpt gemini-web gemini groq kimi grok github cursor"
 complete -c amux -n "__fish_seen_subcommand_from hook unhook" -a "claude cursor codex agy all"
 complete -c amux -n "__fish_seen_subcommand_from pool" -a "add remove"
 

@@ -237,14 +237,10 @@ func cleanSystemReminders(s string) string {
 			inner = strings.TrimSpace(inner)
 		}
 		// If outer text already has user instructions (e.g. text outside <system-reminder>),
-		// and inner is just generic harness/skill listing, omit to save tokens.
+		// and inner is an oversized listing, omit to preserve tokens.
 		outer := strings.TrimSpace(reSysReminder.ReplaceAllString(s, ""))
 		if outer != "" && !strings.EqualFold(outer, "(no content)") {
-			low := strings.ToLower(inner)
-			if !strings.Contains(low, "open-pr") && !strings.Contains(low, "<op>") && !strings.Contains(low, "review.md") &&
-				!strings.Contains(low, "webapp-evidence") && !strings.Contains(low, "recording") && !strings.Contains(low, "vision") &&
-				!strings.Contains(low, "playwright") && !strings.Contains(low, "evidence") && !strings.Contains(low, "skill") &&
-				!strings.Contains(low, "test") && !strings.Contains(low, "fix") {
+			if len(inner) > 1000 {
 				return ""
 			}
 		}

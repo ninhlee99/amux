@@ -92,7 +92,6 @@ flowchart TB
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
 | MCP server / tool `amux_*`, `muse_*` | `mcp/server.go`, `mcp/tools.go`, `mcp/backend.go`, `cli/mcp.go` | `Serve`, `RegisterAmuxTools`, `RegisterMuseTools`, `PoolMemberFilter` | `pkg/mcp/server_test.go` |
 | `amux mcp install` cho IDE | `mcp/install.go` | `Targets`, `Install`, `setCodexBlock`, `ErrHasComments` | `pkg/mcp/install_test.go` |
-| Meta Muse (driver CDP, provider) | `muse/driver.go`, `muse/media.go`, `provider/muse_web.go`, `browser/cdp_page.go` | `Driver.Chat`, `Shared`, `MuseWebAdapter`, `OpenSession` | `pkg/muse/driver_test.go`, `pkg/provider/muse_web_test.go`, `pkg/browser/cdp_page_test.go` |
 | Pool xoay tự động (sub chỉ vào pool khi `amux pool add`) | `cli/pool.go`, `identity/identity.go`, `identity/store.go`, `router/pool.go`, `proxy/rotator.go` | `CanAutoRotate`, `PoolMemberFilter`, `ProfileInPool`, `SetSubscriptionPoolFilter`, `pooledLocked` | `send_provider_test.go`, `rotator_test.go`, `identity_test.go` |
 | `amux switch` không login lại / gỡ sạch (`off`, `unhook`, `uninstall`, `mcp uninstall`) | `cli/id.go`, `proxy/client.go` (`SwitchProfile`), `profile/manager.go` (`accountOnlyKeys`), `gateway/hook.go`, `gateway/hookstate.go`, `cli/system.go`, `mcp/install.go` | `cmdIDSelect`, `CmdOff`, `cmdUninstall`, `UnhookAgy`, `Uninstall` | `unhook_clean_test.go`, `account_merge_test.go`, `install_test.go` |
 | Secret store (Keychain ⇄ vault file) | `auth/secretstore.go`, `auth/crypto.go`, `cli/config.go` | `SecretStore`, `KCGet`, `SetSecretStore` | `pkg/auth/secretstore_test.go` |
@@ -146,7 +145,6 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 | `pkg/identity` | Quản lý danh tính phẳng, keychain macOS, migration |
 | `pkg/types` | Struct dùng chung — **không** import pkg khác |
 | `pkg/mcp` | MCP stdio server + tool + installer cho MCP host |
-| `pkg/muse` | Driver Meta Muse qua CDP (chat, file, media) |
 
 ---
 

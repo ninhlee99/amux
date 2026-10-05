@@ -169,6 +169,5 @@ func (b *PoolBackend) Status(context.Context) (map[string]any, error) {
 	} else {
 		res["providers"] = map[string]any{"error": err.Error()}
 	}
-	res["muse"] = map[string]any{"profileReady": provider.MuseProfileReady("")}
 	return res, nil
 }

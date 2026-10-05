@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"amux-accounts/pkg/muse"
 	"amux-accounts/pkg/types"
 )
 
@@ -19,7 +18,7 @@ type fakeBackend struct {
 }
 
 func (f *fakeBackend) Providers() ([]ProviderInfo, error) {
-	return []ProviderInfo{{ID: "muse:web:01", Type: "muse_web", Tier: "web", InPool: true, Configured: true}}, nil
+	return []ProviderInfo{{ID: "chatgpt:01", Type: "chatgpt_web", Tier: "web", InPool: true, Configured: true}}, nil
 }
 
 func (f *fakeBackend) Ask(ctx context.Context, r AskRequest, onDelta func(string)) (*AskResult, error) {
@@ -38,33 +37,6 @@ func (f *fakeBackend) Ask(ctx context.Context, r AskRequest, onDelta func(string
 func (f *fakeBackend) Status(context.Context) (map[string]any, error) {
 	return map[string]any{"gateway": map[string]any{"running": false}}, nil
 }
-
-type fakeMuse struct{ prompt string }
-
-func (m *fakeMuse) Status(context.Context) muse.Status { return muse.Status{LoggedIn: true} }
-func (m *fakeMuse) Login(context.Context, time.Duration) (muse.AuthState, error) {
-	return muse.AuthState{OK: true, ViewerID: "v"}, nil
-}
-func (m *fakeMuse) NewChat(context.Context) (string, error)          { return "https://muse.ai/thread/n", nil }
-func (m *fakeMuse) OpenChat(context.Context, string) (string, error) { return "https://muse.ai/", nil }
-func (m *fakeMuse) Chat(_ context.Context, p string, o muse.ChatOptions) (*muse.ChatResult, error) {
-	m.prompt = p
-	if o.OnDelta != nil {
-		o.OnDelta("hi")
-	}
-	return &muse.ChatResult{Reply: "hi there", ThreadURL: "https://muse.ai/thread/t"}, nil
-}
-func (m *fakeMuse) ReadChat(context.Context, string, int) ([]muse.Message, string, error) {
-	return []muse.Message{{Role: "user", Text: "q"}, {Role: "assistant", Text: "a", Media: []string{"https://muse.ai/files/x.png"}}}, "u", nil
-}
-func (m *fakeMuse) ListChats(context.Context, string) ([]muse.ChatInfo, error) {
-	return []muse.ChatInfo{{Title: "Main chat"}}, nil
-}
-func (m *fakeMuse) Media(context.Context, string, bool, string) (*muse.MediaResult, error) {
-	return &muse.MediaResult{URLs: []string{"https://muse.ai/files/x.png"}}, nil
-}
-func (m *fakeMuse) DumpDOM(context.Context, int) (*muse.DOMDump, error) { return &muse.DOMDump{}, nil }
-func (m *fakeMuse) Close()                                              {}
 
 // session drives a Server over in-memory pipes.
 type session struct {
@@ -127,17 +99,15 @@ func (s *session) result(id float64) map[string]any {
 	}
 }
 
-func newTestServer() (*Server, *fakeBackend, *fakeMuse) {
+func newTestServer() (*Server, *fakeBackend) {
 	s := NewServer("amux", "test")
 	b := &fakeBackend{}
-	fm := &fakeMuse{}
 	RegisterAmuxTools(s, b)
-	RegisterMuseTools(s, func() MuseClient { return fm })
-	return s, b, fm
+	return s, b
 }
 
 func TestInitializeNegotiatesVersion(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	sess := startSession(t, s)
 	sess.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
 	res := sess.result(1)["result"].(map[string]any)
@@ -152,7 +122,7 @@ func TestInitializeNegotiatesVersion(t *testing.T) {
 }
 
 func TestToolsListHasSchemas(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	sess := startSession(t, s)
 	sess.send(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	tools := sess.result(1)["result"].(map[string]any)["tools"].([]any)
@@ -164,7 +134,7 @@ func TestToolsListHasSchemas(t *testing.T) {
 			t.Fatalf("%v: inputSchema must be an object schema", tl["name"])
 		}
 	}
-	for _, want := range []string{"amux_ask", "amux_providers", "amux_status", "muse_chat", "muse_status", "muse_media", "muse_login"} {
+	for _, want := range []string{"amux_ask", "amux_providers", "amux_status"} {
 		if !names[want] {
 			t.Errorf("missing tool %s", want)
 		}
@@ -172,7 +142,7 @@ func TestToolsListHasSchemas(t *testing.T) {
 }
 
 func TestToolsCallAskWithProgress(t *testing.T) {
-	s, b, _ := newTestServer()
+	s, b := newTestServer()
 	sess := startSession(t, s)
 	sess.send(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"amux_ask","arguments":{"prompt":"why?","provider":"chatgpt"},"_meta":{"progressToken":"p1"}}}`)
 	sawProgress := false
@@ -202,7 +172,7 @@ func TestToolsCallAskWithProgress(t *testing.T) {
 }
 
 func TestToolErrorsAreResults(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	sess := startSession(t, s)
 	sess.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"amux_ask","arguments":{"prompt":"x","provider":"broken"}}}`)
 	res := sess.result(1)["result"].(map[string]any)
@@ -228,7 +198,7 @@ func TestToolErrorsAreResults(t *testing.T) {
 }
 
 func TestCancellationStopsLongCall(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	sess := startSession(t, s)
 	sess.send(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"amux_ask","arguments":{"prompt":"block"}}}`)
 	// ping is answered while the long call runs
@@ -243,17 +213,57 @@ func TestCancellationStopsLongCall(t *testing.T) {
 	}
 }
 
-func TestMuseChatTool(t *testing.T) {
-	s, _, fm := newTestServer()
+func TestAmuxReviewAndContext(t *testing.T) {
+	s, backend := newTestServer()
 	sess := startSession(t, s)
-	sess.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"muse_chat","arguments":{"prompt":"hello muse","new_thread":true}}}`)
-	res := sess.result(1)["result"].(map[string]any)
-	if res["structuredContent"].(map[string]any)["reply"] != "hi there" || fm.prompt != "hello muse" {
-		t.Fatalf("res = %v", res)
+
+	// Test amux_ask with context
+	sess.send(`{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"amux_ask","arguments":{"prompt":"what is this?","context":"file: main.go"}}}`)
+	res := sess.result(20)
+	if res["error"] != nil {
+		t.Fatalf("amux_ask context error: %v", res["error"])
 	}
-	sess.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"muse_read_last","arguments":{}}}`)
-	if r := sess.result(2)["result"].(map[string]any)["structuredContent"].(map[string]any); r["reply"] != "a" {
-		t.Fatalf("read_last = %v", r)
+	if !strings.Contains(backend.asked.Prompt, "[Workspace Context]") || !strings.Contains(backend.asked.Prompt, "file: main.go") {
+		t.Fatalf("expected context injected in prompt, got: %s", backend.asked.Prompt)
+	}
+
+	// Test amux_review
+	sess.send(`{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"amux_review","arguments":{"diff":"+ func New() {}","focus":"security"}}}`)
+	res2 := sess.result(21)
+	if res2["error"] != nil {
+		t.Fatalf("amux_review error: %v", res2["error"])
+	}
+	if !strings.Contains(backend.asked.Prompt, "+ func New() {}") {
+		t.Fatalf("expected diff in prompt, got: %s", backend.asked.Prompt)
+	}
+	// Test amux_diagnose
+	sess.send(`{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"amux_diagnose","arguments":{"error":"nil pointer dereference","code":"func a() { var x *int; *x = 1 }"}}}`)
+	res3 := sess.result(22)
+	if res3["error"] != nil {
+		t.Fatalf("amux_diagnose error: %v", res3["error"])
+	}
+	if !strings.Contains(backend.asked.Prompt, "nil pointer dereference") {
+		t.Fatalf("expected error in prompt, got: %s", backend.asked.Prompt)
+	}
+
+	// Test amux_fix
+	sess.send(`{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"amux_fix","arguments":{"file_content":"func a() {}","issue":"add return int"}}}`)
+	res4 := sess.result(23)
+	if res4["error"] != nil {
+		t.Fatalf("amux_fix error: %v", res4["error"])
+	}
+	if !strings.Contains(backend.asked.Prompt, "add return int") {
+		t.Fatalf("expected issue in prompt, got: %s", backend.asked.Prompt)
+	}
+
+	// Test amux_analyze
+	sess.send(`{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"amux_analyze","arguments":{"structure":"pkg/a -> pkg/b","objective":"reduce coupling"}}}`)
+	res5 := sess.result(24)
+	if res5["error"] != nil {
+		t.Fatalf("amux_analyze error: %v", res5["error"])
+	}
+	if !strings.Contains(backend.asked.Prompt, "reduce coupling") {
+		t.Fatalf("expected objective in prompt, got: %s", backend.asked.Prompt)
 	}
 }
 
@@ -264,3 +274,4 @@ func (n namedAdapter) Priority() int { return 1 }
 func (n namedAdapter) SendMessageStream(context.Context, *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	return nil, nil
 }
+

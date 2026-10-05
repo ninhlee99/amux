@@ -14,7 +14,6 @@ import (
 
 	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/browser"
-	"amux-accounts/pkg/muse"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
@@ -140,8 +139,7 @@ func CmdLogin(args []string) {
 		fmt.Println("  [2] codex  (OpenAI Codex OAuth)")
 		fmt.Println("  [3] gemini (Google AI Studio / Antigravity OAuth)")
 		fmt.Println("  [4] cursor (Cursor API Key / Token)")
-		fmt.Println("  [5] muse   (Meta Muse web — browser profile, no keychain)")
-		ans := strings.TrimSpace(term.ReadLine("Select [1-5] (claude/codex/gemini/cursor/muse): "))
+		ans := strings.TrimSpace(term.ReadLine("Select [1-4] (claude/codex/gemini/cursor): "))
 		switch strings.ToLower(ans) {
 		case "1", "claude":
 			target = "claude"
@@ -151,10 +149,8 @@ func CmdLogin(args []string) {
 			target = "gemini"
 		case "4", "cursor":
 			target = "cursor"
-		case "5", "muse":
-			target = "muse"
 		default:
-			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor, muse")
+			fmt.Println("Invalid selection. Supported providers: claude, codex, gemini, cursor")
 			return
 		}
 	} else {
@@ -206,8 +202,6 @@ func CmdLogin(args []string) {
 		}
 	case "gemini-web", "geminiweb":
 		loginGeminiWeb(flags)
-	case "muse", "muse-web", "museweb", "meta-muse":
-		loginMuse(flags)
 	case "gemini", "google-ai-studio", "geminiapi":
 		loginGemini(flags)
 	case "github", "github-models":
@@ -237,7 +231,7 @@ func CmdLogin(args []string) {
 	case "cursor":
 		loginCursor(flags)
 	default:
-		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, gemini-web, chatgpt, muse, cursor, github, groq, kimi, grok (or run: amux login)\n", target)
+		fmt.Printf("Unknown provider %q. Supported: claude, codex, gemini, gemini-web, chatgpt, cursor, github, groq, kimi, grok (or run: amux login)\n", target)
 	}
 }
 
@@ -667,68 +661,6 @@ func loginGeminiWeb(f loginFlags) {
 	CmdAccounts()
 }
 
-// loginMuse signs in to Meta Muse inside the dedicated browser profile
-// ~/.amux/browser-profiles/muse. The session never leaves that profile: no
-// cookie is copied into accounts.json and no OS keychain is touched. Set
-// AMUX_MUSE_CDP=http://127.0.0.1:9222 to reuse a Chrome you already run.
-func loginMuse(f loginFlags) {
-	fmt.Println("== Login: Meta Muse (muse.ai) ==")
-	cfg := muse.ConfigFromEnv()
-	cfg.Headless = false // the Meta sign-in needs a visible window
-	d := muse.New(cfg)
-	defer d.Close()
-
-	fmt.Println("Opening the Muse browser profile — sign in with your Meta account there…")
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
-	defer cancel()
-	auth, err := d.Login(ctx, 5*time.Minute)
-	if err != nil {
-		fmt.Printf("Login failed: %v\n", err)
-		return
-	}
-
-	path := provider.DefaultAccountsPath()
-	id := ""
-	if rows, lerr := provider.LoadConfigFile(path); lerr == nil && rows != nil {
-		for _, p := range rows.Providers {
-			if p.Type == "muse_web" && (p.BrowserProfile == cfg.Profile || (p.BrowserProfile == "" && cfg.Profile == "muse")) {
-				id = p.ID // re-login of the same profile updates in place
-				break
-			}
-		}
-	}
-	priority := provider.PriorityWebMuse
-	if id == "" {
-		var floor int
-		var multi bool
-		id, floor, multi = nextPoolID(provider.PoolIDPrefix("muse_web"))
-		if multi {
-			priority = floor
-		}
-	}
-	profileName := cfg.Profile
-	if profileName == "muse" {
-		profileName = ""
-	}
-	err = provider.AddOrUpdateProvider(path, provider.ProviderConfig{
-		ID:             id,
-		Type:           "muse_web",
-		Priority:       priority,
-		Account:        auth.ViewerID,
-		Plan:           "free",
-		Model:          f.model,
-		BrowserProfile: profileName,
-		CDPEndpoint:    cfg.Endpoint,
-	})
-	if err != nil {
-		fmt.Printf("Error saving: %v\n", err)
-		return
-	}
-	proxy.Sync()
-	fmt.Printf("Saved Meta Muse as %s (viewer %s).\n", id, auth.ViewerID)
-	CmdAccounts()
-}
-
 // githubModelsRetired: GitHub retired GitHub Models (playground, catalog and
 // inference API) on 2026-07-30 — models.github.ai no longer serves requests.
 const githubModelsRetired = true
@@ -983,8 +915,6 @@ func providerKindLabel(typ string) string {
 		return "claude-web"
 	case "gemini_web":
 		return "gemini-web"
-	case "muse_web":
-		return "muse-web"
 	case "gemini":
 		return "gemini-api"
 	case "codex_cli":

@@ -13,7 +13,6 @@ import (
 var poolBrandMethod = map[string][2]string{
 	"claude_web":  {"claude", "web"},
 	"gemini_web":  {"gemini", "web"},
-	"muse_web":    {"muse", "web"},
 	"gemini":      {"gemini", "api"},
 	"claude_code": {"claude", "code"},
 	"claude_cli":  {"claude", "code"},
@@ -329,8 +328,6 @@ func defaultPriorityForType(providerType string) int {
 		return PriorityWebClaude
 	case "gemini_web":
 		return PriorityWebGemini
-	case "muse_web":
-		return PriorityWebMuse
 	case "gemini":
 		return PriorityAPIGemini
 	default:

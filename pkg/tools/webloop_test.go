@@ -166,19 +166,7 @@ func TestWebCloser_ForbidsLackOfTools(t *testing.T) {
 	}
 }
 
-func TestIsWebToolRefusal(t *testing.T) {
-	if !isWebToolRefusal("Chưa đọc được repo, không mount thư mục. Gửi cho tôi README.") {
-		t.Fatal("vn refusal")
-	}
-	if !isWebToolRefusal("I cannot access the files. Please paste README.md") {
-		t.Fatal("en refusal")
-	}
-	if isWebToolRefusal(`{"title":"README dự án"}`) {
-		t.Fatal("title is not refusal")
-	}
-}
-
-func TestWrapWebStream_RefusalBecomesToolUse(t *testing.T) {
+func TestWrapWebStream_RefusalPassesThroughVerbatim(t *testing.T) {
 	inner := make(chan types.StreamChunk, 2)
 	inner <- types.StreamChunk{Content: "Chưa đọc được repo, không mount. Gửi cho tôi README."}
 	close(inner)
@@ -188,38 +176,14 @@ func TestWrapWebStream_RefusalBecomesToolUse(t *testing.T) {
 	for ch := range out {
 		content += ch.Content
 		if len(ch.ToolCalls) > 0 {
-			calls = ch.ToolCalls
+			calls = append(calls, ch.ToolCalls...)
 		}
 	}
-	if len(calls) < 1 || len(calls) > maxForcedWebTools {
-		t.Fatalf("calls=%+v", calls)
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 forced tool calls on plain refusal, got %+v", calls)
 	}
-	// No path with extension → bash git status only (never invent README.md).
-	if calls[0].Name != "Bash" || !strings.Contains(calls[0].Arguments, "git status") {
-		t.Fatalf("want safe bash explore, got %+v", calls)
-	}
-	if strings.Contains(content, "Gửi cho tôi") {
-		t.Fatal("refusal leaked")
-	}
-}
-
-func TestFallbackExploreTools_UsesCatalogKeys(t *testing.T) {
-	defs := []types.ToolDef{
-		{Name: "Read", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
-		{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
-	}
-	calls := fallbackExploreTools(defs, nil)
-	if len(calls) != 1 || calls[0].Name != "Bash" {
-		t.Fatalf("no path → bash only: %+v", calls)
-	}
-	if !strings.Contains(calls[0].Arguments, "git status") || strings.Contains(calls[0].Arguments, "README.md") {
-		t.Fatal(calls[0].Arguments)
-	}
-	withPath := fallbackExploreTools(defs, []types.ChatMessage{
-		{Role: "user", Content: "review pkg/cli/cli.go please"},
-	})
-	if len(withPath) != 1 || withPath[0].Name != "Read" || !strings.Contains(withPath[0].Arguments, "cli.go") {
-		t.Fatalf("path from user: %+v", withPath)
+	if !strings.Contains(content, "Chưa đọc được repo") {
+		t.Fatalf("expected clean refusal text to pass through, got %q", content)
 	}
 }
 
@@ -231,114 +195,6 @@ func TestStripWebToolMarkup(t *testing.T) {
 	}
 	if !strings.Contains(got, "thinking") {
 		t.Fatalf("lost prose: %q", got)
-	}
-}
-
-func TestReGitDiffAndStatusMatching(t *testing.T) {
-	validDiffs := []string{
-		"git diff",
-		"git   diff",
-		"/usr/bin/git diff",
-		"run `git diff` to check",
-		"\"git diff\"",
-		"'git diff'",
-		// bypass variants that should now match
-		"git --no-pager diff",
-		"git -C /some/path diff",
-		"env git diff",
-		"command git diff",
-		"/usr/bin/git --no-pager diff",
-		"/usr/local/bin/git diff",
-		"/opt/homebrew/bin/git diff",
-		"./git diff",
-		"git -C \"path with spaces\" diff",
-		"git -C 'path with spaces' diff",
-		"git --git-dir=\"/repo/.git\" diff",
-		"git --no-pager -C /repo diff",
-	}
-	for _, s := range validDiffs {
-		if !reGitDiffCmd.MatchString(s) {
-			t.Errorf("expected %q to match reGitDiffCmd", s)
-		}
-	}
-
-	invalidDiffs := []string{
-		"git diffsomething",
-		"diff",
-		"difference",
-		"indifferent",
-		"git_diff",
-	}
-	for _, s := range invalidDiffs {
-		if reGitDiffCmd.MatchString(s) {
-			t.Errorf("expected %q NOT to match reGitDiffCmd", s)
-		}
-	}
-
-	validStatuses := []string{
-		"git status",
-		"git   status",
-		"/usr/bin/git status",
-		"/usr/local/bin/git status",
-		"/opt/homebrew/bin/git status",
-		"./git status",
-		"`git status`",
-		// bypass variants
-		"git --no-pager status",
-		"git -C /repo status",
-		"git -C \"path with spaces\" status",
-		"git -C 'path with spaces' status",
-		"env git status",
-		"command git status",
-	}
-	for _, s := range validStatuses {
-		if !reGitStatusCmd.MatchString(s) {
-			t.Errorf("expected %q to match reGitStatusCmd", s)
-		}
-	}
-
-	invalidStatuses := []string{
-		"status",
-		"git statusupdate",
-		"git_status",
-	}
-	for _, s := range invalidStatuses {
-		if reGitStatusCmd.MatchString(s) {
-			t.Errorf("expected %q NOT to match reGitStatusCmd", s)
-		}
-	}
-}
-
-func TestPlausibleForcedBash_GHAndRTK(t *testing.T) {
-	valid := []string{
-		"gh issue create --repo TOMOSIA-VIETNAM/open-pr --title \"bug\"",
-		"gh search issues --repo TOMOSIA-VIETNAM/open-pr \"query\"",
-		"gh auth status",
-		"gh pr view 123",
-		"rtk find file.go",
-	}
-	for _, cmd := range valid {
-		if !isPlausibleForcedBash(cmd) {
-			t.Errorf("expected %q to be plausible forced bash", cmd)
-		}
-	}
-}
-
-func TestShouldForceWebTools_TitleJSONWithHistory(t *testing.T) {
-	titleText := `{"title": "Open-pr fix loop issue"}`
-	// 1. Without tool history (e.g. initial title prompt): should NOT force tools
-	if shouldForceWebTools(titleText, nil) {
-		t.Errorf("expected false for initial title request without history")
-	}
-
-	// 2. With active tool history (in the middle of session): should force tools
-	histWithTools := []types.ChatMessage{
-		{Role: "user", Content: "create issue with gh"},
-		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "call_1", Name: "Bash"}}},
-		{Role: "tool", Content: "github.com logged in"},
-	}
-	if !shouldForceWebTools(titleText, histWithTools) {
-		t.Errorf("expected true when title is emitted mid-session with active tool history")
 	}
 }
 
