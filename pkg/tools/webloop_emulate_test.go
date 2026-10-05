@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -220,6 +221,36 @@ Chưa đọc được repo.
 	}
 }
 
+func TestParseWebTools_BracketHistoryVariations(t *testing.T) {
+	text := `
+Let's execute the next steps:
+[Tool call: Bash id=toolu_web_1]
+{"command":"ls -la"}
+[Tool call: Read]
+{"file_path":"main.go"}
+[tool_call: Bash]
+{"command":"go test ./..."}
+`
+	got := ParseWebTools(text, claudeCatalog())
+	if len(got) != 3 {
+		t.Fatalf("expected 3 calls, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "Bash" || !strings.Contains(got[0].Arguments, "ls -la") {
+		t.Errorf("call 0 mismatch: %+v", got[0])
+	}
+	if got[1].Name != "Read" || !strings.Contains(got[1].Arguments, "main.go") {
+		t.Errorf("call 1 mismatch: %+v", got[1])
+	}
+	if got[2].Name != "Bash" || !strings.Contains(got[2].Arguments, "go test") {
+		t.Errorf("call 2 mismatch: %+v", got[2])
+	}
+
+	stripped := StripWebToolMarkup(text)
+	if strings.Contains(stripped, "[Tool call:") || strings.Contains(stripped, "[tool_call:") {
+		t.Errorf("expected bracket markup stripped, got: %q", stripped)
+	}
+}
+
 func TestWrapWebStream_LiveRefusalPassesThroughCleanly(t *testing.T) {
 	text := "Không đọc được repo từ môi trường tool hiện tại. Tool shell đang chạy container khác, không thấy `/Users/ninh.le/Documents/apps/amux`, nên chưa thể review README/code thay đổi thật."
 	inner := make(chan types.StreamChunk, 1)
@@ -257,3 +288,44 @@ func TestWrapWebStream_ExplanatoryProsePassesThroughCleanly(t *testing.T) {
 		t.Fatalf("expected content to be preserved, got: %q", content)
 	}
 }
+
+func TestCoerceToolArgs_InstructionAndDescription(t *testing.T) {
+	def := types.ToolDef{
+		Name: "replace_file_content",
+		InputSchema: json.RawMessage(`{
+			"type": "OBJECT",
+			"properties": {
+				"TargetFile": {"type": "STRING"},
+				"TargetContent": {"type": "STRING"},
+				"ReplacementContent": {"type": "STRING"},
+				"Instruction": {"type": "STRING"},
+				"Description": {"type": "STRING"},
+				"toolAction": {"type": "STRING"},
+				"toolSummary": {"type": "STRING"}
+			},
+			"required": ["TargetFile", "Instruction", "Description", "toolAction", "toolSummary"]
+		}`),
+	}
+
+	incomingArgs := `{"TargetFile":"main.go","TargetContent":"a","ReplacementContent":"b"}`
+	coerced := coerceToolArgs(incomingArgs, def)
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(coerced), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if m["Instruction"] != "Apply modifications" {
+		t.Errorf("expected default Instruction 'Apply modifications', got %v", m["Instruction"])
+	}
+	if m["Description"] != "Code change" {
+		t.Errorf("expected default Description 'Code change', got %v", m["Description"])
+	}
+	if m["toolAction"] != "Running tool" {
+		t.Errorf("expected default toolAction 'Running tool', got %v", m["toolAction"])
+	}
+	if m["toolSummary"] != "Tool execution" {
+		t.Errorf("expected default toolSummary 'Tool execution', got %v", m["toolSummary"])
+	}
+}
+

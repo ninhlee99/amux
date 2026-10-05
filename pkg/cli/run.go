@@ -28,15 +28,20 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
 			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
 		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
 	case "cursor":
 		binName = "cursor"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = "am-proxy"
 		}
 	case "windsurf", "windsurf-cli":
 		binName = "windsurf"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = "am-proxy"
 		}
@@ -44,9 +49,13 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
 			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
 		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
 	case "codex", "codex-cli":
 		binName = "codex"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = "am-proxy"
 		}
@@ -58,6 +67,8 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 			}
 		}
 		envOverrides["GOOGLE_GEMINI_BASE_URL"] = gatewayURL
+		envOverrides["GEMINI_API_BASE"] = gatewayURL
+		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = "am-proxy"
 		}
@@ -66,12 +77,18 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		binName = target
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		envOverrides["GOOGLE_GEMINI_BASE_URL"] = gatewayURL
+		envOverrides["GEMINI_API_BASE"] = gatewayURL
+		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = "am-proxy"
 		}
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
 			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
 		}
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = "am-proxy"
@@ -80,13 +97,26 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 	return binName, envOverrides
 }
 
-// ResolveBinaryPath locates the target executable in PATH or standard application folders.
+// ResolveBinaryPath locates the target executable in PATH, standard bin directories, or standard application folders.
 func ResolveBinaryPath(binName string) (string, error) {
 	if p, err := exec.LookPath(binName); err == nil {
 		return p, nil
 	}
-	// Fallback check on macOS application bundles
 	home, _ := os.UserHomeDir()
+	// Fallback check standard binary paths in case shell PATH is stripped
+	commonBinDirs := []string{
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
+	}
+	for _, dir := range commonBinDirs {
+		candidate := filepath.Join(dir, binName)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && (fi.Mode()&0111 != 0) {
+			return candidate, nil
+		}
+	}
+	// Fallback check on macOS application bundles
 	var candidates []string
 	switch strings.ToLower(binName) {
 	case "cursor":

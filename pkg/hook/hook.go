@@ -57,7 +57,18 @@ func GeminiAvailable() bool {
 	if _, err := os.Stat(filepath.Join(home, ".gemini")); err == nil {
 		return true
 	}
-	_, err := exec.LookPath("agy")
+	if _, err := os.Stat("/Applications/Antigravity.app"); err == nil {
+		return true
+	}
+	if home != "" {
+		if _, err := os.Stat(filepath.Join(home, "Applications", "Antigravity.app")); err == nil {
+			return true
+		}
+	}
+	if _, err := exec.LookPath("agy"); err == nil {
+		return true
+	}
+	_, err := exec.LookPath("antigravity")
 	return err == nil
 }
 
@@ -75,7 +86,32 @@ func CursorAvailable() bool {
 	if _, err := os.Stat(filepath.Join(home, ".cursor")); err == nil {
 		return true
 	}
+	if _, err := os.Stat("/Applications/Cursor.app"); err == nil {
+		return true
+	}
+	if home != "" {
+		if _, err := os.Stat(filepath.Join(home, "Applications", "Cursor.app")); err == nil {
+			return true
+		}
+	}
 	_, err := exec.LookPath("cursor")
+	return err == nil
+}
+
+func WindsurfAvailable() bool {
+	home, _ := os.UserHomeDir()
+	if _, err := os.Stat(filepath.Join(home, ".codeium", "windsurf")); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/Applications/Windsurf.app"); err == nil {
+		return true
+	}
+	if home != "" {
+		if _, err := os.Stat(filepath.Join(home, "Applications", "Windsurf.app")); err == nil {
+			return true
+		}
+	}
+	_, err := exec.LookPath("windsurf")
 	return err == nil
 }
 

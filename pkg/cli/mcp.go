@@ -14,7 +14,13 @@ import (
 )
 
 const mcpInstructions = `amux connects this agent to the user's other AI chat accounts (ChatGPT, Claude, Gemini web sessions, subscriptions and API keys).
-- amux_providers lists accounts; amux_ask sends a self-contained prompt to one (or lets amux pick, with failover). The other AI cannot see your files: include the context it needs.`
+- amux_providers: list available accounts & models in the pool
+- amux_ask: send self-contained prompts to any account or family with auto-failover
+- amux_review: request an independent expert code review on diffs/patches
+- amux_diagnose: analyze errors, crashes, and stack traces with root-cause identification
+- amux_fix: generate precise code fixes and patches
+- amux_analyze: evaluate project architecture, schemas, and trade-offs
+- amux_status: check gateway connectivity and active provider routes`
 
 // NewMCPServer builds the stdio MCP server with every amux tool registered.
 func NewMCPServer() *mcp.Server {
@@ -211,7 +217,7 @@ Hosts:
   %s
 
 Tools:
-  amux_providers, amux_ask, amux_status
+  amux_providers, amux_ask, amux_review, amux_diagnose, amux_fix, amux_analyze, amux_status
 
 Examples:
   amux mcp install claude cursor

@@ -235,6 +235,12 @@ func cmdGatewayStatus() {
 	fmt.Printf("Cursor:       %s\n", hookStatusStr(st.CursorHooked))
 	fmt.Printf("Codex CLI:    %s\n", hookStatusStr(st.CodexHooked))
 	fmt.Printf("Antigravity:  %s\n", hookStatusStr(st.AgyHooked))
+	fmt.Printf("Windsurf:     %s\n", func() string {
+		if hook.WindsurfAvailable() {
+			return "AVAILABLE (Launch via 'amux run windsurf')"
+		}
+		return "UNHOOKED (Launch via 'amux run windsurf')"
+	}())
 }
 
 func hookStatusStr(hooked bool) string {
@@ -318,6 +324,12 @@ func cmdGatewayHookStatus() {
 			Detected: hook.GeminiAvailable(),
 			Hooked:   st.AgyHooked,
 			Config:   gateway.AGYSettingsPath(),
+		},
+		{
+			Name:     "Windsurf",
+			Detected: hook.WindsurfAvailable(),
+			Hooked:   false,
+			Config:   "Settings > Models > OpenAI Base URL / amux run windsurf",
 		},
 	}
 

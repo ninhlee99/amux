@@ -3,6 +3,8 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -293,6 +295,11 @@ func (g *ToolGateway) normalizeArguments(m map[string]any, def types.ToolDef, cl
 	// 3. File path remapping
 	if hasSchemaProp("AbsolutePath") {
 		remap("AbsolutePath", "AbsolutePath", "file_path", "path", "TargetFile", "SearchPath", "SearchDirectory", "file", "filename", "filepath")
+		if p, ok := m["AbsolutePath"].(string); ok && p != "" && !filepath.IsAbs(p) {
+			if abs, err := filepath.Abs(p); err == nil {
+				m["AbsolutePath"] = abs
+			}
+		}
 	} else if hasSchemaProp("TargetFile") {
 		remap("TargetFile", "TargetFile", "file_path", "path", "AbsolutePath", "file", "filename", "filepath")
 	} else if hasSchemaProp("file_path") {
@@ -499,8 +506,44 @@ func (g *ToolGateway) normalizeArguments(m map[string]any, def types.ToolDef, cl
 		}
 	}
 
+	// Inspect file on disk to determine actual line bounds and TargetContent location
+	var fileLines int
+	var foundStart, foundEnd int
+	checkPath := ""
+	if p, ok := m["TargetFile"].(string); ok && p != "" {
+		checkPath = p
+	} else if p, ok := m["AbsolutePath"].(string); ok && p != "" {
+		checkPath = p
+	}
+	if checkPath != "" {
+		if contentBytes, err := os.ReadFile(checkPath); err == nil {
+			lines := strings.Split(string(contentBytes), "\n")
+			fileLines = len(lines)
+			if targetStr, ok := m["TargetContent"].(string); ok && targetStr != "" {
+				targetLines := strings.Split(targetStr, "\n")
+				tLen := len(targetLines)
+				for i := 0; i <= len(lines)-tLen; i++ {
+					match := true
+					for j := 0; j < tLen; j++ {
+						if lines[i+j] != targetLines[j] {
+							match = false
+							break
+						}
+					}
+					if match {
+						foundStart = i + 1
+						foundEnd = i + tLen
+						break
+					}
+				}
+			}
+		}
+	}
+
 	if hasSchemaProp("StartLine") {
-		if v, ok := m["StartLine"]; !ok || v == nil {
+		if foundStart > 0 {
+			m["StartLine"] = foundStart
+		} else if v, ok := m["StartLine"]; !ok || v == nil {
 			m["StartLine"] = 1
 		} else if s, isStr := v.(string); isStr {
 			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
@@ -512,13 +555,26 @@ func (g *ToolGateway) normalizeArguments(m map[string]any, def types.ToolDef, cl
 	}
 
 	if hasSchemaProp("EndLine") {
-		if v, ok := m["EndLine"]; !ok || v == nil {
-			m["EndLine"] = 1000000
+		if foundEnd > 0 {
+			m["EndLine"] = foundEnd
+		} else if v, ok := m["EndLine"]; !ok || v == nil {
+			if fileLines > 0 {
+				m["EndLine"] = fileLines
+			} else {
+				m["EndLine"] = 1000
+			}
 		} else if s, isStr := v.(string); isStr {
 			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 				m["EndLine"] = n
+			} else if fileLines > 0 {
+				m["EndLine"] = fileLines
 			} else {
-				m["EndLine"] = 1000000
+				m["EndLine"] = 1000
+			}
+		}
+		if fileLines > 0 {
+			if curEnd, ok := m["EndLine"].(int); ok && curEnd > fileLines {
+				m["EndLine"] = fileLines
 			}
 		}
 	}

@@ -258,6 +258,40 @@ func TestBuildConcatenatedPrompt_MultipleSystemMessages(t *testing.T) {
 	}
 }
 
+func TestBuildConcatenatedPrompt_ToolCallsAndPruning(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "Run status"},
+		{
+			Role:    "assistant",
+			Content: "Executing check",
+			ToolCalls: []types.ToolCall{
+				{ID: "call_1", Name: "Bash", Arguments: `{"command":"git status"}`},
+			},
+		},
+		{
+			Role:       "tool",
+			Name:       "Bash",
+			ToolCallID: "call_1",
+			Content:    "HEAD -> main\n" + strings.Repeat("log entry\n", 200) + "fatal: error at the end",
+		},
+		{Role: "user", Content: "Continue"},
+	}
+
+	got := BuildConcatenatedPrompt(msgs)
+	// Must contain <tool_call> tag matching preamble
+	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, `"name":"Bash"`) {
+		t.Fatalf("expected <tool_call> in assistant history, got:\n%s", got)
+	}
+	// Must contain [Tool result (Bash)]:
+	if !strings.Contains(got, "[Tool result (Bash)]:") {
+		t.Fatalf("expected [Tool result (Bash)]:, got:\n%s", got)
+	}
+	// Must preserve both the head and tail of tool output
+	if !strings.Contains(got, "HEAD -> main") || !strings.Contains(got, "fatal: error at the end") {
+		t.Fatalf("expected both head and tail preserved in pruned output, got:\n%s", got)
+	}
+}
+
 func TestBuildAdapter_DefaultsAndMissing(t *testing.T) {
 	// Missing baseUrl for openai_compatible
 	_, err := BuildAdapter(ProviderConfig{Type: "openai_compatible"})

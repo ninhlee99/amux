@@ -180,3 +180,84 @@ func TestToolGateway_InvokeSubagent_Packaging(t *testing.T) {
 		t.Errorf("expected Role 'Codebase Researcher', got %v", subObj["Role"])
 	}
 }
+
+func TestNormalizeToolCalls_AutoAbsPathAndLineBounds(t *testing.T) {
+	defs := []types.ToolDef{
+		{
+			Name: "view_file",
+			InputSchema: json.RawMessage(`{
+				"type": "OBJECT",
+				"properties": {
+					"AbsolutePath": {"type": "STRING"},
+					"toolAction": {"type": "STRING"},
+					"toolSummary": {"type": "STRING"}
+				},
+				"required": ["AbsolutePath"]
+			}`),
+		},
+		{
+			Name: "replace_file_content",
+			InputSchema: json.RawMessage(`{
+				"type": "OBJECT",
+				"properties": {
+					"TargetFile": {"type": "STRING"},
+					"TargetContent": {"type": "STRING"},
+					"ReplacementContent": {"type": "STRING"},
+					"StartLine": {"type": "INTEGER"},
+					"EndLine": {"type": "INTEGER"},
+					"AllowMultiple": {"type": "BOOLEAN"},
+					"Instruction": {"type": "STRING"},
+					"Description": {"type": "STRING"},
+					"toolAction": {"type": "STRING"},
+					"toolSummary": {"type": "STRING"}
+				},
+				"required": ["TargetFile", "TargetContent", "ReplacementContent", "StartLine", "EndLine"]
+			}`),
+		},
+	}
+
+	incomingCalls := []types.ToolCall{
+		{
+			ID:        "call_view",
+			Name:      "view_file",
+			Arguments: `{"AbsolutePath":"main.go"}`,
+		},
+		{
+			ID:   "call_edit",
+			Name: "replace_file_content",
+			// Web model omitted StartLine/EndLine
+			Arguments: `{"TargetFile":"main.go","TargetContent":"package main","ReplacementContent":"package main"}`,
+		},
+	}
+
+	normalized := tools.NormalizeToolCalls(incomingCalls, defs, tools.DialectGemini)
+	if len(normalized) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(normalized))
+	}
+
+	var mView map[string]any
+	if err := json.Unmarshal([]byte(normalized[0].Arguments), &mView); err != nil {
+		t.Fatalf("unmarshal view arguments: %v", err)
+	}
+	absPath, _ := mView["AbsolutePath"].(string)
+	if !strings.HasPrefix(absPath, "/") {
+		t.Fatalf("expected absolute path for AbsolutePath, got %q", absPath)
+	}
+
+	var mEdit map[string]any
+	if err := json.Unmarshal([]byte(normalized[1].Arguments), &mEdit); err != nil {
+		t.Fatalf("unmarshal edit arguments: %v", err)
+	}
+
+	// Verify EndLine is NOT 1000000, but bounded to the actual lines of main.go (which has ~10-50 lines)
+	endLine, ok := mEdit["EndLine"].(float64)
+	if !ok || int(endLine) >= 1000000 {
+		t.Fatalf("expected EndLine to be bounded to real file lines, got %v", mEdit["EndLine"])
+	}
+
+	// TargetContent "package main" is on line 1 of main.go
+	startLine, ok := mEdit["StartLine"].(float64)
+	if !ok || int(startLine) != 1 {
+		t.Errorf("expected StartLine 1 for 'package main', got %v", mEdit["StartLine"])
+	}
+}

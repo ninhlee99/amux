@@ -3,6 +3,8 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -46,9 +48,9 @@ var (
 	reAMUXTool       = regexp.MustCompile(`(?s)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
 	reToolJSON       = regexp.MustCompile("(?s)```(?:tool_call|json)\\s*\n(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence      = regexp.MustCompile("(?s)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
-	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…]
-	reBracketTool    = regexp.MustCompile(`(?s)\[tool_call\s+name="?([^"\s\]]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{.*?\})`)
-	reBracketToolAlt = regexp.MustCompile(`(?s)\[tool_call:?\s+([A-Za-z0-9_-]+)\s*(\{.*?\})\]`)
+	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
+	reBracketTool    = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
+	reBracketToolAlt = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
 	reTrailComma     = regexp.MustCompile(`,\s*([}\]])`)
 )
 
@@ -192,6 +194,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		defer close(out)
 		var buf strings.Builder
 		id := source
+		hasStreamedThinking := false
 		for ch := range inner {
 			if ch.ID != "" {
 				id = ch.ID
@@ -199,6 +202,10 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			if ch.Error != nil {
 				out <- ch
 				return
+			}
+			if ch.Thinking != "" {
+				hasStreamedThinking = true
+				out <- types.StreamChunk{ID: id, Thinking: ch.Thinking}
 			}
 			if len(ch.ToolCalls) > 0 {
 				raw := buf.String()
@@ -215,11 +222,18 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			buf.WriteString(ch.Content)
 		}
 		text := buf.String()
+		if !hasStreamedThinking {
+			for _, m := range reThought.FindAllStringSubmatch(text, -1) {
+				if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
+					out <- types.StreamChunk{ID: id, Thinking: strings.TrimSpace(m[1])}
+				}
+			}
+		}
 		calls, forced := FinalizeWebToolCalls(text, defs, hist)
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
 			cleanText := text
-			if strings.Contains(text, "<tool_call") || strings.Contains(text, "[tool_call") || strings.Contains(text, "<<<AMUX_TOOL") {
+			if hasExplicitWebToolMarkup(text) || strings.Contains(text, "<thought") {
 				cleanText = StripWebToolMarkup(text)
 			}
 			if cleanText != "" {
@@ -266,9 +280,12 @@ func historyHasTools(hist []types.ChatMessage) bool {
 }
 
 func hasExplicitWebToolMarkup(text string) bool {
-	return strings.Contains(text, "<tool_call") ||
-		strings.Contains(text, "[tool_call") ||
-		strings.Contains(text, "<<<AMUX_TOOL") ||
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "[tool_call") ||
+		strings.Contains(lower, "[tool call") ||
+		strings.Contains(lower, "<invoke") ||
+		strings.Contains(lower, "<<<amux_tool") ||
 		(strings.Contains(text, `"name"`) &&
 			(strings.Contains(text, `"arguments"`) || strings.Contains(text, `"input"`)))
 }
@@ -731,6 +748,62 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 		}
 	}
 	if hasKey("Instruction") {
+		if v, ok := m["Instruction"]; !ok || v == nil || v == "" {
+			m["Instruction"] = "Apply modifications"
+			changed = true
+		}
+	}
+	if hasKey("Description") {
+		if v, ok := m["Description"]; !ok || v == nil || v == "" {
+			m["Description"] = "Code change"
+			changed = true
+		}
+	}
+	// Resolve relative paths to absolute for strict tools (e.g. AGY view_file)
+	if hasKey("AbsolutePath") {
+		if p, ok := m["AbsolutePath"].(string); ok && p != "" && !filepath.IsAbs(p) {
+			if abs, err := filepath.Abs(p); err == nil {
+				m["AbsolutePath"] = abs
+				changed = true
+			}
+		}
+	}
+
+	// Inspect file on disk to determine actual line bounds and TargetContent location
+	var fileLines int
+	var foundStart, foundEnd int
+	checkPath := ""
+	if p, ok := m["TargetFile"].(string); ok && p != "" {
+		checkPath = p
+	} else if p, ok := m["AbsolutePath"].(string); ok && p != "" {
+		checkPath = p
+	}
+	if checkPath != "" {
+		if contentBytes, err := os.ReadFile(checkPath); err == nil {
+			lines := strings.Split(string(contentBytes), "\n")
+			fileLines = len(lines)
+			if targetStr, ok := m["TargetContent"].(string); ok && targetStr != "" {
+				targetLines := strings.Split(targetStr, "\n")
+				tLen := len(targetLines)
+				for i := 0; i <= len(lines)-tLen; i++ {
+					match := true
+					for j := 0; j < tLen; j++ {
+						if lines[i+j] != targetLines[j] {
+							match = false
+							break
+						}
+					}
+					if match {
+						foundStart = i + 1
+						foundEnd = i + tLen
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if hasKey("Instruction") {
 		if _, ok := m["Instruction"]; !ok {
 			m["Instruction"] = "Apply modification"
 			changed = true
@@ -743,7 +816,10 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 		}
 	}
 	if hasKey("StartLine") {
-		if v, ok := m["StartLine"]; !ok || v == nil {
+		if foundStart > 0 {
+			m["StartLine"] = foundStart
+			changed = true
+		} else if v, ok := m["StartLine"]; !ok || v == nil {
 			m["StartLine"] = 1
 			changed = true
 		} else if s, isStr := v.(string); isStr {
@@ -754,12 +830,25 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 		}
 	}
 	if hasKey("EndLine") {
-		if v, ok := m["EndLine"]; !ok || v == nil {
-			m["EndLine"] = 1000000
+		if foundEnd > 0 {
+			m["EndLine"] = foundEnd
+			changed = true
+		} else if v, ok := m["EndLine"]; !ok || v == nil {
+			if fileLines > 0 {
+				m["EndLine"] = fileLines
+			} else {
+				m["EndLine"] = 1000
+			}
 			changed = true
 		} else if s, isStr := v.(string); isStr {
 			if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 				m["EndLine"] = n
+				changed = true
+			}
+		}
+		if fileLines > 0 {
+			if curEnd, ok := m["EndLine"].(int); ok && curEnd > fileLines {
+				m["EndLine"] = fileLines
 				changed = true
 			}
 		}

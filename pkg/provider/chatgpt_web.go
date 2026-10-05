@@ -101,28 +101,40 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sb.WriteString("Assistant: ")
 			sb.WriteString(m.Content)
 			for _, tc := range m.ToolCalls {
-				sb.WriteString("\n[Tool call: ")
-				sb.WriteString(tc.Name)
-				if tc.ID != "" {
-					sb.WriteString(" id=")
-					sb.WriteString(tc.ID)
+				sb.WriteString("\n<tool_call>\n")
+				toolJSON, err := json.Marshal(map[string]any{
+					"name":      tc.Name,
+					"arguments": json.RawMessage(tc.Arguments),
+				})
+				if err != nil {
+					toolJSON, _ = json.Marshal(map[string]any{
+						"name":      tc.Name,
+						"arguments": tc.Arguments,
+					})
 				}
-				sb.WriteString("]\n")
-				sb.WriteString(tc.Arguments)
+				sb.WriteString(string(toolJSON))
+				sb.WriteString("\n</tool_call>")
 			}
 			sb.WriteString("\n\n")
 		case "tool":
-			sb.WriteString("[Tool result — CLI ran]")
-			if m.ToolCallID != "" {
-				sb.WriteString(" (")
-				sb.WriteString(m.ToolCallID)
-				sb.WriteString(")")
+			toolName := m.Name
+			if toolName == "" && m.ToolCallID != "" {
+				toolName = m.ToolCallID
 			}
-			sb.WriteString(":\n")
+			if toolName != "" {
+				sb.WriteString(fmt.Sprintf("[Tool result (%s)]:\n", toolName))
+			} else {
+				sb.WriteString("[Tool result — CLI ran]:\n")
+			}
 			toolContent := tools.PruneToolResult(m.Content)
-			// If this is an older tool result and exceeds limit, keep essential head to avoid HTTP 413
+			// If this is an older tool result and exceeds limit, keep essential head & tail to avoid HTTP 413 while preserving exit codes/errors
 			if idx < len(messages)-2 && len(toolContent) > 2000 {
-				toolContent = toolContent[:2000] + "\n...[older output truncated to preserve prompt limit]..."
+				r := []rune(toolContent)
+				if len(r) > 2000 {
+					head := string(r[:1000])
+					tail := string(r[len(r)-1000:])
+					toolContent = head + "\n...[older output truncated to preserve prompt limit]...\n" + tail
+				}
 			}
 			sb.WriteString(toolContent)
 			sb.WriteString("\n\n")
