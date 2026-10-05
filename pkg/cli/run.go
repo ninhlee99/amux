@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"amux-accounts/pkg/gateway"
 )
@@ -79,12 +80,24 @@ func CmdRun(args []string) {
 		os.Exit(1)
 	}
 
-	// Auto-check if gateway is up
+	// Auto-check if gateway is up and wait until ready
 	gw := gateway.GetStatus()
 	if !gw.Running {
-		fmt.Printf("➜ amux gateway is not running. Starting background gateway...\n")
+		fmt.Printf("➜ AMUX Gateway (:8787) is not running. Starting background gateway...\n")
 		cmdGatewayStart(nil)
+		// Wait up to 3s for gateway to be fully responsive
+		for i := 0; i < 30; i++ {
+			if gateway.IsRunning() {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !gateway.IsRunning() {
+			fmt.Fprintf(os.Stderr, "⚠ Warning: Gateway (:8787) is taking longer than usual to start. Run 'amux doctor' if requests fail.\n")
+		}
 	}
+
+	fmt.Printf("⚡ AMUX Sandbox: %s → %s (isolated session)\n", binName, gatewayURL)
 
 	// Build process environment
 	cmdEnv := os.Environ()

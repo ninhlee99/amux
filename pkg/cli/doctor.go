@@ -95,6 +95,14 @@ func CmdDoctor(args []string) {
 		fmt.Printf("WARN (%v)\n", err)
 	}
 
+	fmt.Print("[Network] Checking Google Gemini API connectivity... ")
+	if resp, err := c.Get("https://generativelanguage.googleapis.com"); err == nil {
+		_ = resp.Body.Close()
+		fmt.Printf("OK (%d)\n", resp.StatusCode)
+	} else {
+		fmt.Printf("WARN (%v)\n", err)
+	}
+
 	// 4. Client Tools Compatibility
 	fmt.Println("\n== Client IDE & Tool Detection ==")
 	checkTool("Claude Code", "claude", hook.ClaudeAvailable())

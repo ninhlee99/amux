@@ -31,8 +31,18 @@ func CheckHealth(id Identity) HealthReport {
 
 	if len(id.Credentials) == 0 {
 		report.Status = "missing_credentials"
-		report.Message = "No credentials stored"
+		report.Message = fmt.Sprintf("No credentials stored (run 'amux login %s')", id.Provider)
 		return report
+	}
+
+	// Check web credentials
+	if id.Tier == TierWeb {
+		hasCookie := id.Credentials["cookies"] != "" || id.Credentials["session_key"] != "" || id.Credentials["secure_1psid"] != "" || id.Credentials["token"] != "" || id.Credentials["access_token"] != ""
+		if !hasCookie {
+			report.Status = "missing_credentials"
+			report.Message = fmt.Sprintf("Missing session cookies (run 'amux login %s')", id.Provider)
+			return report
+		}
 	}
 
 	// Check token expiration if available
@@ -43,7 +53,7 @@ func CheckHealth(id Identity) HealthReport {
 				report.Message = "Access token expired, refresh token available"
 			} else {
 				report.Status = "expired"
-				report.Message = "Token expired"
+				report.Message = fmt.Sprintf("Token expired (run 'amux login %s')", id.Provider)
 			}
 			return report
 		}
