@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/auth"
+	"amux-accounts/pkg/gateway"
 	"amux-accounts/pkg/hook"
-	"amux-accounts/pkg/proxy"
+	"amux-accounts/pkg/mcp"
 	"amux-accounts/pkg/types"
 )
 
@@ -36,67 +38,110 @@ func CmdUpdate(args []string) {
 func CmdUninstall(args []string) {
 	purge := false
 	for _, a := range args {
-		if a == "--purge" || a == "--all" {
+		switch a {
+		case "--purge", "--all":
 			purge = true
+		default:
+			die("unknown option %q (usage: amux uninstall [--purge])", a)
 		}
 	}
 	cmdUninstall(purge)
 }
 
+// cmdUninstall removes everything amux added outside ~/.amux, and only what
+// it added: tool configs keep every value the user set, and the tools' own
+// logins (Claude Code / Codex / Antigravity keychain items and files) stay
+// exactly as they are, so each tool keeps working with its current account.
 func cmdUninstall(purge bool) {
-	fmt.Println("== Uninstalling AMUX ==")
-
-	if proxy.ProxyUp() {
-		fmt.Println("Stopping gateway daemon...")
-		proxy.CmdProxyDown(true, true)
+	fmt.Println("Uninstalling amux…")
+	home, _ := os.UserHomeDir()
+	step := func(ok bool, msg string, err error) {
+		switch {
+		case err != nil:
+			fmt.Printf("  ⚠ %s: %v\n", msg, err)
+		case ok:
+			fmt.Printf("  ✓ %s\n", msg)
+		}
 	}
 
-	fmt.Println("Removing hooks from IDEs...")
-	_ = hook.UninstallAllHooks()
+	hooked := hookedTools()
+	step(len(hooked) > 0, "Unhooked "+strings.Join(hooked, ", "), gateway.Unhook(gateway.TargetAll))
+
+	running := gateway.IsRunning()
+	step(running, "Stopped the gateway", gateway.Stop())
+
+	step(true, "Removed amux session hooks and status lines", hook.UninstallAllHooks())
+
+	for _, t := range mcp.Targets() {
+		if t.Installed(home) {
+			_, err := t.Uninstall(home)
+			step(true, "Removed MCP registration from "+t.Label, err)
+		}
+	}
+
+	slash := filepath.Join(home, ".claude", "commands", "amux")
+	if _, err := os.Stat(slash); err == nil {
+		step(true, "Removed /amux slash commands", os.RemoveAll(slash))
+	}
 
 	if hook.IsAutoUpdateEnabled() {
-		fmt.Println("Disabling auto-update LaunchAgent...")
-		_ = hook.SetupAutoUpdate(false)
+		step(true, "Removed the auto-update LaunchAgent", hook.SetupAutoUpdate(false))
 	}
 
-	home, _ := os.UserHomeDir()
+	// Older versions exported these globally; drop them only if they still
+	// point at the gateway (a value the user set is kept).
+	if runtime.GOOS == "darwin" {
+		for _, k := range []string{"ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_BASE", "GOOGLE_GENAI_BASE_URL"} {
+			out, _ := exec.Command("launchctl", "getenv", k).Output()
+			if v := strings.TrimSpace(string(out)); strings.Contains(v, "127.0.0.1:8787") || strings.Contains(v, "localhost:8787") {
+				_ = exec.Command("launchctl", "unsetenv", k).Run()
+				fmt.Printf("  ✓ Removed launchctl %s\n", k)
+			}
+		}
+	}
+
 	candidates := []string{
 		filepath.Join(home, ".local", "bin", "amux"),
 		filepath.Join(home, ".local", "bin", "am"),
 		"/usr/local/bin/amux",
 		"/usr/local/bin/am",
 	}
+	var selfInfo os.FileInfo
 	if self, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(self); err == nil {
 			candidates = append(candidates, resolved)
+			selfInfo, _ = os.Stat(resolved)
 		}
 	}
-
+	seen := map[string]bool{}
 	for _, p := range candidates {
-		if fi, err := os.Lstat(p); err == nil {
-			if err := os.Remove(p); err == nil {
-				fmt.Printf("Removed binary: %s\n", p)
-			} else {
-				fmt.Printf("Could not remove %s: %v\n", p, err)
-			}
-			_ = fi
+		if seen[p] {
+			continue
 		}
+		seen[p] = true
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		// "am" is a common name: remove it only when it is this binary.
+		if filepath.Base(p) == "am" {
+			st, err := os.Stat(p)
+			if err != nil || selfInfo == nil || !os.SameFile(st, selfInfo) {
+				continue
+			}
+		}
+		step(true, "Removed "+p, os.Remove(p))
 	}
 
 	if purge {
+		step(true, "Deleted amux's master key from the keychain", auth.DeleteMasterKey())
 		amuxDir := types.BaseDir()
-		if err := os.RemoveAll(amuxDir); err != nil {
-			fmt.Printf("Could not remove %s: %v\n", amuxDir, err)
-		} else {
-			fmt.Printf("Purged configuration directory: %s\n", amuxDir)
-		}
-		legacyDir := filepath.Join(home, ".am")
-		_ = os.RemoveAll(legacyDir)
+		step(true, "Deleted "+amuxDir, os.RemoveAll(amuxDir))
+		_ = os.RemoveAll(filepath.Join(home, ".am"))
 	} else {
-		fmt.Printf("Identity data at ~/.amux/ preserved (use --purge to delete).\n")
+		fmt.Printf("  • Kept %s (accounts and saved logins). Delete it too: amux uninstall --purge\n", types.BaseDir())
 	}
 
-	fmt.Println("Uninstall complete.")
+	fmt.Println("Done. Claude Code, Codex, Cursor and Antigravity keep their current logins; restart open sessions.")
 }
 
 // tryUpdatePrebuilt downloads the latest pre-built binary from GitHub Releases.

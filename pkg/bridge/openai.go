@@ -483,26 +483,24 @@ func openAIContentString(raw json.RawMessage) string {
 func HandleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Header.Get("anthropic-version") != "" || strings.Contains(r.Header.Get("User-Agent"), "Claude") {
-		anthropicModels := []map[string]any{
-			{"type": "model", "id": "claude-3-7-sonnet-20250219", "display_name": "Claude 3.7 Sonnet", "created_at": "2025-02-19T00:00:00Z"},
-			{"type": "model", "id": "claude-3-5-sonnet-20241022", "display_name": "Claude 3.5 Sonnet", "created_at": "2024-10-22T00:00:00Z"},
-			{"type": "model", "id": "claude-3-5-haiku-20241022", "display_name": "Claude 3.5 Haiku", "created_at": "2024-10-22T00:00:00Z"},
-			{"type": "model", "id": "claude-3-opus-20240229", "display_name": "Claude 3 Opus", "created_at": "2024-02-29T00:00:00Z"},
+		anthropicModels := make([]map[string]any, 0, len(tools.CurrentClaudeModels))
+		for _, m := range tools.CurrentClaudeModels {
+			anthropicModels = append(anthropicModels, map[string]any{"type": "model", "id": m.ID, "display_name": m.Name, "created_at": "2026-01-01T00:00:00Z"})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data":     anthropicModels,
 			"has_more": false,
-			"first_id": "claude-3-7-sonnet-20250219",
-			"last_id":  "claude-3-opus-20240229",
+			"first_id": anthropicModels[0]["id"],
+			"last_id":  anthropicModels[len(anthropicModels)-1]["id"],
 		})
 		return
 	}
 
 	models := []string{
-		"gpt-4o", "gpt-4o-mini", "o1", "o1-mini",
-		"gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-pro", "gemini-2.5-flash",
-		"claude-3-5-sonnet-20241022", "claude-3-haiku-20240307",
-		"llama-3.3-70b-versatile", "mixtral-8x7b-32768",
+		"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna",
+		"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview",
+		"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5",
+		"grok-4.7", "kimi-k3", "kimi-k2.7-code", "llama-3.3-70b-versatile", "openai/gpt-oss-120b",
 	}
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {

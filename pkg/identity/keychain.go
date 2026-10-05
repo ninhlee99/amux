@@ -38,6 +38,16 @@ func SyncIdentityToNativeKeychain(id *Identity) error {
 	}
 }
 
+// claudePlan is the subscription type recorded for id ("pro" if unknown).
+func claudePlan(id *Identity) string {
+	if id.Metadata != nil {
+		if p, ok := id.Metadata["plan"].(string); ok && strings.TrimSpace(p) != "" {
+			return strings.ToLower(strings.TrimSpace(p))
+		}
+	}
+	return "pro"
+}
+
 func syncClaudeKeychain(id *Identity) error {
 	accessTok := id.Credentials["access_token"]
 	refreshTok := id.Credentials["refresh_token"]
@@ -80,8 +90,8 @@ func syncClaudeKeychain(id *Identity) error {
 			"accessToken":      accessTok,
 			"refreshToken":     refreshTok,
 			"expiresAt":        expiresAt,
-			"scopes":           []string{"user:read", "user:write"},
-			"subscriptionType": "pro",
+			"scopes":           []string{"user:inference", "user:profile", "user:sessions:claude_code"},
+			"subscriptionType": claudePlan(id),
 		},
 	}
 	b, err := json.Marshal(payload)

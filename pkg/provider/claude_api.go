@@ -22,7 +22,7 @@ import (
 
 var (
 	claudeMessagesURL  = "https://api.anthropic.com/v1/messages"
-	claudeDefaultModel = "claude-3-7-sonnet-20250219"
+	claudeDefaultModel = tools.DefaultClaudeModel
 	anthropicVersion   = "2023-06-01"
 	anthropicOAuthBeta = "oauth-2025-04-20"
 )

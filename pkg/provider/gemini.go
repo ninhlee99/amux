@@ -20,7 +20,7 @@ const (
 	googleAIStudioBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 	DefaultGeminiFlashModel = "gemini-3.8-flash"
-	DefaultGeminiProModel   = "gemini-3.8-flash"
+	DefaultGeminiProModel   = "gemini-3.1-pro-preview"
 	// GeminiFreeRPMLimitPerKey is the Google AI Studio free tier limit of 15 RPM per key.
 	GeminiFreeRPMLimitPerKey = 15
 )

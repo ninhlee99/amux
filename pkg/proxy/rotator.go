@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"amux-accounts/pkg/auth"
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/types"
@@ -81,6 +82,31 @@ type Rotator struct {
 	manualSwitches map[string]int // ForceSwitch(): `am switch` / hook-driven
 
 	poolSize int // number of active pool providers available
+
+	// inPool reports whether a profile was added to the rotation pool by
+	// hand (`amux pool add`). Automatic switches only ever happen between
+	// pooled profiles; an account outside the pool is never left or entered
+	// without the user asking.
+	inPool func(name, account string) bool
+
+	// thresholdFor returns a profile's own hand-over threshold in percent
+	// (`amux account threshold`); ok=false falls back to usedThreshold.
+	thresholdFor func(name, account string) (float64, bool)
+}
+
+// SetPoolFilter replaces the pool-membership predicate (tests).
+func (r *Rotator) SetPoolFilter(fn func(name, account string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inPool = fn
+}
+
+// pooledLocked reports pool membership for name; r.mu must be held.
+func (r *Rotator) pooledLocked(name string) bool {
+	if r.inPool == nil {
+		return false
+	}
+	return r.inPool(name, r.accounts[name])
 }
 
 func (r *Rotator) SetPoolSize(n int) {
@@ -97,6 +123,12 @@ func (r *Rotator) PoolSize() int {
 
 func NewRotator(tool string) *Rotator {
 	r := &Rotator{tool: tool, usedThreshold: usedThresholdDefault}
+	r.inPool = func(name, account string) bool {
+		return identity.ProfileInPool("", tool, name, account)
+	}
+	r.thresholdFor = func(name, account string) (float64, bool) {
+		return identity.ProfileThreshold("", tool, name, account)
+	}
 	r.Load()
 	return r
 }
@@ -299,24 +331,17 @@ func (r *Rotator) Token() string {
 	}
 
 	// Keychain holds a different account than the profile we think is
-	// active — install the active profile so they line up. This also
-	// refreshes the profile's token if it was expired/rotated-out, so
-	// re-read the keychain afterward rather than trusting the (possibly
-	// stale) bundle token cached at Load().
-	if fallback != nil && fallback.Access != "" {
-		if !profile.InstallActiveProfile(name) {
-			r.mu.Lock()
-			r.dead[name] = true
-			r.mu.Unlock()
-			return ""
+	// active: the user logged in or switched outside amux. Follow them —
+	// never overwrite their keychain login with the profile we remembered.
+	if other := profile.MatchProfileByAccount(r.tool, live.Account); other != "" {
+		r.mu.Lock()
+		for i, n := range r.order {
+			if n == other {
+				r.idx = i
+			}
 		}
-		if refreshed := auth.LiveKeychainToken(); refreshed != nil && !auth.TokenExpiryNeedsRefresh(refreshed.ExpiresAt.UnixMilli()) {
-			return refreshed.Access
-		}
-		if !auth.TokenExpiryNeedsRefresh(fallback.ExpiresAt.UnixMilli()) {
-			return fallback.Access
-		}
-		return ""
+		r.mu.Unlock()
+		profile.WriteActivePointer(r.tool, other)
 	}
 	if !auth.TokenExpiryNeedsRefresh(live.ExpiresAt.UnixMilli()) {
 		return live.Access
@@ -395,10 +420,18 @@ func (r *Rotator) Observe(resp *http.Response) {
 		thresh = DefaultUsedThreshold
 	}
 	pSize := r.poolSize
+	thresholdFor, acct := r.thresholdFor, r.accounts[name]
 	r.mu.Unlock()
+	if thresholdFor != nil {
+		if pct, ok := thresholdFor(name, acct); ok && pct > 0 && pct <= 100 {
+			thresh = pct / 100
+		}
+	}
 
-	hasOtherClaude := r.ProfileCount() > 1
-	hasAlternatives := hasOtherClaude || pSize > 0
+	_ = pSize
+	// Leaving an account before it is actually limited only makes sense
+	// when the pool holds another account to go to.
+	hasAlternatives := r.hasPooledAlternative(name)
 
 	hardLimited := resp.StatusCode == http.StatusTooManyRequests
 	nearLimit := false
@@ -417,24 +450,57 @@ func (r *Rotator) Observe(resp *http.Response) {
 	}
 }
 
-// AllUnavailable reports whether every saved profile is either in cooldown,
-// marked dead, or turned off — i.e. Claude reverse-proxy has nowhere useful
-// to go and the gateway should fall over to the free provider pool.
-func (r *Rotator) AllUnavailable() bool {
+// usableLocked: not off, not dead, not cooling. r.mu must be held.
+func (r *Rotator) usableLocked(n string, now time.Time) bool {
+	if r.disabled[n] || r.dead[n] {
+		return false
+	}
+	if cd, ok := r.cooldown[n]; ok && now.Before(cd) {
+		return false
+	}
+	return true
+}
+
+// hasPooledAlternative reports whether from is in the pool and another
+// pooled profile is usable right now.
+func (r *Rotator) hasPooledAlternative(from string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.order) == 0 {
-		return true
+	if !r.pooledLocked(from) {
+		return false
 	}
 	now := time.Now()
 	for _, n := range r.order {
-		if r.disabled[n] || r.dead[n] {
-			continue
+		if n != from && r.pooledLocked(n) && r.usableLocked(n, now) {
+			return true
 		}
-		if cd, ok := r.cooldown[n]; ok && now.Before(cd) {
-			continue
-		}
+	}
+	return false
+}
+
+// AllUnavailable reports whether Claude has nothing usable to serve with:
+// the active profile is cooling, dead or off, and (when it is in the pool)
+// no other pooled profile is usable either — i.e. the gateway should fall
+// over to the provider pool. Profiles outside the pool never count: amux
+// will not switch to them on its own.
+func (r *Rotator) AllUnavailable() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.order) == 0 || r.idx >= len(r.order) {
+		return true
+	}
+	now := time.Now()
+	cur := r.order[r.idx]
+	if r.usableLocked(cur, now) {
 		return false
+	}
+	if !r.pooledLocked(cur) {
+		return true
+	}
+	for _, n := range r.order {
+		if r.pooledLocked(n) && r.usableLocked(n, now) {
+			return false
+		}
 	}
 	return true
 }
@@ -481,23 +547,20 @@ func (r *Rotator) EnsureUsableActive() bool {
 		return false
 	}
 	now := time.Now()
-	usable := func(n string) bool {
-		if r.disabled[n] || r.dead[n] {
-			return false
-		}
-		if cd, ok := r.cooldown[n]; ok && now.Before(cd) {
-			return false
-		}
-		return true
-	}
 	cur := r.order[r.idx]
-	if usable(cur) {
+	if r.usableLocked(cur, now) {
 		r.mu.Unlock()
 		return true
 	}
+	// Only switch within the pool: an account the user did not add is
+	// neither left nor picked automatically.
+	if !r.pooledLocked(cur) {
+		r.mu.Unlock()
+		return false
+	}
 	from := cur
 	for i, n := range r.order {
-		if !usable(n) {
+		if !r.pooledLocked(n) || !r.usableLocked(n, now) {
 			continue
 		}
 		r.idx = i
@@ -568,6 +631,14 @@ func (r *Rotator) snapshotActiveIfChanged() {
 	if live == nil {
 		return
 	}
+	// Never save another account's login into this profile's bundle (the
+	// keychain may already hold the account being switched to).
+	r.mu.Lock()
+	want := r.accounts[name]
+	r.mu.Unlock()
+	if cur := profile.DetectAccount(profile.ToolSpec(r.tool)); want != "" && cur != "" && !strings.EqualFold(cur, want) {
+		return
+	}
 	saved := profile.LoadClaudeToken(r.tool, name)
 	if saved != nil && saved.Access == live.Access && saved.Refresh == live.Refresh {
 		return // nothing changed, don't touch disk
@@ -595,11 +666,18 @@ func (r *Rotator) Rotate(from, reason string) {
 	} else {
 		r.cooldown[from] = time.Now().Add(15 * time.Minute)
 	}
+	if !r.pooledLocked(from) {
+		term.LogWarn("%s: %s is not in the rotation pool — staying on it (amux pool add %s to allow switching)", reason, from, from)
+		return
+	}
 	n := len(r.order)
 	for step := 1; step <= n; step++ {
 		cand := r.order[(r.idx+step)%n]
 		if r.disabled[cand] {
 			continue // am off — skip until am on
+		}
+		if !r.pooledLocked(cand) {
+			continue // not added to the pool by hand
 		}
 		if cd, ok := r.cooldown[cand]; ok && time.Now().Before(cd) {
 			continue

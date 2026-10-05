@@ -25,8 +25,8 @@ import (
 // startup as a failure.
 const KCTimeout = 10 * time.Second
 
-// KCGet retrieves a password item from macOS Keychain.
-func KCGet(service, account string) (string, error) {
+// keychainGet retrieves a password item from macOS Keychain.
+func keychainGet(service, account string) (string, error) {
 	args := []string{"find-generic-password", "-s", service, "-w"}
 	if account != "" {
 		args = append(args, "-a", account)
@@ -45,8 +45,8 @@ func KCGet(service, account string) (string, error) {
 	return strings.TrimRight(out.String(), "\n"), nil
 }
 
-// KCAccount reads the existing item's account attribute, if any.
-func KCAccount(service string) string {
+// keychainAccount reads the existing item's account attribute, if any.
+func keychainAccount(service string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), KCTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "security", "find-generic-password", "-s", service)
@@ -64,10 +64,10 @@ func KCAccount(service string) string {
 	return ""
 }
 
-// KCSet writes or updates a generic-password item in macOS Keychain.
-func KCSet(service, account, secret string) error {
+// keychainSet writes or updates a generic-password item in macOS Keychain.
+func keychainSet(service, account, secret string) error {
 	if account == "" {
-		if a := KCAccount(service); a != "" {
+		if a := keychainAccount(service); a != "" {
 			account = a
 		} else {
 			account = types.CurrentUser()

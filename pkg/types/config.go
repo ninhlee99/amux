@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"testing"
 )
 
 // BaseDir returns the root storage directory (~/.amux or ~/.am, or overridden via
@@ -21,6 +22,10 @@ func BaseDir() string {
 	}
 	if d := os.Getenv("AM_DIR"); d != "" {
 		return d
+	}
+	if testing.Testing() {
+		// Never let a test binary read or write the developer's real ~/.amux.
+		return filepath.Join(os.TempDir(), fmt.Sprintf("amux-test-%d", os.Getpid()))
 	}
 	home, _ := os.UserHomeDir()
 	amuxDir := filepath.Join(home, ".amux")

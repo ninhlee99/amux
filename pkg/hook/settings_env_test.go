@@ -28,7 +28,7 @@ func TestSyncClaudeSettingsEnv_SetThenUnset(t *testing.T) {
 	if got["ANTHROPIC_AUTH_TOKEN"] != "am-proxy" {
 		t.Fatalf("expected AUTH_TOKEN set, got %v", got)
 	}
-	if got["ANTHROPIC_MODEL"] != "claude-sonnet-5" {
+	if got["ANTHROPIC_MODEL"] != "claude-sonnet-5-5" {
 		t.Fatalf("expected ANTHROPIC_MODEL set, got %v", got)
 	}
 	if got["FOO"] != "bar" {

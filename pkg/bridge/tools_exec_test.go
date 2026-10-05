@@ -47,6 +47,7 @@ func TestClaudeBridge_EmitsToolUseForClientExecution(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	body := []byte(`{
 		"model":"claude-sonnet-4-20250514",
@@ -113,6 +114,7 @@ func TestClaudeBridge_AcceptsToolResultsFromClient(t *testing.T) {
 			}
 		}},
 	})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	body := []byte(`{
 		"model":"claude-sonnet-4-20250514",
@@ -161,6 +163,7 @@ func TestCursorCodexBridge_EmitsToolCalls(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	body := `{
 		"model":"gpt-4o",
@@ -210,6 +213,7 @@ func TestCursorBridge_StreamingToolCalls(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 	body := `{"model":"gpt-4o","stream":true,"tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"pwd"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
@@ -229,6 +233,7 @@ func TestCursorBridge_StreamingToolCalls(t *testing.T) {
 func TestClaudeBridge_StreamEmitsStartAndPing(t *testing.T) {
 	adapter := &toolCallAdapter{id: "chatgpt:01", text: "ok"}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 	body := []byte(`{"model":"claude-opus-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -280,6 +285,7 @@ func TestProxyTools_ClientDialectsConvertForLocalExecution(t *testing.T) {
 	t.Run("claude client → pool backend → tool_use", func(t *testing.T) {
 		backend := &recordingToolAdapter{id: "codex:01"}
 		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 		body := []byte(`{
 			"model":"claude-sonnet-4-20250514",
 			"stream":false,
@@ -302,6 +308,7 @@ func TestProxyTools_ClientDialectsConvertForLocalExecution(t *testing.T) {
 	t.Run("codex client → pool backend → function_call", func(t *testing.T) {
 		backend := &recordingToolAdapter{id: "agy:01"}
 		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 		body := []byte(`{
 			"model":"gpt-5-codex",
 			"stream":false,
@@ -325,6 +332,7 @@ func TestProxyTools_ClientDialectsConvertForLocalExecution(t *testing.T) {
 	t.Run("agy client → pool backend → functionCall", func(t *testing.T) {
 		backend := &recordingToolAdapter{id: "codex:01"}
 		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+		pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 		body := []byte(`{
 			"contents":[{"role":"user","parts":[{"text":"status"}]}],
 			"tools":[{"functionDeclarations":[{"name":"run_command","parameters":{"type":"object"}}]}]

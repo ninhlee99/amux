@@ -125,6 +125,7 @@ func TestRotator_ShouldFailoverToProviderPool(t *testing.T) {
 		autoSwitches:   map[string]int{},
 		manualSwitches: map[string]int{},
 		usedThreshold:  DefaultUsedThreshold,
+		inPool:         allPooled,
 	}
 	if !r2.ShouldFailoverToProviderPool() {
 		t.Fatal("all Claude cooling: expect provider-pool failover")
@@ -212,6 +213,7 @@ func TestRotator_SingleAccountReaches100PctThreshold(t *testing.T) {
 // signal preemptively rotates away before ever hitting a hard 429.
 func TestRotator_MultiAccountUsesConfiguredThreshold(t *testing.T) {
 	r := newTestRotator("a", "b")
+	r.inPool = allPooled
 
 	r.Observe(makeUsageResp(http.StatusOK, 0.99))
 	if !isCooling(t, r, "a") {
@@ -219,17 +221,57 @@ func TestRotator_MultiAccountUsesConfiguredThreshold(t *testing.T) {
 	}
 }
 
-// TestRotator_SingleAccountWithPoolAlternativesUsesThreshold verifies that
-// "alternatives" isn't limited to other Claude subscriptions — a non-empty
-// provider pool (Web/API accounts) also counts, so a solo Claude
-// subscription with a living pool still uses the normal threshold instead
-// of riding to 100%.
-func TestRotator_SingleAccountWithPoolAlternativesUsesThreshold(t *testing.T) {
+// TestRotator_SoloSubscriptionRidesToRealLimit: a provider pool of web/API
+// accounts is not a reason to leave the user's subscription early — only
+// another pooled subscription is. The account is used until a real 429.
+func TestRotator_SoloSubscriptionRidesToRealLimit(t *testing.T) {
 	r := newTestRotator("solo")
 	r.SetPoolSize(1)
 
 	r.Observe(makeUsageResp(http.StatusOK, 0.99))
-	if !isCooling(t, r, "solo") {
-		t.Fatal("solo account with a living provider pool must use the configured threshold, not ride to 100%")
+	if isCooling(t, r, "solo") {
+		t.Fatal("solo subscription must not be left before its real limit")
+	}
+}
+
+func allPooled(string, string) bool { return true }
+
+// Accounts outside the pool are never switched to, nor away from.
+func TestRotator_NeverSwitchesOutsidePool(t *testing.T) {
+	r := newTestRotator("a", "b")
+	r.inPool = func(name, _ string) bool { return name == "a" }
+
+	r.Observe(makeUsageResp(http.StatusTooManyRequests, 1.0))
+	if got := r.Active(); got != "a" {
+		t.Fatalf("rotated onto %q, which was never added to the pool", got)
+	}
+	if r.EnsureUsableActive() {
+		t.Fatal("EnsureUsableActive must not pick an account outside the pool")
+	}
+	if r.Active() != "a" {
+		t.Fatalf("active changed to %q", r.Active())
+	}
+
+	// Active account outside the pool: stays put even when a pooled one exists.
+	r2 := newTestRotator("x", "y")
+	r2.inPool = func(name, _ string) bool { return name == "y" }
+	r2.Observe(makeUsageResp(http.StatusTooManyRequests, 1.0))
+	if r2.Active() != "x" {
+		t.Fatalf("left the user's own (unpooled) account for %q", r2.Active())
+	}
+	if !r2.ShouldFailoverToProviderPool() {
+		t.Fatal("limited unpooled account: gateway should use the provider pool, not another subscription")
+	}
+}
+
+// `amux account threshold <id> <pct>` is what the rotator hands over at.
+func TestRotator_UsesPerAccountThreshold(t *testing.T) {
+	r := newTestRotator("a", "b")
+	r.inPool = allPooled
+	r.thresholdFor = func(name, _ string) (float64, bool) { return 80, name == "a" }
+
+	r.Observe(makeUsageResp(http.StatusOK, 0.85))
+	if !isCooling(t, r, "a") {
+		t.Fatal("85% used must hand over at a's 80% threshold")
 	}
 }

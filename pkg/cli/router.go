@@ -2,11 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
+	"sort"
 	"strings"
 
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/ui"
 )
+
+// amuxVersion is reported by `amux version` and the MCP serverInfo.
+const amuxVersion = "1.5.0"
 
 // CommandHandler represents a function handling a CLI subcommand execution.
 type CommandHandler func(args []string)
@@ -129,6 +134,18 @@ func (r *Router) registerGatewayRoutes() {
 		HelpHandler: helpUnhook,
 	})
 
+	r.Register("off", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdOff,
+		HelpHandler: helpOff,
+	})
+
+	r.Register("pool", CommandRoute{
+		Domain:      "identity",
+		Handler:     CmdPool,
+		HelpHandler: helpPool,
+	})
+
 	r.Register("env", CommandRoute{
 		Domain:      domain,
 		Handler:     CmdEnv,
@@ -138,6 +155,12 @@ func (r *Router) registerGatewayRoutes() {
 	r.Register("gateway", CommandRoute{
 		Domain:  domain,
 		Handler: CmdGateway,
+	})
+
+	r.Register("mcp", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdMCP,
+		HelpHandler: helpMCP,
 	})
 }
 
@@ -242,7 +265,7 @@ func (r *Router) registerDiagnosticRoutes() {
 	})
 
 	versionHandler := func(_ []string) {
-		fmt.Println("amux version 1.4.2 (darwin/arm64 & linux/amd64)")
+		fmt.Printf("amux version %s (%s/%s)\n", amuxVersion, runtime.GOOS, runtime.GOARCH)
 		fmt.Println("AI-Native Development Environment & Multi-Provider Proxy Multiplexer")
 	}
 	r.Register("version", CommandRoute{Domain: domain, Handler: versionHandler})
@@ -294,17 +317,33 @@ func (r *Router) Dispatch(rawArgs []string) {
 }
 
 // findClosestCommand calculates Levenshtein distance against registered commands.
+// Routes live in a map, so candidates are visited in sorted order and ties are
+// broken deterministically (shortest prefix match, then alphabetical).
 func (r *Router) findClosestCommand(target string) string {
+	names := make([]string, 0, len(r.routes))
+	for name := range r.routes {
+		if !strings.HasPrefix(name, "-") {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	// Exact prefix match prioritization: the shortest completion wins.
+	if len(target) >= 3 {
+		best := ""
+		for _, name := range names {
+			if strings.HasPrefix(name, target) && (best == "" || len(name) < len(best)) {
+				best = name
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+
 	bestDist := 999
 	bestCmd := ""
-	for name := range r.routes {
-		if strings.HasPrefix(name, "-") {
-			continue
-		}
-		// Exact prefix match prioritization
-		if len(target) >= 3 && strings.HasPrefix(name, target) {
-			return name
-		}
+	for _, name := range names {
 		dist := levenshteinDistance(target, name)
 		if dist < bestDist && dist <= 3 {
 			bestDist = dist

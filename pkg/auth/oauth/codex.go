@@ -172,7 +172,7 @@ func LoginCodex(ctx context.Context, customName string) (string, error) {
 		Priority:     5,
 		Account:      email,
 		Plan:         plan,
-		Model:        "gpt-4o",
+		Model:        "", // codex_cli default (provider.codexDefaultModel)
 		RefreshToken: tokenResp.RefreshToken,
 	}, slot.RenameFrom)
 	if err != nil {
@@ -293,7 +293,7 @@ func syncExistingCodexAuth(customName string) (string, error) {
 		Priority:     5,
 		Account:      email,
 		Plan:         plan,
-		Model:        "gpt-4o",
+		Model:        "", // codex_cli default (provider.codexDefaultModel)
 		RefreshToken: doc.Tokens.RefreshToken,
 	}, slot.RenameFrom)
 	if err != nil {

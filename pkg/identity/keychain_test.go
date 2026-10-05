@@ -25,6 +25,7 @@ func TestKeychainRotation_MultiAccountThreshold(t *testing.T) {
 				ID:           "claude-sub-1",
 				Provider:     "anthropic",
 				Tier:         identity.TierSubscription,
+				AutoRotate:   identity.Pooled(),
 				AuthType:     string(identity.AuthOAuth),
 				Credentials:  map[string]string{"access_token": "token-sub-1"},
 				UsagePercent: 96.0, // Over 95% threshold
@@ -34,6 +35,7 @@ func TestKeychainRotation_MultiAccountThreshold(t *testing.T) {
 				ID:           "claude-sub-2",
 				Provider:     "anthropic",
 				Tier:         identity.TierSubscription,
+				AutoRotate:   identity.Pooled(),
 				AuthType:     string(identity.AuthOAuth),
 				Credentials:  map[string]string{"access_token": "token-sub-2"},
 				UsagePercent: 20.0, // Healthy alternative

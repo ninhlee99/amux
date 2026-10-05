@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"amux-accounts/pkg/auth"
-	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 )
@@ -216,22 +215,5 @@ func RunDaemon(serverFunc func() error) error {
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 	defer os.Remove(PIDFilePath())
 
-	// Start auto-hook monitor in background
-	go StartAutoHookMonitor(30 * time.Second)
-
 	return serverFunc()
-}
-
-// StartAutoHookMonitor runs a periodic check to conditionally inject or detach hooks.
-func StartAutoHookMonitor(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		cfg, err := identity.LoadConfig("")
-		if err != nil {
-			continue
-		}
-		_ = CheckAndConditionalHook(cfg.Identities, cfg.ThresholdPct)
-	}
 }

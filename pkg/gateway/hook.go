@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"amux-accounts/pkg/env"
-	"amux-accounts/pkg/identity"
 )
 
 const GatewayDefaultURL = "http://127.0.0.1:8787"
@@ -166,6 +165,11 @@ func HookClaude(baseURL string) error {
 		envMap = make(map[string]any)
 	}
 	envMap["ANTHROPIC_BASE_URL"] = baseURL
+	// Placeholder credential: the gateway injects the real account token, so
+	// Claude Code needs no login of its own and never reads the keychain.
+	if cur, _ := envMap["ANTHROPIC_AUTH_TOKEN"].(string); cur == "" {
+		envMap["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+	}
 	m["env"] = envMap
 
 	b, err := json.MarshalIndent(m, "", "  ")
@@ -198,6 +202,9 @@ func UnhookClaude() error {
 		return nil
 	}
 	delete(envMap, "ANTHROPIC_BASE_URL")
+	if tok, _ := envMap["ANTHROPIC_AUTH_TOKEN"].(string); tok == "am-proxy" || tok == "amux-proxy" {
+		delete(envMap, "ANTHROPIC_AUTH_TOKEN")
+	}
 	if len(envMap) == 0 {
 		delete(m, "env")
 	} else {
@@ -347,9 +354,8 @@ func HookCodex(baseURL string) error {
 		return fmt.Errorf("write %s: %w (rolled back %s)", tomlPath, err, p)
 	}
 	tmpTOML = ""
-
-	// 3. Update environment for session / launchctl
-	setLaunchEnv("OPENAI_BASE_URL", baseURL)
+	// No launchctl OPENAI_BASE_URL: that would reroute every app using the
+	// OpenAI SDK, not just Codex. config.toml is what Codex reads.
 	return nil
 }
 
@@ -365,12 +371,19 @@ func UnhookCodex() error {
 			}
 			if val, exists := m["openai_base_url"].(string); exists && isGatewayURL(val) {
 				delete(m, "openai_base_url")
-				data, err := json.MarshalIndent(m, "", "  ")
-				if err != nil {
-					return err
-				}
-				if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
-					return err
+				if len(m) == 0 {
+					// Codex itself does not use config.json; amux created it.
+					if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+						return err
+					}
+				} else {
+					data, err := json.MarshalIndent(m, "", "  ")
+					if err != nil {
+						return err
+					}
+					if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -391,6 +404,13 @@ func UnhookCodex() error {
 				if len(parts) == 2 && isGatewayURL(strings.Trim(strings.TrimSpace(parts[1]), `"'`)) {
 					rootSection = reCodexBaseURL.ReplaceAllString(rootSection, "")
 					rootSection = strings.TrimLeft(rootSection, "\r\n")
+					// HookCodex separated its line from the first table with a
+					// blank line; leave exactly one, as before the hook.
+					if body := strings.TrimRight(rootSection, "\r\n"); body != "" {
+						rootSection = body + "\n\n"
+					} else {
+						rootSection = ""
+					}
 					tomlStr = rootSection + rest
 					if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
 						return err
@@ -403,7 +423,12 @@ func UnhookCodex() error {
 				if len(parts) == 2 && isGatewayURL(strings.Trim(strings.TrimSpace(parts[1]), `"'`)) {
 					tomlStr = reCodexBaseURL.ReplaceAllString(tomlStr, "")
 					tomlStr = strings.TrimLeft(tomlStr, "\r\n")
-					if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
+					if strings.TrimSpace(tomlStr) == "" {
+						// Only amux's line was there: amux created the file.
+						if err := os.Remove(tomlPath); err != nil && !os.IsNotExist(err) {
+							return err
+						}
+					} else if err := atomicWriteFile(tomlPath, []byte(tomlStr), 0o600); err != nil {
 						return err
 					}
 				}
@@ -585,7 +610,11 @@ func syncAgyShellRC(baseURL string, install bool) error {
 		if err != nil && !os.IsNotExist(err) {
 			continue
 		}
+		if err != nil && !install {
+			continue // never create an rc file just to remove nothing from it
+		}
 		content := string(b)
+		orig := content
 		startIdx := strings.Index(content, agyShellBlockStart)
 		endIdx := strings.Index(content, agyShellBlockEnd)
 		if startIdx != -1 && endIdx != -1 && endIdx >= startIdx {
@@ -602,10 +631,25 @@ func syncAgyShellRC(baseURL string, install bool) error {
 			}
 			content += agyShellRCBlock(baseURL)
 		}
-
-		_ = atomicWriteFile(rc, []byte(content), 0o644)
+		if content == orig {
+			continue
+		}
+		_ = writeUserFile(rc, []byte(content))
 	}
 	return nil
+}
+
+// writeUserFile rewrites a user-owned dotfile in place: it follows symlinks
+// (dotfile managers) instead of replacing them, and keeps the file mode.
+func writeUserFile(path string, data []byte) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	perm := os.FileMode(0o644)
+	if st, err := os.Stat(path); err == nil {
+		perm = st.Mode().Perm()
+	}
+	return atomicWriteFile(path, data, perm)
 }
 
 // HookAgy points Antigravity CLI (agy) at the gateway.
@@ -627,6 +671,9 @@ func HookAgy(baseURL string) error {
 	}
 	if mp, ok := m["modelProvider"].(string); !ok || mp == "" {
 		m["modelProvider"] = "gemini"
+		setHookState("agy_model_provider", true)
+	} else if _, known := hookState("agy_model_provider"); !known {
+		setHookState("agy_model_provider", false) // the user's own value
 	}
 
 	envMap, _ := m["env"].(map[string]any)
@@ -665,7 +712,8 @@ func HookAgy(baseURL string) error {
 	return nil
 }
 
-// UnhookAgy restores native execution for Antigravity CLI.
+// UnhookAgy restores native execution for Antigravity CLI. It removes only
+// what HookAgy added: modelProvider is dropped only when amux set it.
 func UnhookAgy() error {
 	p := AGYSettingsPath()
 	if b, err := os.ReadFile(p); err == nil {
@@ -675,36 +723,39 @@ func UnhookAgy() error {
 				return fmt.Errorf("unmarshal %s: %w", p, err)
 			}
 		}
+		changed := false
 		if envMap, ok := m["env"].(map[string]any); ok {
 			if val, exists := envMap["GOOGLE_GEMINI_BASE_URL"].(string); exists && isGatewayURL(val) {
 				delete(envMap, "GOOGLE_GEMINI_BASE_URL")
 				if k, ok := envMap["GEMINI_API_KEY"].(string); ok && isAmuxOwnedEnv("GEMINI_API_KEY", k) {
 					delete(envMap, "GEMINI_API_KEY")
 				}
-				if mp, ok := m["modelProvider"].(string); ok && mp == "gemini" {
+				// Older amux versions kept no record: they always set it.
+				setByAmux, known := hookState("agy_model_provider")
+				if mp, ok := m["modelProvider"].(string); ok && mp == "gemini" && (setByAmux || !known) {
 					delete(m, "modelProvider")
 				}
-			}
-			if len(envMap) == 0 {
-				delete(m, "env")
-			} else {
-				m["env"] = envMap
-			}
-		} else {
-			if mp, ok := m["modelProvider"].(string); ok && mp == "gemini" {
-				delete(m, "modelProvider")
+				if len(envMap) == 0 {
+					delete(m, "env")
+				} else {
+					m["env"] = envMap
+				}
+				changed = true
 			}
 		}
-		data, err := json.MarshalIndent(m, "", "  ")
-		if err != nil {
-			return err
-		}
-		if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
-			return err
+		if changed {
+			data, err := json.MarshalIndent(m, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := atomicWriteFile(p, append(data, '\n'), 0o600); err != nil {
+				return err
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	clearHookState("agy_model_provider")
 	if isGatewayURL(getLaunchEnv("GOOGLE_GEMINI_BASE_URL")) {
 		unsetLaunchEnv("GOOGLE_GEMINI_BASE_URL")
 		if isAmuxOwnedEnv("GEMINI_API_KEY", getLaunchEnv("GEMINI_API_KEY")) {
@@ -712,9 +763,11 @@ func UnhookAgy() error {
 		}
 	}
 	mEnv := env.LoadEnvVars()
-	delete(mEnv, "GOOGLE_GEMINI_BASE_URL")
-	delete(mEnv, "GEMINI_API_KEY")
-	_ = env.SaveEnvVars(mEnv)
+	if _, ok := mEnv["GOOGLE_GEMINI_BASE_URL"]; ok {
+		delete(mEnv, "GOOGLE_GEMINI_BASE_URL")
+		delete(mEnv, "GEMINI_API_KEY")
+		_ = env.SaveEnvVars(mEnv)
+	}
 	_ = syncAgyShellRC("", false)
 	return nil
 }
@@ -785,68 +838,4 @@ func Unhook(target HookTarget) error {
 	default:
 		return fmt.Errorf("unknown unhook target: %s", target)
 	}
-}
-
-// CheckAndConditionalHook evaluates identities and conditionally injects or detaches gateway hooks:
-// 1. Conditional Gateway Injection: ONLY when ALL subscription accounts of a provider reach threshold,
-//    inject the gateway hook into the IDE's settings.
-// 2. Auto-Detachment: As soon as any subscription account resets quota (usage_percent < threshold),
-//    AMUX automatically detaches the gateway hook from the IDE and restores direct native execution.
-func CheckAndConditionalHook(identities []identity.Identity, threshold float64) error {
-	providers := []string{"anthropic", "openai", "gemini"}
-	var errs []error
-
-	for _, prov := range providers {
-		canon := identity.CanonicalProvider(prov)
-		exhausted := identity.AllSubscriptionsExhausted(canon, identities, threshold)
-		available, hasAvail := identity.HasAvailableSubscription(canon, identities, threshold)
-
-		switch canon {
-		case "anthropic":
-			hooked, _ := IsClaudeHooked()
-			if exhausted && !hooked {
-				// All subscriptions exhausted -> Inject gateway hook!
-				if err := HookClaude(""); err != nil {
-					errs = append(errs, fmt.Errorf("hook claude: %w", err))
-				}
-			} else if hasAvail && hooked {
-				// Quota reset or subscription available -> Auto-detach hook and restore direct Keychain!
-				if err := UnhookClaude(); err != nil {
-					errs = append(errs, fmt.Errorf("unhook claude: %w", err))
-				}
-				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					errs = append(errs, fmt.Errorf("sync claude keychain: %w", err))
-				}
-			}
-		case "openai":
-			hooked, _ := IsCodexHooked()
-			if exhausted && !hooked {
-				if err := HookCodex(""); err != nil {
-					errs = append(errs, fmt.Errorf("hook codex: %w", err))
-				}
-			} else if hasAvail && hooked {
-				if err := UnhookCodex(); err != nil {
-					errs = append(errs, fmt.Errorf("unhook codex: %w", err))
-				}
-				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					errs = append(errs, fmt.Errorf("sync codex keychain: %w", err))
-				}
-			}
-		case "gemini":
-			hooked, _ := IsAgyHooked()
-			if exhausted && !hooked {
-				if err := HookAgy(""); err != nil {
-					errs = append(errs, fmt.Errorf("hook agy: %w", err))
-				}
-			} else if hasAvail && hooked {
-				if err := UnhookAgy(); err != nil {
-					errs = append(errs, fmt.Errorf("unhook agy: %w", err))
-				}
-				if err := identity.SyncIdentityToNativeKeychain(available); err != nil {
-					errs = append(errs, fmt.Errorf("sync agy keychain: %w", err))
-				}
-			}
-		}
-	}
-	return errors.Join(errs...)
 }

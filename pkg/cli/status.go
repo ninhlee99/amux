@@ -8,81 +8,39 @@ import (
 	"amux-accounts/pkg/identity"
 )
 
-// CmdStatus displays a real-time dashboard of identities, quotas, and gateway state.
+// CmdStatus prints the gateway state, which tools are hooked, and every account.
 func CmdStatus(args []string) {
-	fmt.Println("====================== AMUX RUNTIME DASHBOARD ======================")
+	gw := gateway.GetStatus()
+	if gw.Running {
+		fmt.Printf("Gateway:  running on %s (pid %d)\n", gw.URL, gw.PID)
+	} else {
+		fmt.Println("Gateway:  stopped")
+	}
 
-	// 1. Gateway Status
-	gwStatus := gateway.GetStatus()
-	gwState := "STOPPED (Zero-Touch Native Mode)"
-	if gwStatus.Running {
-		gwState = fmt.Sprintf("RUNNING on %s (PID: %d, Sessions: %d)", gwStatus.URL, gwStatus.PID, gwStatus.Sessions)
-	}
-	fmt.Printf("Gateway Daemon: %s\n", gwState)
-
-	hooks := []string{}
-	if gwStatus.ClaudeHooked {
-		hooks = append(hooks, "Claude Code")
-	}
-	if gwStatus.CursorHooked {
-		hooks = append(hooks, "Cursor")
-	}
-	if gwStatus.CodexHooked {
-		hooks = append(hooks, "Codex")
-	}
-	if gwStatus.AgyHooked {
-		hooks = append(hooks, "Antigravity")
+	var hooks []string
+	for _, h := range []struct {
+		name   string
+		hooked bool
+	}{{"Claude Code", gw.ClaudeHooked}, {"Cursor", gw.CursorHooked}, {"Codex", gw.CodexHooked}, {"Antigravity", gw.AgyHooked}} {
+		if h.hooked {
+			hooks = append(hooks, h.name)
+		}
 	}
 	if len(hooks) == 0 {
-		fmt.Println("Active IDE Hooks: None (Native Direct Keychain Mode)")
+		fmt.Println("Hooked:   none — every tool talks to its own provider directly")
 	} else {
-		fmt.Printf("Active IDE Hooks: %s -> Proxy :8787\n", strings.Join(hooks, ", "))
+		fmt.Printf("Hooked:   %s → gateway\n", strings.Join(hooks, ", "))
+		if !gw.Running {
+			fmt.Println("  ⚠ These tools point at a gateway that is not running. Run `amux start`, or `amux off` to go back to native.")
+		}
 	}
 
-	// 2. Identities & Quotas
-	fmt.Println("\n--------------------------- IDENTITIES -----------------------------")
+	fmt.Println()
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
-		fmt.Println("No identities configured yet. Run 'amux id add' to add an identity.")
-		fmt.Println("====================================================================")
+		fmt.Println("No accounts yet. Add one with: amux login")
 		return
 	}
-
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "MODEL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "------------------", "--------------", "--------", "--------", "------------", "------------")
-
-	for _, id := range cfg.Identities {
-		activeStr := "NO"
-		if id.Active {
-			activeStr = "YES *"
-		}
-		if !identity.IsEnabled(id) {
-			activeStr = "DISABLED"
-		}
-		autoStr := "ON"
-		if !id.CanAutoRotate() {
-			autoStr = "OFF"
-		}
-		if !identity.IsEnabled(id) {
-			autoStr = "-"
-		}
-		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		resetStr := id.FormatResetTime()
-		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
-		threshStr := fmt.Sprintf("%.1f%%", thresh)
-
-		fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n",
-			id.ID, id.Email(), id.ModelName(), threshStr, usageStr, activeStr, autoStr, resetStr)
-	}
-
-	fmt.Println("--------------------------------------------------------------------")
-	providers := []string{"anthropic", "gemini", "openai"}
-	var threshParts []string
-	for _, p := range providers {
-		eff := identity.GetEffectiveThreshold(p, cfg.Identities, cfg.ThresholdPct)
-		threshParts = append(threshParts, fmt.Sprintf("%s: %.1f%%", p, eff))
-	}
-	fmt.Printf("Failover Rule: Multi-Account Threshold: %.1f%% | Effective: [%s]\n",
-		cfg.ThresholdPct, strings.Join(threshParts, " | "))
-	fmt.Println("====================================================================")
+	printIdentityTable(cfg)
+	fmt.Println("\nPOOL=yes: amux may switch to it automatically. Subscriptions join only via `amux pool add <id>`.")
 }

@@ -432,7 +432,7 @@ func responsesBodyToChatRequest(body []byte) (*types.ChatRequest, error) {
 
 	model := wrap.Model
 	if model == "" {
-		model = "gpt-5-codex"
+		model = "gpt-6.1-sol"
 	}
 
 	req := &types.ChatRequest{

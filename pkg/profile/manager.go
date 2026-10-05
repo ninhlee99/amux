@@ -372,12 +372,54 @@ func ApplyEntry(e types.ProfileEntry) error {
 		if err := os.MkdirAll(filepath.Dir(e.Artifact.Path), 0o755); err != nil {
 			return fmt.Errorf("mkdir: %w", err)
 		}
+		if keys := accountOnlyKeys(e.Artifact.Path); keys != nil {
+			if merged, ok := mergeAccountKeys(e.Artifact.Path, e.Data, keys); ok {
+				return WriteFileAtomic(e.Artifact.Path, merged, 0o600)
+			}
+		}
 		return os.WriteFile(e.Artifact.Path, e.Data, 0o600)
 	case "keychain":
 		return auth.KCSet(e.Artifact.Service, e.Artifact.Account, string(e.Data))
 	default:
 		return fmt.Errorf("unknown kind: %s", e.Artifact.Kind)
 	}
+}
+
+// accountOnlyKeys lists the top-level keys of a shared config file that
+// belong to the logged-in account. Switching accounts replaces only those
+// keys, so everything else in the file (MCP servers, projects, settings the
+// user changed since the snapshot) stays exactly as it is now.
+func accountOnlyKeys(path string) []string {
+	if filepath.Base(path) == ".claude.json" {
+		return []string{"oauthAccount"}
+	}
+	return nil
+}
+
+// mergeAccountKeys copies keys from snapshot into the current file at path.
+// ok is false when either side is not a JSON object (caller falls back to
+// restoring the snapshot verbatim).
+func mergeAccountKeys(path string, snapshot []byte, keys []string) ([]byte, bool) {
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var live, snap map[string]json.RawMessage
+	if json.Unmarshal(cur, &live) != nil || live == nil || json.Unmarshal(snapshot, &snap) != nil || snap == nil {
+		return nil, false
+	}
+	for _, k := range keys {
+		if v, ok := snap[k]; ok {
+			live[k] = v
+		} else {
+			delete(live, k)
+		}
+	}
+	out, err := json.MarshalIndent(live, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return append(out, '\n'), true
 }
 
 func LoadProfileEntries(tool, name string) []types.ProfileEntry {

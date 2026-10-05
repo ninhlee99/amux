@@ -154,7 +154,9 @@ func injectBtwMessages(req *types.ChatRequest) {
 
 // explicitProviderHeaders reads optional routing overrides:
 //
-//	X-Provider — pool account id (works even when removed from rotate pool)
+//	X-Provider — pool account id (works even when removed from rotate pool),
+//	             or an account family such as "gemini:web" / "chatgpt",
+//	             in which case amux picks and fails over among its accounts
 //	X-Model    — override request model for this call
 //
 // Empty provider → caller keeps default Send() / current behavior.
@@ -186,7 +188,7 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 	injectBtwMessages(req)
 	EnrichRequestMetadata(r, req)
 	if id := explicitProviderHeaders(r, req); id != "" {
-		return pool.SendNamed(r.Context(), id, req)
+		return pool.SendProvider(r.Context(), id, req)
 	}
 	return pool.Send(r.Context(), req)
 }

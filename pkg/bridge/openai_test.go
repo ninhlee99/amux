@@ -58,6 +58,7 @@ func TestHandleChatCompletions_Streaming(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	reqBody := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -91,6 +92,7 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	reqBody := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
@@ -124,7 +126,7 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 // change which one answers first.
 func TestHandleChatCompletions_UAIgnoredForRouting(t *testing.T) {
 	newPool := func() *router.AccountPoolRouter {
-		return router.NewAccountPoolRouter([]types.ProviderAdapter{
+		pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
 			&mockStreamAdapter{
 				id:     "claude:ua:01",
 				group:  "claude_sub",
@@ -136,6 +138,8 @@ func TestHandleChatCompletions_UAIgnoredForRouting(t *testing.T) {
 				chunks: []types.StreamChunk{{ID: "codex:ua:01", Content: "response from codex:ua:01", Done: true}},
 			},
 		})
+		pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
+		return pool
 	}
 
 	reqBody := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
@@ -185,6 +189,7 @@ func TestHandleChatCompletions_StreamErrorEndsWithDone(t *testing.T) {
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
 		&failSendAdapter{id: "fail:01", err: errors.New("upstream down")},
 	})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(
 		`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
 	))

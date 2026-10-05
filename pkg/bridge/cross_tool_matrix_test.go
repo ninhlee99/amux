@@ -70,6 +70,7 @@ func TestCrossMatrix_ClaudeClient_CodexBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// Claude client sends /v1/messages
 	claudeBody := map[string]any{
@@ -200,6 +201,7 @@ func TestCrossMatrix_CodexClient_ClaudeBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// Codex client sends /v1/responses
 	codexBody := map[string]any{
@@ -308,6 +310,7 @@ func TestCrossMatrix_AGYClient_ClaudeBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY client sends /v1beta/models/gemini-2.5-pro:streamGenerateContent
 	agyBody := map[string]any{
@@ -387,6 +390,7 @@ func TestCrossMatrix_AGYClient_CodexBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY client sends /v1beta/models/gemini-2.5-pro:streamGenerateContent
 	agyBody := map[string]any{
@@ -517,6 +521,7 @@ func TestCrossMatrix_CodexClient_AGYBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	codexBody := map[string]any{
 		"model":  "gpt-5-codex",
@@ -588,6 +593,7 @@ func TestCrossMatrix_ClaudeClient_AGYBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	claudeBody := map[string]any{
 		"model":  "claude-3-7-sonnet-20250219",
@@ -645,6 +651,7 @@ func TestCrossMatrix_CodexClient_NonStringOutput(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	codexBody := map[string]any{
 		"model":  "gpt-5-codex",
@@ -710,6 +717,7 @@ func TestCrossMatrix_WebBackend_AGYClient_ToolCoercion(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY client sends /v1beta request with AGY's replace_file_content tool
 	agyBody := map[string]any{
@@ -821,6 +829,7 @@ func TestCrossMatrix_WebBackend_ClaudeClient_ToolAndMCP(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	claudeBody := map[string]any{
 		"model":  "claude-3-7-sonnet-20250219",
@@ -928,6 +937,7 @@ func TestCrossMatrix_WebBackend_CodexClient_ToolCoercion(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	codexBody := map[string]any{
 		"model":  "gpt-5-codex",
@@ -1015,6 +1025,7 @@ func TestCrossMatrix_Subagent_ClaudeClient_AGYBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// Claude Client sends /v1/messages with "Agent" tool
 	claudeBody := map[string]any{
@@ -1091,6 +1102,7 @@ func TestCrossMatrix_Subagent_AGYClient_ClaudeBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY Client calls /v1beta/models/gemini-2.5-pro:generateContent with invoke_subagent
 	agyBody := map[string]any{
@@ -1187,6 +1199,7 @@ func TestCrossMatrix_MCP_ClaudeClient_AGYBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// Claude Client sends mcp__filesystem__read_file
 	claudeBody := map[string]any{
@@ -1259,6 +1272,7 @@ func TestCrossMatrix_MCP_AGYClient_ClaudeBackend(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY Client calls Gemini endpoint with call_mcp_tool
 	agyBody := map[string]any{
@@ -1437,6 +1451,7 @@ func TestCrossMatrix_TypeCoercion_StringNumbersAndBooleans(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY Client sends replace_file_content expecting typed integers and booleans
 	agyBody := map[string]any{
@@ -1591,6 +1606,7 @@ func TestCrossMatrix_DynamicSchemaAndMerchantContext_ClaudeClient_CodexBackend(t
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	merchantPrompt := "Please check inventory.\n" +
 		"<merchant_data>{\"store\":\"gid://shopify/Shop/123\",\"note\":\"line1\\nline2 <b>bold</b>\"}</merchant_data>\n" +
@@ -1755,6 +1771,7 @@ func TestCrossMatrix_WebBackend_AGYClient_RunCommandCoercion(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	// AGY client with strict run_command declaration
 	agyBody := map[string]any{
@@ -1875,6 +1892,7 @@ func TestCrossMatrix_NativeStream_AGYClient_BashToRunCommand(t *testing.T) {
 		},
 	}
 	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true }) // test backends stand for accounts in the pool
 
 	agyBody := map[string]any{
 		"contents": []map[string]any{

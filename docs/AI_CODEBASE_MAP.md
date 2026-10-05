@@ -90,6 +90,13 @@ flowchart TB
 | Dừng gateway (`amux stop`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `cmdGatewayStop`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
 | Endpoint `/_am/status` | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus` | `server_test.go` |
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
+| MCP server / tool `amux_*`, `muse_*` | `mcp/server.go`, `mcp/tools.go`, `mcp/backend.go`, `cli/mcp.go` | `Serve`, `RegisterAmuxTools`, `RegisterMuseTools`, `PoolMemberFilter` | `pkg/mcp/server_test.go` |
+| `amux mcp install` cho IDE | `mcp/install.go` | `Targets`, `Install`, `setCodexBlock`, `ErrHasComments` | `pkg/mcp/install_test.go` |
+| Meta Muse (driver CDP, provider) | `muse/driver.go`, `muse/media.go`, `provider/muse_web.go`, `browser/cdp_page.go` | `Driver.Chat`, `Shared`, `MuseWebAdapter`, `OpenSession` | `pkg/muse/driver_test.go`, `pkg/provider/muse_web_test.go`, `pkg/browser/cdp_page_test.go` |
+| Pool xoay tự động (sub chỉ vào pool khi `amux pool add`) | `cli/pool.go`, `identity/identity.go`, `identity/store.go`, `router/pool.go`, `proxy/rotator.go` | `CanAutoRotate`, `PoolMemberFilter`, `ProfileInPool`, `SetSubscriptionPoolFilter`, `pooledLocked` | `send_provider_test.go`, `rotator_test.go`, `identity_test.go` |
+| `amux switch` không login lại / gỡ sạch (`off`, `unhook`, `uninstall`, `mcp uninstall`) | `cli/id.go`, `proxy/client.go` (`SwitchProfile`), `profile/manager.go` (`accountOnlyKeys`), `gateway/hook.go`, `gateway/hookstate.go`, `cli/system.go`, `mcp/install.go` | `cmdIDSelect`, `CmdOff`, `cmdUninstall`, `UnhookAgy`, `Uninstall` | `unhook_clean_test.go`, `account_merge_test.go`, `install_test.go` |
+| Secret store (Keychain ⇄ vault file) | `auth/secretstore.go`, `auth/crypto.go`, `cli/config.go` | `SecretStore`, `KCGet`, `SetSecretStore` | `pkg/auth/secretstore_test.go` |
+| Model id mặc định / tham số Claude theo thế hệ | `tools/claude_models.go`, `tools/claude.go` | `DefaultClaudeModel`, `ClaudeModelGeneration` | `pkg/tools/claude_models_test.go`, `pkg/tools/model_ids_test.go` |
 
 Chi tiết machine-readable: [`docs/ai-locate.yaml`](./ai-locate.yaml).
 
@@ -138,6 +145,8 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 | `pkg/guard` | Rate limit pacing, affinity, header sanitizer, quarantine |
 | `pkg/identity` | Quản lý danh tính phẳng, keychain macOS, migration |
 | `pkg/types` | Struct dùng chung — **không** import pkg khác |
+| `pkg/mcp` | MCP stdio server + tool + installer cho MCP host |
+| `pkg/muse` | Driver Meta Muse qua CDP (chat, file, media) |
 
 ---
 
@@ -149,6 +158,10 @@ Pin provider: header `X-Provider: <id>` → `router.SendNamed`.
 4. **Claude IDE + pool** → không dùng `claude_sub` làm proxy backend (`IsClaudeSubscriptionGroup`).
 5. **Chỉ dùng Web accounts** cho proxy routing khi có yêu cầu không dùng Subscription account.
 6. **`GOOGLE_API_KEY=am-proxy`** không export global trong `amux env` (tránh xung đột gcloud/Maps).
+7. **`amux mcp` serve**: stdout chỉ dành cho JSON-RPC; `amux_ask` không tự chọn subscription.
+8. **Secret**: mọi truy cập Keychain đi qua `auth.KCGet/KCSet/KCAccount`; chế độ `file` không được gọi `security`/keyring.
+9. **Model id**: chỉ dùng id đã xác minh trên trang model chính thức; `model_ids_test.go` chặn id đã khai tử.
+10. **Spec**: hành vi được đặc tả ở `openspec/specs/`; thay đổi lớn đi qua `openspec/changes/`.
 
 ---
 

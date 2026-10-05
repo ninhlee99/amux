@@ -46,7 +46,7 @@ func CmdAccount(args []string) {
 	case "threshold":
 		cmdIDThreshold(subArgs)
 	default:
-		die("unknown account command: %s (valid: list, switch, add, remove, logout, on, off, auto, threshold, health)", sub)
+		die("unknown account command: %s (valid: list, switch, add, remove, on, off, threshold, health)", sub)
 	}
 }
 
@@ -56,27 +56,24 @@ func CmdID(args []string) {
 }
 
 func cmdAccountHelp() {
-	fmt.Print(`Usage: amux account <subcommand> [arguments]
+	fmt.Print(`Usage: amux account <command> [id]
 
-Manage accounts, identities, and session credentials across AI providers.
+Commands:
+  list                  Show all accounts (default)
+  switch <id>           Make <id> the active account (no re-login)
+  add [provider]        Log in a new account (same as: amux login)
+  remove <id>           Delete an account and its saved login
+  off <id>              Turn an account off — never used until turned on
+  on <id>               Turn it back on
+  threshold [id] [pct]  Usage % at which a pooled account hands over (default 95)
+  health                Check every saved login is still valid
 
-Subcommands:
-  list, ls                   List all accounts, emails, tiers, active status, and quotas
-  switch, select <id>        Switch active account (updates native Keychain & IDE configs)
-  login, add [provider]      Add / authenticate a new account (claude, agy, gemini, codex, api)
-  logout, remove <id>        Remove an account and delete its profile bundle
-  on, enable <id>            Re-enable a previously disabled account
-  off, disable <id>          Temporarily disable an account from failover rotation
-  auto <id> [on|off]         Toggle automatic rotation eligibility for an account
-  threshold [id] [val]       Get or set failover threshold percentage
-  health                     Probe token validity and quota health across all accounts
+Pool membership (automatic switching) is managed with: amux pool
 
 Examples:
   amux account list
-  amux account switch claude:code:01
-  amux account login claude
-  amux account auto antigravity:01 on
-  amux account threshold 90.0
+  amux account switch claude:code:02
+  amux account off codex:01
 `)
 }
 
@@ -84,43 +81,17 @@ func cmdIDList() {
 	_, _ = identity.MigrateLegacyAccounts("", "")
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
-		fmt.Println("No identities configured. Run 'amux id add [provider]' to register an identity.")
+		fmt.Println("No accounts yet. Add one with: amux login")
 		return
 	}
 
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "ID", "EMAIL", "MODEL", "THRESHOLD", "USAGE", "ACTIVE", "AUTO-SWITCH", "RESETS IN")
-	fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n", "--------------------", "--------------------------", "------------------", "--------------", "--------", "--------", "------------", "------------")
-
-	for _, id := range cfg.Identities {
-		activeStr := "NO"
-		if id.Active {
-			activeStr = "YES"
-		}
-		if !identity.IsEnabled(id) {
-			activeStr = "DISABLED"
-		}
-		autoStr := "ON"
-		if !id.CanAutoRotate() {
-			autoStr = "OFF"
-		}
-		if !identity.IsEnabled(id) {
-			autoStr = "-"
-		}
-		usageStr := fmt.Sprintf("%.1f%%", id.UsagePercent)
-		thresh := identity.GetAccountThreshold(id, cfg.Identities, cfg.ThresholdPct)
-		threshStr := fmt.Sprintf("%.1f%%", thresh)
-		resetStr := "unknown"
-		if id.ResetAt > 0 {
-			resetStr = id.FormatResetTime()
-		}
-		fmt.Printf("%-20s %-26s %-18s %-14s %-8s %-8s %-12s %-12s\n",
-			id.ID, id.Email(), id.ModelName(), threshStr, usageStr, activeStr, autoStr, resetStr)
-	}
+	printIdentityTable(cfg)
+	fmt.Println("\nSwitch: amux switch <id>    Pool: amux pool add|remove <id>")
 }
 
 func cmdIDAutoRotate(args []string) {
 	if len(args) == 0 {
-		die("usage: amux id auto <id> [on|off]")
+		die("usage: amux pool add|remove <id>")
 	}
 	targetID := args[0]
 	target, err := identity.Get("", targetID)
@@ -147,9 +118,9 @@ func cmdIDAutoRotate(args []string) {
 	proxy.Sync()
 
 	if enabled {
-		fmt.Printf("✓ AUTO-SWITCH set to ON for %q (eligible for automatic rotation/failover).\n", targetID)
+		fmt.Printf("✓ %s added to the pool (same as: amux pool add %s).\n", targetID, targetID)
 	} else {
-		fmt.Printf("✓ AUTO-SWITCH set to OFF for %q (manual switch only via 'amux id select %s').\n", targetID, targetID)
+		fmt.Printf("✓ %s removed from the pool (same as: amux pool remove %s).\n", targetID, targetID)
 	}
 }
 
@@ -168,7 +139,7 @@ func cmdIDAdd(args []string) {
 
 func cmdIDRemove(args []string) {
 	if len(args) == 0 {
-		die("usage: amux id remove <id>")
+		die("usage: amux account remove <id>")
 	}
 	id := args[0]
 	target, _ := identity.Get("", id)
@@ -187,11 +158,11 @@ func cmdIDRemove(args []string) {
 		die("failed to remove identity %s: %v", id, err)
 	}
 	if !removed && !profDeleted && !provDeleted {
-		fmt.Printf("Identity %q not found.\n", id)
+		fmt.Printf("Account %q not found (see: amux account list).\n", id)
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("✓ Identity %q removed from storage.\n", id)
+	fmt.Printf("✓ %s removed (its saved login was deleted; the tool's current login is untouched).\n", id)
 }
 
 func cmdIDHealth() {
@@ -215,7 +186,7 @@ func cmdIDHealth() {
 func cmdIDSelect(args []string) {
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
-		die("no identities configured.\n  Run 'amux login [claude|codex|antigravity|gemini]' to authenticate an account.")
+		die("no accounts yet. Add one with: amux login")
 	}
 
 	var targetID string
@@ -229,7 +200,7 @@ func cmdIDSelect(args []string) {
 		}
 	} else {
 		// Interactive picker
-		fmt.Println("Select an identity to activate:")
+		fmt.Println("Which account should be active?")
 		for i, item := range cfg.Identities {
 			activeTag := ""
 			if item.Active {
@@ -259,12 +230,12 @@ func cmdIDSelect(args []string) {
 		for _, id := range cfg.Identities {
 			available = append(available, id.ID)
 		}
-		die("identity %q not found.\n  Available identities: %s\n  (Run 'amux account list' to inspect all accounts)", targetID, strings.Join(available, ", "))
+		die("account %q not found. Available: %s", targetID, strings.Join(available, ", "))
 	}
 
 	tool := ""
 	switch {
-	case strings.HasPrefix(target.ID, "antigravity"):
+	case strings.HasPrefix(target.ID, "antigravity"), strings.HasPrefix(target.ID, "agy"):
 		tool = "antigravity"
 	case strings.HasPrefix(target.ID, "claude"):
 		tool = "claude"
@@ -274,9 +245,8 @@ func cmdIDSelect(args []string) {
 		tool = "codex"
 	}
 
-	// 1. Snapshot the CURRENT active account BEFORE touching keychain or config files
-	if tool != "" {
-		profile.SyncActiveFromSystem(tool)
+	if !identity.IsEnabled(*target) {
+		die("%s is turned off. Turn it back on first: amux account on %s", target.ID, target.ID)
 	}
 
 	pName := ""
@@ -289,39 +259,45 @@ func cmdIDSelect(args []string) {
 		pName = target.Email()
 	}
 
-	// 2. If backed by an amux profile bundle, restore it (refreshes expired token if needed & installs)
-	if tool != "" && pName != "" {
-		if _, err := os.Stat(profile.BundlePath(tool, pName)); err == nil {
-			if err := profile.CmdUse(tool, pName); err != nil {
-				fmt.Printf("Notice: profile restore: %v\n", err)
+	switch {
+	case tool != "" && target.IsSubscription():
+		// IDE subscription: install its saved login into the CLI's own
+		// keychain/config. The bundle is kept fresh by amux, so no re-login.
+		if pName != "" {
+			if _, err := os.Stat(profile.BundlePath(tool, pName)); err == nil {
+				if err := proxy.SwitchProfile(tool, pName); err != nil {
+					die("could not switch to %s: %v\n  If its login expired, sign in once more: amux login %s", target.ID, err, loginNameForTool(tool))
+				}
+				break
 			}
 		}
+		// Older identities without a saved bundle: write what we have.
+		if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
+			die("no saved login for %s: %v\n  Sign in once with: amux login %s", target.ID, err, loginNameForTool(tool))
+		}
+		fmt.Printf("✓ Native credentials updated for %s.\n", target.Provider)
+	case proxy.ProxyUp():
+		// Web / API account: make the gateway prefer it.
+		proxy.CmdSwitchProvider(target.ID)
 	}
 
-	// 3. Update target IDE native Keychain & configs
-	if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
-		fmt.Printf("Notice: could not sync to native credentials: %v\n", err)
-	} else {
-		fmt.Printf("✓ Native credentials updated for %s execution.\n", target.Provider)
-	}
-
-	// 4. Update active pointer in identity store
 	if err := identity.SetActive("", target.ID); err != nil {
 		die("failed to activate identity: %v", err)
 	}
+	proxy.Sync()
 
-	// 5. Notify proxy daemon
-	if proxy.ProxyUp() {
-		proxy.Sync()
-		if tool == "claude" && pName != "" {
-			proxy.CmdSwitch("claude", pName)
-		} else {
-			proxy.CmdSwitchProvider(target.ID)
-		}
+	fmt.Printf("✓ %s is now active.\n", target.ID)
+	if tool != "" && target.IsSubscription() {
+		fmt.Println("  Running sessions keep the old account until restarted (e.g. `claude --continue`).")
 	}
+}
 
-	fmt.Printf("✓ Account %q is now ACTIVE.\n", target.ID)
-	fmt.Println("  💡 Active terminal sessions or IDEs will pick up this identity on their next command or restart.")
+// loginNameForTool maps a profile tool name to its `amux login` argument.
+func loginNameForTool(tool string) string {
+	if tool == "antigravity" {
+		return "agy"
+	}
+	return tool
 }
 
 func cmdIDThreshold(args []string) {
@@ -430,7 +406,7 @@ func cmdIDThreshold(args []string) {
 // underlying profile bundle as disabled so the rotator respects it immediately.
 func cmdIDOff(args []string) {
 	if len(args) == 0 {
-		die("usage: amux id off <id>")
+		die("usage: amux account off <id>")
 	}
 	targetID := args[0]
 	target, err := identity.Get("", targetID)
@@ -462,13 +438,13 @@ func cmdIDOff(args []string) {
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ Identity %q is now OFF — will not be used until `amux id on %s`.\n", targetID, targetID)
+	fmt.Printf("✓ %s is off — never used until: amux account on %s\n", targetID, targetID)
 }
 
 // cmdIDOn re-enables a hard-disabled identity.
 func cmdIDOn(args []string) {
 	if len(args) == 0 {
-		die("usage: amux id on <id>")
+		die("usage: amux account on <id>")
 	}
 	targetID := args[0]
 	target, err := identity.Get("", targetID)
@@ -498,6 +474,6 @@ func cmdIDOn(args []string) {
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ Identity %q is now ON — back in routing pool.\n", targetID)
+	fmt.Printf("✓ %s is on again.\n", targetID)
 }
 

@@ -18,6 +18,7 @@ func TestServeWithResilience_RotateOn429(t *testing.T) {
 	rot := NewRotator("claude")
 	rot.order = []string{"profile-a", "profile-b"}
 	rot.idx = 0
+	rot.inPool = allPooled
 	rot.tokens = map[string]*types.Token{
 		"profile-a": {Access: "tok-a", ExpiresAt: time.Now().Add(time.Hour)},
 		"profile-b": {Access: "tok-b", ExpiresAt: time.Now().Add(time.Hour)},

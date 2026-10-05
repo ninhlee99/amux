@@ -91,7 +91,7 @@ func syncExistingAntigravityAuth() {
 				Priority:     slot.Priority,
 				Account:      creds.Email,
 				RefreshToken: creds.RefreshToken,
-				Model:        "gemini-2.5-pro",
+				Model:        provider.DefaultAGYModel,
 			}, slot.RenameFrom)
 		}
 	}
@@ -258,7 +258,7 @@ func LoginAntigravity(ctx context.Context, customName string) (string, error) {
 		Priority:     5,
 		Account:      email,
 		Plan:         "pro",
-		Model:        "gemini-2.5-pro",
+		Model:        provider.DefaultAGYModel,
 		RefreshToken: tokenResp.RefreshToken,
 	}, slot.RenameFrom)
 
