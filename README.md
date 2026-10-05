@@ -6,11 +6,26 @@ amux changes nothing on its own: a tool's login, config or account only changes 
 
 ## Install
 
-Requires Go 1.22+ on macOS or Linux.
+### Quick Install (Recommended)
+
+One-line installer for macOS (Apple Silicon & Intel) — automatically installs pre-built binary or builds from source into `~/.local/bin` without requiring `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
+```
+
+### Build from source (Go 1.22+)
 
 ```bash
 git clone https://github.com/ninhlee99/amux.git && cd amux
-go build -o amux . && sudo cp amux /usr/local/bin/
+go build -o amux .
+
+# Install to user binaries (No sudo required):
+mkdir -p ~/.local/bin && cp amux ~/.local/bin/
+
+# (Optional) System-wide install (requires sudo if /usr/local/bin is root-owned):
+# sudo cp amux /usr/local/bin/
+
 amux help
 ```
 
