@@ -1,0 +1,208 @@
+package jsonrepair
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"unicode"
+)
+
+// Repair takes a potentially malformed JSON string (from LLM output)
+// and repairs syntax errors (unclosed brackets/quotes, trailing commas,
+// single quotes, unescaped newlines/quotes, Python literals) to produce valid JSON.
+func Repair(input string) string {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "{}"
+	}
+
+	// If already valid JSON, return as is (trimmed)
+	if json.Valid([]byte(s)) {
+		return s
+	}
+
+	var out bytes.Buffer
+	var stack []byte // keeps track of open '{' and '['
+	inString := false
+	quoteChar := byte(0)
+	escaped := false
+	n := len(s)
+
+	for i := 0; i < n; i++ {
+		ch := s[i]
+
+		// Handle comments // and /*
+		if !inString && ch == '/' && i+1 < n {
+			if s[i+1] == '/' {
+				// Line comment, skip to newline
+				i += 2
+				for i < n && s[i] != '\n' && s[i] != '\r' {
+					i++
+				}
+				continue
+			} else if s[i+1] == '*' {
+				// Block comment, skip to */
+				i += 2
+				for i+1 < n && !(s[i] == '*' && s[i+1] == '/') {
+					i++
+				}
+				i++
+				continue
+			}
+		}
+
+		if inString {
+			if escaped {
+				escaped = false
+				out.WriteByte(ch)
+				continue
+			}
+
+			if ch == '\\' {
+				escaped = true
+				out.WriteByte(ch)
+				continue
+			}
+
+			if ch == quoteChar {
+				// Check if this might be an unescaped quote inside a string rather than the closing quote.
+				// E.g., `{"command": "git commit -m "fix" rest"}`
+				if quoteChar == '"' && i+1 < n {
+					nextNonSpace := byte(0)
+					for k := i + 1; k < n; k++ {
+						if !unicode.IsSpace(rune(s[k])) {
+							nextNonSpace = s[k]
+							break
+						}
+					}
+					if nextNonSpace != 0 && nextNonSpace != ':' && nextNonSpace != ',' && nextNonSpace != '}' && nextNonSpace != ']' {
+						// Likely an unescaped inner quote!
+						out.WriteString(`\"`)
+						continue
+					}
+				}
+
+				inString = false
+				quoteChar = 0
+				out.WriteByte('"')
+				continue
+			}
+
+			// If inside single-quoted string and encountered double quote, escape it
+			if quoteChar == '\'' && ch == '"' {
+				out.WriteString(`\"`)
+				continue
+			}
+
+			// Handle literal newlines / tabs inside strings
+			if ch == '\n' {
+				out.WriteString(`\n`)
+				continue
+			}
+			if ch == '\r' {
+				out.WriteString(`\r`)
+				continue
+			}
+			if ch == '\t' {
+				out.WriteString(`\t`)
+				continue
+			}
+
+			out.WriteByte(ch)
+			continue
+		}
+
+		// Not in string
+		switch ch {
+		case '"', '\'':
+			inString = true
+			quoteChar = ch
+			out.WriteByte('"')
+		case '{':
+			stack = append(stack, '}')
+			out.WriteByte('{')
+		case '[':
+			stack = append(stack, ']')
+			out.WriteByte('[')
+		case '}', ']':
+			// Remove trailing comma if present before closing brace/bracket
+			trimTrailingComma(&out)
+			if len(stack) > 0 && stack[len(stack)-1] == ch {
+				stack = stack[:len(stack)-1]
+			}
+			out.WriteByte(ch)
+		case ',':
+			// Check if immediately followed by closing bracket/brace
+			trimTrailingComma(&out)
+			out.WriteByte(',')
+		default:
+			// Convert Python literals: None -> null, True -> true, False -> false
+			if unicode.IsLetter(rune(ch)) {
+				word := extractWord(s, i)
+				switch word {
+				case "None":
+					out.WriteString("null")
+					i += len("None") - 1
+				case "True":
+					out.WriteString("true")
+					i += len("True") - 1
+				case "False":
+					out.WriteString("false")
+					i += len("False") - 1
+				default:
+					out.WriteByte(ch)
+				}
+			} else {
+				out.WriteByte(ch)
+			}
+		}
+	}
+
+	// Close unclosed strings
+	if inString {
+		out.WriteByte('"')
+	}
+
+	// Clean any dangling comma at the end
+	trimTrailingComma(&out)
+
+	// Close any unclosed braces/brackets in LIFO order
+	for k := len(stack) - 1; k >= 0; k-- {
+		out.WriteByte(stack[k])
+	}
+
+	res := out.String()
+	// Final validation check
+	if json.Valid([]byte(res)) {
+		return res
+	}
+
+	// Secondary fallback: wrap in object if still invalid
+	if !strings.HasPrefix(res, "{") && !strings.HasPrefix(res, "[") {
+		wrapped := "{" + res + "}"
+		if json.Valid([]byte(wrapped)) {
+			return wrapped
+		}
+	}
+
+	return res
+}
+
+func trimTrailingComma(buf *bytes.Buffer) {
+	b := buf.Bytes()
+	i := len(b) - 1
+	for i >= 0 && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i--
+	}
+	if i >= 0 && b[i] == ',' {
+		buf.Truncate(i)
+	}
+}
+
+func extractWord(s string, start int) string {
+	end := start
+	for end < len(s) && (unicode.IsLetter(rune(s[end])) || unicode.IsDigit(rune(s[end])) || s[end] == '_') {
+		end++
+	}
+	return s[start:end]
+}

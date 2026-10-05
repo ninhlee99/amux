@@ -30,12 +30,12 @@ Pool (automatic switching)
   pool add <id>           Allow automatic switching to <id> (subscriptions are never added for you)
   pool remove <id>        Back to manual-only
 
-Gateway (optional — route tools through amux)
+Gateway (run IDEs through amux)
   start | stop | restart  Run the local gateway on http://127.0.0.1:8787
-  hook <tool>             Point a tool at the gateway (claude, codex, cursor, agy, all)
-  unhook <tool>           Undo it (no tool = all)
-  off                     Unhook everything and stop the gateway — back to native
-  status                  Gateway, hooked tools and accounts at a glance
+  dashboard               Live interactive TUI Dashboard (monitor quota, toggle pool)
+  run <ide>               Run an IDE (claude, cursor, codex, agy) in a sandboxed gateway session
+  off                     Stop the gateway and ensure all native tools run directly
+  status                  Gateway and active accounts at a glance
 
 MCP (use your accounts as tools in any MCP agent)
   mcp install [host|all]  Register amux in Claude Code, Cursor, Codex, Gemini CLI, …
@@ -314,17 +314,14 @@ Examples:
 
 func helpEnv() {
 	fmt.Print(`Purpose:
-  Inspect or output shell environment exports for AMUX Gateway integration.
+  Inspect or manage custom environment variables for AMUX Gateway integration.
+  (Recommended: Use 'amux run <ide>' for clean, sandboxed session execution without polluting shell profiles).
 
 Usage:
   amux env [subcommand]
 
-Shell Integration:
-  Add to ~/.zshrc or ~/.bashrc:
-    eval "$(amux env)"
-
 Subcommands:
-  (no args)           Output shell export lines (eval "$(amux env)")
+  (no args)           Output shell export lines for debugging
   set KEY VALUE       Set a persistent custom environment variable in ~/.amux/env.json
   get KEY             Read a custom environment variable
   rm KEY              Remove a custom environment variable

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"amux-accounts/pkg/auth"
@@ -40,8 +41,22 @@ func CmdDoctor(args []string) {
 		_ = os.Chmod(baseDir, 0o700)
 		_ = os.MkdirAll(filepath.Join(baseDir, "sessions"), 0o700)
 		_ = os.MkdirAll(filepath.Join(baseDir, "logs"), 0o700)
+		_ = os.MkdirAll(filepath.Join(baseDir, "profiles"), 0o700)
+
+		// Fix permissions of sensitive data files to 0600
+		for _, fname := range []string{"identities.json", "accounts.json", "config.json", "vault.json"} {
+			fpath := filepath.Join(baseDir, fname)
+			if _, err := os.Stat(fpath); err == nil {
+				_ = os.Chmod(fpath, 0o600)
+			}
+		}
+
 		_ = hook.InstallSlashCommand("feedback.md", []byte(hook.FeedbackSlashCommandContent))
-		fmt.Println("FIXED (0700 private permissions applied)")
+
+		// Purge any global shell profile pollution or launchctl environment variables
+		cleanGlobalEnvAndShellRC()
+
+		fmt.Println("FIXED (0700 dir, 0600 file permissions, and clean shell/launchctl environment applied)")
 	}
 
 	// 1. macOS Keychain Access
@@ -186,4 +201,42 @@ func checkTool(name, bin string, available bool) {
 	} else {
 		fmt.Printf("- %-14s: Not found on PATH\n", name)
 	}
+}
+
+func cleanGlobalEnvAndShellRC() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	rcFiles := []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".bash_profile"),
+		filepath.Join(home, ".config", "fish", "config.fish"),
+	}
+
+	for _, rc := range rcFiles {
+		b, err := os.ReadFile(rc)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(b), "\n")
+		var filtered []string
+		changed := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.Contains(trimmed, "amux env") || strings.Contains(trimmed, "am env") ||
+				trimmed == "# AMUX Gateway environment" ||
+				strings.Contains(trimmed, "amux agy gateway") {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		if changed {
+			_ = os.WriteFile(rc, []byte(strings.Join(filtered, "\n")), 0o644)
+		}
+	}
+
+	hook.SyncLaunchctlEnv(false, "")
 }

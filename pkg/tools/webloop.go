@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"amux-accounts/pkg/monitor"
+	"amux-accounts/pkg/tools/jsonrepair"
 	"amux-accounts/pkg/types"
 )
 
@@ -18,6 +19,9 @@ import (
 const webToolPreamble = `Coding-agent backend. Client runs tools on the real repo. [Tool result] = verified CLI output.
 Rules: need file/cmd → emit <tool_call> now; never claim lack of tools / ask to paste / fake edits.
 Format:
+<thought>
+Reasoning / thinking step (optional)
+</thought>
 <tool_call>
 {"name":"TOOL","arguments":{...}}
 </tool_call>
@@ -35,6 +39,7 @@ const webToolCloser = `
 `
 
 var (
+	reThought     = regexp.MustCompile(`(?s)<thought>\s*(.*?)\s*</thought>`)
 	reXMLTool     = regexp.MustCompile(`(?s)<tool_call>\s*(.*?)\s*</tool_call>`)
 	reAMUXTool    = regexp.MustCompile(`(?s)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
 	reToolJSON    = regexp.MustCompile("(?s)```(?:tool_call|json)\\s*\n(\\{[\\s\\S]*?\\})\\s*```")
@@ -770,67 +775,7 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 }
 
 func repairJSON(s string) string {
-	var sb strings.Builder
-	sb.Grow(len(s) + 64)
-	inString := false
-	escaped := false
-	openBraces := 0
-	openBrackets := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if escaped {
-			sb.WriteByte(c)
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			sb.WriteByte(c)
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			sb.WriteByte(c)
-			continue
-		}
-		if inString {
-			if c == '\n' {
-				sb.WriteString(`\n`)
-				continue
-			}
-			if c == '\r' {
-				sb.WriteString(`\r`)
-				continue
-			}
-			if c == '\t' {
-				sb.WriteString(`\t`)
-				continue
-			}
-		} else {
-			if c == '{' {
-				openBraces++
-			} else if c == '}' && openBraces > 0 {
-				openBraces--
-			} else if c == '[' {
-				openBrackets++
-			} else if c == ']' && openBrackets > 0 {
-				openBrackets--
-			}
-		}
-		sb.WriteByte(c)
-	}
-	if inString {
-		sb.WriteByte('"')
-	}
-	for openBrackets > 0 {
-		sb.WriteByte(']')
-		openBrackets--
-	}
-	for openBraces > 0 {
-		sb.WriteByte('}')
-		openBraces--
-	}
-	return sb.String()
+	return jsonrepair.Repair(s)
 }
 
 func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
@@ -843,7 +788,7 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 		Input     json.RawMessage `json:"input"`
 	}
 	if json.Unmarshal([]byte(raw), &probe) != nil || probe.Name == "" {
-		repaired := repairJSON(raw)
+		repaired := jsonrepair.Repair(raw)
 		repaired = reTrailComma.ReplaceAllString(repaired, "$1")
 		if json.Unmarshal([]byte(repaired), &probe) != nil || probe.Name == "" {
 			// Fallback: extract name, id, and command/args via regex
@@ -888,10 +833,11 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 	return probe.Name, probe.ID, string(a), true
 }
 
-// StripWebToolMarkup removes protocol / bash fences so Claude Code does not
-// also print the commands as assistant text.
+// StripWebToolMarkup removes protocol / bash fences / thought tags so Claude Code does not
+// also print the commands or thinking internal steps as raw assistant text.
 func StripWebToolMarkup(text string) string {
-	s := reXMLTool.ReplaceAllString(text, "")
+	s := reThought.ReplaceAllString(text, "")
+	s = reXMLTool.ReplaceAllString(s, "")
 	s = reAMUXTool.ReplaceAllString(s, "")
 	s = reBracketTool.ReplaceAllString(s, "")
 	s = reToolJSON.ReplaceAllString(s, "")

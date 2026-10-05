@@ -19,19 +19,19 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
                                      │
          ┌───────────────────────────┴───────────────────────────┐
          │                                                       │
-         ▼ [Phase 1: Quota Healthy]                              ▼ [Phase 2: All Subs Exhausted]
+         ▼ [Direct Native Mode: claude / cursor]                 ▼ [Sandbox Gateway Mode: amux run <ide>]
 ┌─────────────────────────────────────────┐             ┌───────────────────────────────────┐
 │     NATIVE DIRECT MODE (Zero-Touch)     │             │     AMUX UNIVERSAL AI GATEWAY     │
 │   IDE đọc Token từ macOS Keychain       │             │   Proxy Server :8787 (Daemon)     │
-│   Gọi thẳng Upstream (0ms Overhead)     │             │   Tự động Hook ANTHROPIC_BASE_URL │
-│   Xoay tua ngầm Keychain khi chạm 95%   │             │   Auto-Detach khi Quota hồi phục  │
+│   Gọi thẳng Upstream (0ms Overhead)     │             │   Child Process Sandbox Isolation │
+│   Xoay tua ngầm Keychain khi chạm 95%   │             │   0% ô nhiễm shell / launchctl    │
 └────────────────────┬────────────────────┘             └─────────────────┬─────────────────┘
                      │                                                    │
                      │                                                    ▼
                      │                                  ┌───────────────────────────────────┐
-                     │                                  │       UNIVERSAL TOOL ENGINE       │
+                     │                                  │     WEBLOOP 2.0 & TOOL ENGINE     │
                      │                                  │   Canonical UniversalTool IR      │
-                     │                                  │   100% JSON Schema Preserved      │
+                     │                                  │   AST Lenient JSON Self-Healing   │
                      │                                  │   Bidirectional MCP & Web-Loop    │
                      │                                  └─────────────────┬─────────────────┘
                      │                                                    │
@@ -50,7 +50,7 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
 
 | Phân Tầng | Package | Trách Nhiệm Vận Hành |
 | :--- | :--- | :--- |
-| **Runtime Entry** | `pkg/cli` | Tiếp nhận và điều phối bộ lệnh CLI: `start`, `stop`, `restart`, `status`, `login`, `account` (`list`, `switch`, `logout`), `hook`, `doctor`. |
+| **Runtime Entry** | `pkg/cli` | Tiếp nhận và điều phối bộ lệnh CLI: `login`, `run <ide>`, `dashboard`, `start`, `stop`, `restart`, `status`, `account` (`list`, `switch`, `remove`), `pool`, `doctor`. |
 | **Capability Registry & Runtime** | `pkg/runtime` | Dynamic discovery (`manifest.go`), Schema-first registry (`registry.go`), Host-aware strict contracts (`contract.go`), Native validation (`validate.go`), Native Command & Filesystem Executor (`executor.go`). |
 | **Domain Contracts** | `pkg/types` | Hạt nhân độc lập: Định nghĩa `ChatRequest`, `ChatMessage`, `StreamChunk`, `ProviderAdapter`, và `BaseDir()` (`~/.amux`). Tuyệt đối không import package nội bộ khác. |
 | **Security & Identity** | `pkg/identity` & `pkg/auth` | Quản lý danh tính phẳng (`identities.json`), đọc/ghi an toàn qua macOS Keychain, mã hóa AES-256-GCM, quản lý vòng đời OAuth PKCE token và tính toán ngưỡng failover. |

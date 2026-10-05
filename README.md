@@ -55,34 +55,28 @@ Rules:
 
 `amux account off <id>` turns an account off entirely (never used, not even by `amux switch`) until `amux account on <id>`.
 
-## Gateway (optional)
+## Running IDEs via AMUX Gateway (Zero-Pollution Sandbox)
 
-A local server on `http://127.0.0.1:8787` that speaks the Anthropic, OpenAI (chat + responses) and Gemini APIs and serves them from your accounts.
+AMUX provides an isolated local gateway on `http://127.0.0.1:8787` that bridges Anthropic, OpenAI, and Gemini protocols, serving them across your rotating pool of accounts.
+
+To run any coding IDE/agent through AMUX without polluting global shell profiles or modifying system settings:
 
 ```bash
-amux start            # run it in the background
-amux hook claude      # point Claude Code at it (also: codex, cursor, agy, all)
-amux status           # gateway, hooked tools, accounts
-amux unhook claude    # undo one tool
-amux off              # unhook every tool and stop the gateway
+amux run claude       # Run Claude Code CLI through AMUX Gateway
+amux run cursor       # Run Cursor IDE through AMUX Gateway
+amux run agy          # Run Google Antigravity CLI through AMUX Gateway
+amux run codex        # Run OpenAI Codex CLI through AMUX Gateway
 ```
 
-What `hook` writes — and `unhook` removes again, leaving everything you set yourself:
+When you exit the session, your environment is 100% clean. Running `claude` or `cursor` directly will always execute natively with direct upstream connection (0ms latency).
 
-| Tool | File | Keys |
-| :--- | :--- | :--- |
-| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN` (placeholder) |
-| Codex | `~/.codex/config.toml` | `openai_base_url` |
-| Cursor | Cursor `User/settings.json` | `cursor.openaiBaseUrl` |
-| Antigravity | `~/.gemini/antigravity-cli/settings.json`, a marked block in your shell rc, launchctl | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` (only if unset), `modelProvider` (only if unset) |
-
-A hooked tool needs the gateway running. `amux stop` warns about tools that are still hooked; `amux off` is the one-step way back to native.
-
-Pin a request to one account or one family with the `X-Provider` header (`gemini:web:01` = that account only; `gemini:web`, `chatgpt` = amux picks a healthy one in that family):
+### Live TUI Dashboard & Diagnostics
 
 ```bash
-curl http://127.0.0.1:8787/v1/chat/completions -H "Content-Type: application/json" \
-  -H "X-Provider: gemini:web" -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+amux dashboard        # Interactive Terminal Dashboard (real-time quota, pool toggle)
+amux doctor --fix     # Auto-verify and fix workspace permissions & clean legacy envs
+amux status           # Quick overview of gateway and accounts
+amux off              # Stop gateway and ensure all IDEs are in native mode
 ```
 
 ## MCP

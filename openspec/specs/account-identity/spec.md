@@ -46,3 +46,10 @@ Code running inside a Go test binary MUST NOT read or write the developer's real
 - **WHEN** an MCP server was added to `~/.claude.json` after account B was saved
 - **THEN** switching to B keeps that MCP server
 
+### Requirement: Unified account login and health check
+The CLI SHALL provide a streamlined `amux login [brand]` command supporting OAuth PKCE, Web session cookie import, and API keys through a single entrypoint with immediate connection health verification.
+
+#### Scenario: Unified login with validation
+- **WHEN** a user completes login for any provider
+- **THEN** amux verifies upstream connection latency and health before adding the account to storage
+

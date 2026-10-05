@@ -116,9 +116,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 }
 
 func setLaunchEnv(key, val string) {
-	if runtime.GOOS == "darwin" {
-		_ = exec.Command("launchctl", "setenv", key, val).Run()
-	}
+	// Disabled to avoid polluting macOS global GUI session environment.
 }
 
 func unsetLaunchEnv(key string) {

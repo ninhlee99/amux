@@ -173,6 +173,7 @@ func CmdOff(_ []string) {
 	if err := gateway.Unhook(gateway.TargetAll); err != nil {
 		die("unhook: %v", err)
 	}
+	cleanGlobalEnvAndShellRC()
 	if len(hooked) > 0 {
 		fmt.Printf("✓ Unhooked: %s\n", strings.Join(hooked, ", "))
 	}

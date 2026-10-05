@@ -174,6 +174,18 @@ func (r *Router) registerDiagnosticRoutes() {
 		HelpHandler: helpStatus,
 	})
 
+	r.Register("dashboard", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdDashboard,
+		HelpHandler: helpDashboard,
+	})
+
+	r.Register("run", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdRun,
+		HelpHandler: helpRun,
+	})
+
 	r.Register("top", CommandRoute{
 		Domain:  domain,
 		Handler: CmdTop,
