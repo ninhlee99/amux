@@ -1,172 +1,274 @@
-# amux
+# AMUX (Universal AI Gateway)
 
-Keep several AI accounts — Claude Code, Codex, Antigravity subscriptions, ChatGPT / Gemini / Meta Muse web sessions, API keys — on one machine and switch between them without logging in again. Optionally route tools through a local gateway, or expose the accounts as MCP tools to any agent.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/ninhlee99/amux/main/docs/assets/banner.png" alt="AMUX Banner" width="100%" onerror="this.style.display='none'"/>
+</p>
 
-amux changes nothing on its own: a tool's login, config or account only changes when you run a command for it, and every change can be undone exactly.
+<p align="center">
+  <a href="https://github.com/ninhlee99/amux/releases"><img src="https://img.shields.io/github/v/release/ninhlee99/amux?color=blue&label=version" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/go-1.22+-00ADD8?logo=go" alt="Go Version">
+  <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon%20%26%20Intel)-lightgrey?logo=apple" alt="Platform">
+  <img src="https://img.shields.io/badge/tests-passing-brightgreen" alt="Tests">
+</p>
 
-## Install
+<p align="center">
+  <b>Universal AI Gateway & Multi-Account Rotation for AI Coding Agents.</b><br>
+  Keep several AI accounts — Claude Code, Codex, Antigravity subscriptions, ChatGPT / Gemini / Claude web sessions, API keys — on one machine and switch between them without logging in again.
+</p>
 
-### Quick Install (Recommended)
+<p align="center">
+  <a href="README.md"><b>English</b></a> • <a href="README_VI.md"><b>Tiếng Việt</b></a>
+</p>
 
-One-line installer for macOS (Apple Silicon & Intel) — automatically installs pre-built binary or builds from source into `~/.local/bin` without requiring `sudo`:
+---
+
+## ⚡ Key Highlights
+
+- **Zero-Pollution Sandbox (`amux run <ide>`)**: Run Claude Code, Cursor, Windsurf, Antigravity (AGY), or Codex in an isolated child process pointing to the gateway. Exiting leaves your shell and system settings 100% clean. Direct launches (`claude`, `cursor`) run natively with 0ms overhead.
+- **Silent Keychain Rotation**: Maintain multiple accounts per provider. When usage hits 95%, AMUX smoothly rotates credentials or hands over to the next account without breaking your flow.
+- **Web Accounts as Coding Proxies (WebLoop 2.0)**: Connect ChatGPT Web, Gemini Web, Claude Web, or Meta Muse. WebLoop translates natural language and markdown into native agent tool calls with **real-time thinking streams (`<thought>`)**, AST JSON self-healing, and keepalive pulses.
+- **Full Developer MCP Suite (7 Specialized Tools)**: Wire your accounts into any MCP-capable IDE (Cursor, Windsurf, VS Code, Zed, Claude Desktop) with tools like `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, and `amux_analyze`.
+- **Zero-Telemetry & Encrypted Secret Vault**: 100% offline and private. Secrets are encrypted locally via AES-256-GCM in macOS Keychain or an isolated keyfile (`~/.amux/master.key`).
+
+---
+
+## 📐 Architecture Overview
+
+```
+                      ┌───────────────────────────────────────┐
+                      │            HUMAN DEVELOPER            │
+                      └───────────────────┬───────────────────┘
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  ▼ [Native Mode: direct binary]                  ▼ [Sandbox Mode: amux run <ide>]
+   ┌─────────────────────────────────────────┐     ┌─────────────────────────────────────────┐
+   │        DIRECT NATIVE EXECUTION          │     │        AMUX UNIVERSAL AI GATEWAY        │
+   │  • Reads active token from Keychain     │     │  • Local HTTP Proxy on :8787            │
+   │  • Direct upstream connection (0ms)     │     │  • Child-process isolated environment   │
+   │  • Zero background proxy requirement    │     │  • Shell rc & launchctl 100% pristine   │
+   └────────────────────┬────────────────────┘     └────────────────────┬────────────────────┘
+                        │                                               │
+                        │                                               ▼
+                        │                          ┌─────────────────────────────────────────┐
+                        │                          │        WEBLOOP 2.0 TOOL ENGINE          │
+                        │                          │  • Real-time Thinking Stream (SSE)      │
+                        │                          │  • Lenient AST JSON Auto-Repair         │
+                        │                          │  • Bracket Parsing [Tool call: ...]     │
+                        │                          │  • Line-bounded file editing for AGY    │
+                        │                          └────────────────────┬────────────────────┘
+                        │                                               │
+                        ▼                                               ▼
+   ┌─────────────────────────────────────────────────────────────────────────────────────────┐
+   │                               PROVIDERS & MODEL POOL                                    │
+   │   Tier 1: Subscriptions       │   Tier 2: Web Accounts        │   Tier 3: Metered APIs  │
+   │   (Claude, Codex, AGY OAuth)  │   (ChatGPT, Gemini, Claude)   │   (DeepSeek, Groq, Kimi)│
+   └─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📦 Installation
+
+### Option 1: Quick Install (Recommended — No `sudo` required)
+
+Installs the binary into `$HOME/.local/bin/amux` and automatically configures shell PATH:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ninhlee99/amux/main/install.sh | sh
 ```
 
-### Build from source (Go 1.22+)
+### Option 2: Build from Source (Go 1.22+)
 
 ```bash
 git clone https://github.com/ninhlee99/amux.git && cd amux
 go build -o amux .
 
-# Install to user binaries (No sudo required):
+# Install to user space (No sudo needed):
 mkdir -p ~/.local/bin && cp amux ~/.local/bin/
 
-# (Optional) System-wide install (requires sudo if /usr/local/bin is root-owned):
-# sudo cp amux /usr/local/bin/
-
+# Verify installation:
 amux help
 ```
 
-## Switch accounts without logging in again
+---
+
+## 🚀 3-Minute Quickstart
+
+### Step 1: Connect your accounts
 
 ```bash
-amux login claude          # log in account A (browser); it becomes Claude Code's login
-amux login claude          # log in account B; A is saved first
-amux account list          # see both
-amux switch claude:code:01 # Claude Code is back on account A — no browser
+# Connect official subscriptions (browser OAuth):
+amux login claude        # Log in Account 1 for Claude Code
+amux login claude        # Log in Account 2 (Account 1 is safely preserved)
+
+# Connect Web sessions (free web quota):
+amux login chatgpt       # Connect ChatGPT Web session
+amux login gemini-web    # Connect Gemini Web session
+
+# (Optional) Connect metered API keys:
+amux login groq --token gsk_...
+```
+
+### Step 2: Run your coding agent in Sandbox
+
+Run any coding IDE or CLI through the AMUX Gateway without altering global environment variables:
+
+```bash
+amux run claude          # Launch Claude Code CLI in isolated sandbox
+amux run cursor          # Launch Cursor IDE connected to Gateway :8787
+amux run windsurf        # Launch Windsurf connected to Gateway :8787
+amux run agy             # Launch Google Antigravity CLI in sandbox
+amux run codex           # Launch OpenAI Codex CLI in sandbox
+```
+
+*When you exit the session, your terminal is 100% clean. Running `claude` directly executes natively with direct connection.*
+
+### Step 3: Monitor in Interactive TUI Dashboard
+
+```bash
+amux dashboard
+```
+
+An interactive terminal dashboard displaying real-time quota gauges, active provider routing, response latencies, and pool controls.
+
+---
+
+## 🔄 Account Switching & Rotation Pool
+
+### Manual Switching (Instant, No Re-authentication)
+
+Switching accounts swaps Keychain tokens and local configuration files instantly without requiring a browser login:
+
+```bash
+amux account list          # List all saved accounts
+amux switch claude:code:01 # Switch Claude Code to account 1
+amux switch                # Open interactive numbered picker
 ```
 
 ```
 ID                       EMAIL              TYPE  ACTIVE  POOL  USAGE   THRESHOLD  RESETS IN
 claude:code:01           alice@company.com  sub   yes     no    12%     100.0%     4h10m
 claude:code:02           alice@gmail.com    sub   -       no    0%      100.0%     unknown
+chatgpt:web:01           personal@web       web   -       yes   --      95.0%      ready
 ```
 
-- Works the same for `codex` and `agy` (Antigravity). `amux switch` with no id shows a numbered picker.
-- The login you leave is saved first, so refreshed tokens are never lost and switching back always works.
-- Only the account keys are swapped: for Claude Code that is the keychain item and `oauthAccount` in `~/.claude.json`; MCP servers, projects and settings in that file stay as they are.
-- Running sessions keep their account until restarted (`claude --continue` resumes).
-- If a switch fails, that account's login has expired: `amux login <tool>` once more.
+### Automatic Rotation Pool
 
-## Rotation pool
-
-The pool is the set of accounts amux may switch between **by itself** when one reaches its limit.
+The pool defines accounts that AMUX may automatically rotate between when usage limits are hit:
 
 ```bash
-amux pool                                    # who is in / out
-amux pool add claude:code:01 claude:code:02  # allow automatic switching between them
-amux pool remove claude:code:02              # back to manual only
+amux pool                                    # View accounts in the rotation pool
+amux pool add claude:code:01 claude:code:02  # Enable automatic rotation between them
+amux pool remove claude:code:02              # Return to manual switching only
 ```
 
-Rules:
+> [!IMPORTANT]
+> **Strict Subscription Protection Rule:** Subscriptions (Claude Code, Codex, Antigravity) are **NEVER** added to the rotation pool automatically upon login. They only rotate if you explicitly run `amux pool add`. Web and API accounts are pooled by default.
 
-1. Subscriptions (Claude Code, Codex, Antigravity) are **never** in the pool unless you add them. Logging in does not add them.
-2. amux only switches from a pooled account to another pooled account. An account outside the pool is never switched to, and never switched away from, automatically — when it hits its limit, it stays limited until you `amux switch`.
-3. Web and API-key accounts are in the pool by default; take one out with `amux pool remove <id>`.
-4. A pooled account hands over at 95% usage (100% when it is the only pooled account of its provider). Change it with `amux account threshold <id> <pct>` or globally with `amux threshold <pct>`.
-5. Automatic switching happens for traffic that goes through the gateway (below). Without the gateway, nothing is switched automatically.
+---
 
-`amux account off <id>` turns an account off entirely (never used, not even by `amux switch`) until `amux account on <id>`.
+## 🔌 Model Context Protocol (MCP) Integration
 
-## Running IDEs via AMUX Gateway (Zero-Pollution Sandbox)
-
-AMUX provides an isolated local gateway on `http://127.0.0.1:8787` that bridges Anthropic, OpenAI, and Gemini protocols, serving them across your rotating pool of accounts.
-
-To run any coding IDE/agent through AMUX without polluting global shell profiles or modifying system settings:
+Expose your entire pool of AI providers as tools for any MCP-compatible agent (Cursor, Windsurf, Claude Desktop, VS Code, Zed, Cline):
 
 ```bash
-amux run claude       # Run Claude Code CLI through AMUX Gateway
-amux run cursor       # Run Cursor IDE through AMUX Gateway
-amux run agy          # Run Google Antigravity CLI through AMUX Gateway
-amux run codex        # Run OpenAI Codex CLI through AMUX Gateway
+amux mcp install all       # Auto-detect and register into all installed IDEs
+amux mcp status            # Verify registration across clients
+amux mcp uninstall         # Remove AMUX MCP cleanly from all clients
 ```
 
-When you exit the session, your environment is 100% clean. Running `claude` or `cursor` directly will always execute natively with direct upstream connection (0ms latency).
-
-### Live TUI Dashboard & Diagnostics
-
-```bash
-amux dashboard        # Interactive Terminal Dashboard (real-time quota, pool toggle)
-amux doctor --fix     # Auto-verify and fix workspace permissions & clean legacy envs
-amux status           # Quick overview of gateway and accounts
-amux off              # Stop gateway and ensure all IDEs are in native mode
-```
-
-## MCP
-
-Use your accounts as tools from any MCP-capable agent: Claude Code, Claude Desktop, Cursor, Windsurf, VS Code (Copilot agent), Gemini CLI, Antigravity, Codex, opencode, Zed.
-
-```bash
-amux mcp install all       # register in every detected host (or name hosts: claude cursor …)
-amux mcp status            # where it is registered
-amux mcp uninstall         # remove it from every host it is registered in
-```
-
-Install edits only the `amux` entry, keeps a `.amux.bak` of the original until uninstall, and never rewrites a config with comments (it prints the snippet instead: `amux mcp config <host>`). Uninstall removes the entry, the backup, and the file itself if amux created it.
+### Available MCP Tools Suite
 
 | Tool | Purpose |
 | :--- | :--- |
-| `amux_ask` | Ask another model. `provider` = an exact id (pinned) or a family (`gemini:web`, `chatgpt`). Subscriptions are used only when pinned or in the pool. |
-| `amux_providers`, `amux_status` | Usable accounts; gateway URLs per client |
+| `amux_ask` | Prompt any provider or model family (e.g., `gemini:web`, `chatgpt`, `claude:code`). |
+| `amux_review` | Perform thorough code review using specialized reasoning models. |
+| `amux_diagnose` | Analyze compiler errors, exceptions, or terminal logs. |
+| `amux_fix` | Generate precise file diffs and drop-in code fixes. |
+| `amux_analyze` | Evaluate software architecture, complexity, and performance tradeoffs. |
+| `amux_providers` | Inspect active and fallback providers, health states, and quota. |
+| `amux_status` | Query live gateway connectivity, active sessions, and rotation state. |
 
-## Other accounts
+---
 
-```bash
-amux login chatgpt      # ChatGPT web session
-amux login gemini-web   # Gemini web session
-amux login groq --token gsk_...   # API keys: gemini, groq, kimi, grok, github, cursor
-```
+## 🛠️ Supported IDEs & Clients Matrix
 
-## Secrets
+| Target | Command | Injected Sandbox Variables | Notes |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | `amux run claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` | Zero keychain pollution; seamless OAuth token swap. |
+| **Cursor IDE** | `amux run cursor` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Auto-detected from PATH or `/Applications/Cursor.app`. |
+| **Windsurf** | `amux run windsurf` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_BASE_URL` | Auto-detected from PATH or `/Applications/Windsurf.app`. |
+| **Antigravity** | `amux run agy` | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_BASE`, `GOOGLE_GENAI_BASE_URL` | Schema-aware line bounds & `AbsolutePath` resolution. |
+| **Codex CLI** | `amux run codex` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Fallback to direct credentials on pool exhaustion. |
+| **Arbitrary Agent** | `amux run <cmd>` | All universal proxy environment variables | Supports Aider, OpenCode, Cline, etc. |
 
-Everything in `~/.amux` is encrypted (AES-256-GCM, files `0600`); the gateway listens on `127.0.0.1` only. The master key lives in the OS keychain, or — after `amux config secret-store file` — in `~/.amux/master.key` (or `$AMUX_MASTER_KEY`), so amux never touches the keychain. Details: [docs/security-model.md](docs/security-model.md).
+---
 
-## Removing amux
+## 📖 Complete CLI Reference
 
-| Command | Removes | Keeps |
+### 1. Gateway Lifecycle & Sandbox
+- `amux run <ide> [args...]` — Launch IDE in isolated sandbox environment.
+- `amux start` — Start the background gateway daemon (`-f` for foreground).
+- `amux stop` — Stop the background gateway.
+- `amux restart` — Restart the gateway daemon.
+- `amux off` — Stop gateway and restore all IDE configs to native direct mode.
+- `amux status` — Display gateway, hook states, and active accounts.
+
+### 2. Accounts & Rotation
+- `amux login [provider]` — Connect an account (OAuth browser, Web, or API token).
+- `amux account list` (`amux ls`) — List all configured accounts and usage percentages.
+- `amux switch [id]` — Switch active account for an IDE.
+- `amux pool [add|remove] <id>` — Manage automatic failover rotation pool.
+- `amux account off|on <id>` — Temporarily disable or re-enable an account.
+- `amux account remove <id>` — Delete an account from AMUX.
+- `amux account health` — Check health status of saved credentials.
+
+### 3. Diagnostics & Monitoring
+- `amux dashboard` — Open interactive full-screen terminal UI.
+- `amux top` — Live stream of gateway requests, token usage, and latencies.
+- `amux doctor [--fix]` — Diagnose keychain, permissions, and clean legacy hooks.
+- `amux usage [day|week|month]` — View token consumption metrics.
+
+### 4. MCP Server Management
+- `amux mcp install [target|all]` — Register AMUX MCP server in coding hosts.
+- `amux mcp uninstall [target|all]` — Unregister AMUX MCP server.
+- `amux mcp status` — Check MCP server registration status.
+
+---
+
+## 🔒 Security & Privacy Model
+
+- **100% Local**: AMUX never phones home or uploads telemetry to external servers.
+- **Encrypted Secret Storage**: Credentials in `~/.amux` are encrypted with AES-256-GCM.
+  - Default: Master key securely stored in macOS Keychain.
+  - File-based mode: Run `amux config secret-store file` to isolate keys into `~/.amux/master.key` without accessing the system Keychain.
+- **Localhost Bound**: Gateway listens strictly on `127.0.0.1:8787` by default.
+
+---
+
+## 🧹 Clean Uninstallation
+
+AMUX respects your system. You can cleanly remove AMUX without leaving orphaned files:
+
+| Command | What is Removed | What is Kept |
 | :--- | :--- | :--- |
-| `amux unhook [tool]` | The gateway keys `hook` added | Everything else in the tool's config |
-| `amux off` | All hooks; stops the gateway | Accounts, MCP registrations |
-| `amux mcp uninstall [host]` | The `amux` MCP entry and its backups | Other MCP servers |
-| `amux account remove <id>` | That account and its saved login | The tool's current login |
-| `amux uninstall` | Hooks, gateway, session hooks / status lines, MCP entries, `/amux` slash commands, auto-update agent, the binary | `~/.amux` |
-| `amux uninstall --purge` | All of the above, `~/.amux`, amux's master key in the keychain | — |
+| `amux off` | Unhooks all IDEs; stops gateway | Accounts, logins, MCP registrations |
+| `amux mcp uninstall` | Removes AMUX entries from IDE configs | All other MCP servers |
+| `amux uninstall` | Hooks, gateway, statuslines, MCP entries, binaries | `~/.amux` (saved accounts) |
+| `amux uninstall --purge` | Everything above + `~/.amux` + Keychain keys | Pristine system |
 
-None of these touch the tools' own logins: Claude Code, Codex and Antigravity keep working with whatever account they are on. Restart open sessions afterwards.
+---
 
-## Commands
+## ❓ Troubleshooting
 
-| Command | Does |
-| :--- | :--- |
-| `amux login [provider]` | Add an account |
-| `amux account list` (`amux ls`) | List accounts |
-| `amux switch [id]` | Make an account the active login of its tool |
-| `amux account off\|on <id>` | Turn an account off / on |
-| `amux account remove <id>` | Delete an account |
-| `amux account threshold [id] [pct]` | Hand-over threshold for pooled accounts |
-| `amux account health` | Check every saved login |
-| `amux pool [add\|remove] <id>` | Manage the rotation pool |
-| `amux start \| stop \| restart` | Run the gateway (`start -f` foreground) |
-| `amux hook [tool]`, `amux unhook [tool]` | Route a tool through the gateway / undo |
-| `amux off` | Unhook all and stop the gateway |
-| `amux status` | Gateway, hooks, accounts |
-| `amux mcp install\|uninstall\|status\|config\|tools` | MCP server and host registration |
-| `amux usage [day\|week\|month]` | Token usage per account |
-| `amux doctor` | Diagnose keychain, tools, gateway |
-| `amux config secret-store file\|keychain` | Where secrets are kept |
-| `amux update`, `amux uninstall [--purge]` | Update / remove amux |
+- **IDE fails immediately after stopping gateway**: The IDE might still have static hooks enabled. Run `amux start` or `amux off` to return to native mode.
+- **Switching says login expired**: Run `amux login <provider>` once to refresh the session token.
+- **Port 8787 already in use**: Check conflicting processes with `lsof -i :8787` or set custom port via `export AMUX_PORT=8788`.
+- **Diagnostics check**: Run `amux doctor --fix` for automated health diagnosis and self-healing.
 
-`amux <command> --help` shows details and examples for each.
+---
 
-## Troubleshooting
+## 📄 License
 
-- **A tool fails right after `amux stop`** — it is still hooked: `amux start`, or `amux off` to go native.
-- **`amux switch` says the login expired** — `amux login <tool>` for that account once; switching works again afterwards.
-- **Port 8787 in use** — `lsof -i :8787`, stop the other process, `amux start`.
-- **Something else** — `amux doctor`, then `amux feedback` to file an issue.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT © [ninhlee99](https://github.com/ninhlee99)
