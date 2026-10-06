@@ -731,6 +731,10 @@ func writeAnthropicSSE(w http.ResponseWriter, flusher http.Flusher, r *http.Requ
 	thinkingClosed := false
 	blockIndex := 0
 
+	hasTools := len(req.Tools) > 0
+	var bufferedContent strings.Builder
+	flushedContentLen := 0
+
 	closeThinkingBlock := func() {
 		if thinkingStarted && !thinkingClosed {
 			fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", blockIndex)
@@ -814,18 +818,38 @@ loop:
 			flusher.Flush()
 		}
 		if chunk.Content != "" {
-			ensureTextBlock()
 			fullContent.WriteString(chunk.Content)
-			deltaJSON, _ := json.Marshal(map[string]any{
-				"type":  "content_block_delta",
-				"index": blockIndex,
-				"delta": map[string]string{
-					"type": "text_delta",
-					"text": chunk.Content,
-				},
-			})
-			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
-			flusher.Flush()
+			if hasTools {
+				currentAll := fullContent.String()
+				if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") {
+					bufferedContent.WriteString(chunk.Content)
+				} else {
+					ensureTextBlock()
+					deltaJSON, _ := json.Marshal(map[string]any{
+						"type":  "content_block_delta",
+						"index": blockIndex,
+						"delta": map[string]string{
+							"type": "text_delta",
+							"text": chunk.Content,
+						},
+					})
+					fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
+					flusher.Flush()
+					flushedContentLen += len(chunk.Content)
+				}
+			} else {
+				ensureTextBlock()
+				deltaJSON, _ := json.Marshal(map[string]any{
+					"type":  "content_block_delta",
+					"index": blockIndex,
+					"delta": map[string]string{
+						"type": "text_delta",
+						"text": chunk.Content,
+					},
+				})
+				fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
+				flusher.Flush()
+			}
 		}
 		if len(chunk.ToolCalls) > 0 {
 			toolCalls = append(toolCalls, chunk.ToolCalls...)
@@ -838,12 +862,6 @@ loop:
 		}
 	}
 
-	closeThinkingBlock()
-	if textStarted {
-		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", blockIndex)
-		blockIndex++
-	}
-
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
 		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
@@ -851,6 +869,47 @@ loop:
 	}
 	if len(toolCalls) > 0 {
 		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectClaude)
+		cleanProse := tools.StripWebToolMarkup(fullContent.String())
+		if len(cleanProse) > flushedContentLen {
+			remaining := cleanProse[flushedContentLen:]
+			if strings.TrimSpace(remaining) != "" {
+				ensureTextBlock()
+				deltaJSON, _ := json.Marshal(map[string]any{
+					"type":  "content_block_delta",
+					"index": blockIndex,
+					"delta": map[string]string{
+						"type": "text_delta",
+						"text": remaining,
+					},
+				})
+				fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
+				flusher.Flush()
+			}
+		}
+	} else if bufferedContent.Len() > 0 {
+		cleanBuffered := bufferedContent.String()
+		if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
+			cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+		}
+		if cleanBuffered != "" {
+			ensureTextBlock()
+			deltaJSON, _ := json.Marshal(map[string]any{
+				"type":  "content_block_delta",
+				"index": blockIndex,
+				"delta": map[string]string{
+					"type": "text_delta",
+					"text": cleanBuffered,
+				},
+			})
+			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", deltaJSON)
+			flusher.Flush()
+		}
+	}
+
+	closeThinkingBlock()
+	if textStarted {
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":%d}\n\n", blockIndex)
+		blockIndex++
 	}
 
 	if len(toolCalls) > 0 {

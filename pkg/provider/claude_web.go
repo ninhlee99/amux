@@ -210,11 +210,17 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	rotatedConv := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		activeConv, hasActive := cm.GetActive(project)
-		hasValidThread := !req.FullContext && hasActive && activeConv.ID != ""
+		hasValidThread := hasActive && activeConv != nil && activeConv.ID != "" &&
+			!rotatedConv && (activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
 
-		// When FullContext is true (Claude Code / API coding agents), execute statelessly
-		// like a true API: evaluate the clean flattened transcript without server-side drift.
-		prompt := WebBackendPrompt(req, hasValidThread && !rotatedConv)
+		promptReq := req
+		if hasValidThread && historyHasToolTurns(req.Messages) {
+			cloned := *req
+			cloned.FullContext = false
+			promptReq = &cloned
+		}
+
+		prompt := WebBackendPrompt(promptReq, hasValidThread)
 
 		payloadMap := map[string]any{
 			"prompt":      prompt,
@@ -228,7 +234,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
 		}
 
-		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, req.FullContext)
+		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, !hasValidThread)
 		if err != nil {
 			return nil, err
 		}
@@ -318,7 +324,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 }
 
 // ensureConversation reuses the server-side Claude conversation for the specific project if within turn limits.
-func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, fullContext bool) (orgID, convUUID string, err error) {
+func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, isNewThread bool) (orgID, convUUID string, err error) {
 	a.mu.Lock()
 	if a.orgID == "" {
 		a.mu.Unlock()
@@ -334,7 +340,7 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	a.mu.Unlock()
 
 	cm := a.convs()
-	if !fullContext {
+	if !isNewThread {
 		if c, ok := cm.GetActive(project); ok && c.ID != "" {
 			cm.Register(project, sessionID, c.ID, "", nil)
 			return orgID, c.ID, nil
@@ -345,9 +351,7 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	if e != nil {
 		return "", "", e
 	}
-	if !fullContext {
-		cm.Register(project, sessionID, id, "", nil)
-	}
+	cm.Register(project, sessionID, id, "", nil)
 	return orgID, id, nil
 }
 

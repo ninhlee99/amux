@@ -954,6 +954,60 @@ func SyncCursorSettingsEnv(proxyUp bool, proxyBase string) error {
 	return SaveCursorSettings(m)
 }
 
+func WindsurfSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	macPath := filepath.Join(home, "Library", "Application Support", "Windsurf", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(macPath)); err == nil {
+		return macPath
+	}
+	linuxPath := filepath.Join(home, ".config", "Windsurf", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(linuxPath)); err == nil {
+		return linuxPath
+	}
+	return macPath
+}
+
+func LoadWindsurfSettings() map[string]any {
+	p := WindsurfSettingsPath()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func SaveWindsurfSettings(m map[string]any) error {
+	p := WindsurfSettingsPath()
+	if len(m) == 0 {
+		_ = os.Remove(p)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return fmt.Errorf("mkdir windsurf settings: %w", err)
+	}
+	b, _ := json.MarshalIndent(m, "", "  ")
+	return os.WriteFile(p, append(b, '\n'), 0o600)
+}
+
+func SyncWindsurfSettingsEnv(proxyUp bool, proxyBase string) error {
+	m := LoadWindsurfSettings()
+	if proxyUp {
+		base := strings.TrimRight(proxyBase, "/") + "/v1"
+		m["openai.baseUrl"] = base
+		m["openai.apiKey"] = "am-proxy"
+	} else {
+		delete(m, "openai.baseUrl")
+		if k, ok := m["openai.apiKey"].(string); ok && k == "am-proxy" {
+			delete(m, "openai.apiKey")
+		}
+	}
+	return SaveWindsurfSettings(m)
+}
+
 // UninstallAllHooks removes hooks across Claude, Gemini, Codex, and Cursor.
 func UninstallAllHooks() error {
 	_, _ = HookUninstall()

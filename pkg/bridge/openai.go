@@ -108,6 +108,9 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 
 	if req.Stream {
 		flusher := initialFlusher
+		hasTools := len(req.Tools) > 0
+		var bufferedContent strings.Builder
+		flushedContentLen := 0
 
 		var fullContent strings.Builder
 		var toolCalls []types.ToolCall
@@ -155,21 +158,45 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 			}
 			if chunk.Content != "" {
 				fullContent.WriteString(chunk.Content)
-				chunkJSON, _ := json.Marshal(map[string]any{
-					"id":      cmplID,
-					"object":  "chat.completion.chunk",
-					"created": now,
-					"model":   req.Model,
-					"choices": []map[string]any{{
-						"index": 0,
-						"delta": map[string]string{
-							"content": chunk.Content,
-						},
-						"finish_reason": nil,
-					}},
-				})
-				fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
-				flusher.Flush()
+				if hasTools {
+					currentAll := fullContent.String()
+					if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") {
+						bufferedContent.WriteString(chunk.Content)
+					} else {
+						chunkJSON, _ := json.Marshal(map[string]any{
+							"id":      cmplID,
+							"object":  "chat.completion.chunk",
+							"created": now,
+							"model":   req.Model,
+							"choices": []map[string]any{{
+								"index": 0,
+								"delta": map[string]string{
+									"content": chunk.Content,
+								},
+								"finish_reason": nil,
+							}},
+						})
+						fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+						flusher.Flush()
+						flushedContentLen += len(chunk.Content)
+					}
+				} else {
+					chunkJSON, _ := json.Marshal(map[string]any{
+						"id":      cmplID,
+						"object":  "chat.completion.chunk",
+						"created": now,
+						"model":   req.Model,
+						"choices": []map[string]any{{
+							"index": 0,
+							"delta": map[string]string{
+								"content": chunk.Content,
+							},
+							"finish_reason": nil,
+						}},
+					})
+					fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+					flusher.Flush()
+				}
 			}
 			if len(chunk.ToolCalls) > 0 {
 				toolCalls = append(toolCalls, chunk.ToolCalls...)
@@ -184,6 +211,27 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 					}
 				}
 				if len(toolCalls) > 0 {
+					cleanProse := tools.StripWebToolMarkup(fullContent.String())
+					if len(cleanProse) > flushedContentLen {
+						remaining := cleanProse[flushedContentLen:]
+						if strings.TrimSpace(remaining) != "" {
+							chunkJSON, _ := json.Marshal(map[string]any{
+								"id":      cmplID,
+								"object":  "chat.completion.chunk",
+								"created": now,
+								"model":   req.Model,
+								"choices": []map[string]any{{
+									"index": 0,
+									"delta": map[string]string{
+										"content": remaining,
+									},
+									"finish_reason": nil,
+								}},
+							})
+							fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+							flusher.Flush()
+						}
+					}
 					toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectCursor)
 					finishReason = "tool_calls"
 					oaCalls := tools.ToOpenAIToolCalls(toolCalls)
@@ -207,6 +255,28 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 							"choices": []map[string]any{{
 								"index":         0,
 								"delta":         delta,
+								"finish_reason": nil,
+							}},
+						})
+						fmt.Fprintf(w, "data: %s\n\n", chunkJSON)
+						flusher.Flush()
+					}
+				} else if bufferedContent.Len() > 0 {
+					cleanBuffered := bufferedContent.String()
+					if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
+						cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+					}
+					if cleanBuffered != "" {
+						chunkJSON, _ := json.Marshal(map[string]any{
+							"id":      cmplID,
+							"object":  "chat.completion.chunk",
+							"created": now,
+							"model":   req.Model,
+							"choices": []map[string]any{{
+								"index": 0,
+								"delta": map[string]string{
+									"content": cleanBuffered,
+								},
 								"finish_reason": nil,
 							}},
 						})
@@ -556,4 +626,19 @@ func writeOpenAIJSONError(w http.ResponseWriter, status int, code, message strin
 		},
 	})
 }
+
+func containsToolMarkup(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<tool-call") ||
+		strings.Contains(lower, "<function_call") ||
+		strings.Contains(lower, "[tool_call") ||
+		strings.Contains(lower, "[tool call") ||
+		strings.Contains(lower, "<invoke") ||
+		strings.Contains(lower, "<<<amux_tool") ||
+		strings.Contains(lower, "```tool_call") ||
+		strings.Contains(lower, "```tool") ||
+		strings.Contains(lower, "[end] need data")
+}
+
 

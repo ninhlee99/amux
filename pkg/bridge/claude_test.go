@@ -1,9 +1,15 @@
 package bridge_test
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"amux-accounts/pkg/bridge"
+	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/types"
 )
 
 func TestToChatRequest_SystemAndMessages(t *testing.T) {
@@ -72,5 +78,36 @@ func TestToChatRequest_ExpandsToolHistory(t *testing.T) {
 	}
 	if req.Messages[1].Role != "user" || req.Messages[1].Content != "fix the panic" {
 		t.Fatalf("user msg=%+v", req.Messages[1])
+	}
+}
+
+func TestClaudeBridge_StreamingToolCallsNoMarkupLeak(t *testing.T) {
+	adapter := &toolCallAdapter{
+		id:   "claude-stream-leak",
+		text: `I will check the directory: <tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>`,
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true })
+
+	body := []byte(`{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"tools": [{"name":"Bash","description":"shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
+		"messages": [{"role":"user","content":"list files"}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	if err := bridge.HandleClaudeMessages(rec, req, pool, body); err != nil {
+		t.Fatal(err)
+	}
+	out := rec.Body.String()
+	// Must contain tool_use block
+	if !strings.Contains(out, `"type":"tool_use"`) || !strings.Contains(out, `"name":"Bash"`) {
+		t.Fatalf("expected tool_use block in output, got: %s", out)
+	}
+	// Must NOT contain <tool_call> markup in text_delta
+	if strings.Contains(out, "<tool_call") {
+		t.Fatalf("tool markup leaked into text_delta stream: %s", out)
 	}
 }

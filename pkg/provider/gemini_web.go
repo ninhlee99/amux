@@ -94,7 +94,9 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	for attempt := 0; attempt < 2; attempt++ {
 		activeConv, hasActive := cm.GetActive(project)
 		var meta []string
-		if !req.FullContext && hasActive && activeConv != nil && !rotated {
+		canReuse := hasActive && activeConv != nil && !rotated &&
+			(activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
+		if canReuse {
 			meta = activeConv.Metadata
 		}
 		if rotated {
@@ -104,7 +106,13 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 
 		// After rotate or when meta is empty, force full context.
 		continuing := len(meta) > 0 && !rotated
-		prompt := WebBackendPrompt(req, continuing)
+		promptReq := req
+		if continuing && historyHasToolTurns(req.Messages) {
+			cloned := *req
+			cloned.FullContext = false
+			promptReq = &cloned
+		}
+		prompt := WebBackendPrompt(promptReq, continuing)
 		text, newMeta, err := a.streamGenerate(ctx, prompt, meta)
 		if err != nil {
 			if isGeminiUsageLimit(err) {

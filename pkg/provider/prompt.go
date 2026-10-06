@@ -33,7 +33,6 @@ const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output
 `
 
 // WebBackendPrompt builds the single string web UIs accept.
-// WebBackendPrompt builds the single string web UIs accept.
 // When conversations exceed safety token limits (~20k tokens) or max rune limits (85k runes),
 // it progressively fits messages while preserving initial user goal, system instructions, and recent tail.
 func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
@@ -66,7 +65,12 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
-	preamble := tools.WebPreambleForRequest(req)
+	var preamble string
+	if continuingThread {
+		preamble = tools.WebCatalogOnly(req.Tools)
+	} else {
+		preamble = tools.WebPreambleForRequest(req)
+	}
 	trimmedBody := strings.TrimSpace(body)
 	var finalPrompt string
 	if strings.HasSuffix(trimmedBody, "Assistant:") {
@@ -117,48 +121,36 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 		}
 	}
 
-	// Keep from the last user message that is NOT only a tool-result wrapper,
-	// including subsequent assistant tool_calls and tool results.
-	start := 0
+	// In a multi-turn tool conversation, locate the last assistant turn.
+	// The delta turns since the last assistant response are all subsequent tool
+	// results and/or new user messages.
+	lastAssistant := -1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if strings.EqualFold(messages[i].Role, "user") {
-			start = i
-			// Include immediately preceding assistant tool_calls if any.
-			if i > 0 && strings.EqualFold(messages[i-1].Role, "assistant") && len(messages[i-1].ToolCalls) > 0 {
-				start = i - 1
-			}
-			break
-		}
-	}
-	// Also pull the trailing tool-result chain before that user if the last
-	// messages are tool results (Claude Code pattern: user → assistant tools → tools → user).
-	slice := messages[start:]
-	// Prepend up to 2 prior tool results if start skipped them.
-	if start > 0 {
-		extra := 0
-		for i := start - 1; i >= 0 && extra < 2; i-- {
-			if strings.EqualFold(messages[i].Role, "tool") {
-				slice = append([]types.ChatMessage{messages[i]}, slice...)
-				extra++
-				continue
-			}
+		if strings.EqualFold(messages[i].Role, "assistant") {
+			lastAssistant = i
 			break
 		}
 	}
 
-	// Guarantee original task is preserved in continuing prompt when slice has no user turn
+	var slice []types.ChatMessage
+	if lastAssistant >= 0 && lastAssistant < len(messages)-1 {
+		slice = messages[lastAssistant+1:]
+	} else if lastAssistant >= 0 {
+		slice = messages[lastAssistant:]
+	} else {
+		slice = messages
+	}
+
+	// Guarantee original task is preserved in continuing prompt so model never drifts
 	if firstUser != "" {
-		hasUserInSlice := false
+		hasOriginalUser := false
 		for _, m := range slice {
-			if strings.EqualFold(m.Role, "user") {
-				c := strings.TrimSpace(m.Content)
-				if c != "" && !strings.EqualFold(c, "(no content)") {
-					hasUserInSlice = true
-					break
-				}
+			if strings.EqualFold(m.Role, "user") && strings.Contains(m.Content, firstUser) {
+				hasOriginalUser = true
+				break
 			}
 		}
-		if !hasUserInSlice {
+		if !hasOriginalUser {
 			slice = append([]types.ChatMessage{{Role: "user", Content: "[Task Goal]: " + firstUser}}, slice...)
 		}
 	}

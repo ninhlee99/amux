@@ -131,6 +131,12 @@ func Targets() []Target {
 		{
 			Name: "cline", Label: "Cline", Format: "json", Key: "mcpServers",
 			Path: func(h string) string {
+				for _, app := range []string{"Code", "Cursor", "Windsurf"} {
+					p := filepath.Join(appSupport(h, app), "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
+					if _, err := os.Stat(filepath.Dir(p)); err == nil {
+						return p
+					}
+				}
 				return filepath.Join(appSupport(h, "Code"), "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
 			},
 			Entry: stdioEntry,
@@ -138,6 +144,12 @@ func Targets() []Target {
 		{
 			Name: "roo", Label: "Roo Code", Format: "json", Key: "mcpServers",
 			Path: func(h string) string {
+				for _, app := range []string{"Code", "Cursor", "Windsurf"} {
+					p := filepath.Join(appSupport(h, app), "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json")
+					if _, err := os.Stat(filepath.Dir(p)); err == nil {
+						return p
+					}
+				}
 				return filepath.Join(appSupport(h, "Code"), "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "cline_mcp_settings.json")
 			},
 			Entry: stdioEntry,
@@ -165,11 +177,29 @@ func FindTarget(name string) (Target, bool) {
 	return Target{}, false
 }
 
-// Detected reports whether the host looks installed (its config dir exists).
+// Detected reports whether the host looks installed (its config dir exists or application bundle exists).
 func (t Target) Detected(home string) bool {
 	if t.CLI != nil {
 		add, _ := t.CLI("")
 		if _, err := exec.LookPath(add[0]); err == nil {
+			return true
+		}
+	}
+	switch t.Name {
+	case "cursor":
+		if _, err := os.Stat("/Applications/Cursor.app"); err == nil {
+			return true
+		}
+	case "windsurf":
+		if _, err := os.Stat("/Applications/Windsurf.app"); err == nil {
+			return true
+		}
+	case "zed":
+		if _, err := os.Stat("/Applications/Zed.app"); err == nil {
+			return true
+		}
+	case "vscode":
+		if _, err := os.Stat("/Applications/Visual Studio Code.app"); err == nil {
 			return true
 		}
 	}

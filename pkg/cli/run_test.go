@@ -5,8 +5,11 @@ import (
 )
 
 func TestCmdRun_HelpNoArgs(t *testing.T) {
-	// Calling with no args should print usage and return safely without exit
+	// Calling with no args or help should print usage and return safely without exit
 	CmdRun([]string{})
+	CmdRun([]string{"--help"})
+	CmdRun([]string{"-h"})
+	CmdRun([]string{"help"})
 }
 
 func TestPrepareSandboxEnv_AllTargets(t *testing.T) {

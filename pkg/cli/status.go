@@ -13,6 +13,12 @@ func CmdStatus(args []string) {
 	gw := gateway.GetStatus()
 	if gw.Running {
 		fmt.Printf("Gateway:  running on %s (pid %d)\n", gw.URL, gw.PID)
+		if gw.Sessions > 0 {
+			fmt.Printf("Sessions: %d active session(s)\n", gw.Sessions)
+		}
+		if gw.Upstream != "" {
+			fmt.Printf("Upstream: %s\n", gw.Upstream)
+		}
 	} else {
 		fmt.Println("Gateway:  stopped")
 	}
@@ -21,7 +27,13 @@ func CmdStatus(args []string) {
 	for _, h := range []struct {
 		name   string
 		hooked bool
-	}{{"Claude Code", gw.ClaudeHooked}, {"Cursor", gw.CursorHooked}, {"Codex", gw.CodexHooked}, {"Antigravity", gw.AgyHooked}} {
+	}{
+		{"Claude Code", gw.ClaudeHooked},
+		{"Cursor", gw.CursorHooked},
+		{"Windsurf", gw.WindsurfHooked},
+		{"Codex", gw.CodexHooked},
+		{"Antigravity", gw.AgyHooked},
+	} {
 		if h.hooked {
 			hooks = append(hooks, h.name)
 		}

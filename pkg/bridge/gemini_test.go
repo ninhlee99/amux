@@ -306,3 +306,35 @@ func TestHandleGeminiModels(t *testing.T) {
 		t.Errorf("expected gemini-3.8-flash in models list: %+v", resp.Models)
 	}
 }
+
+func TestGeminiBridge_StreamingToolCallsNoMarkupLeak(t *testing.T) {
+	adapter := &mockStreamAdapter{
+		id: "gemini-stream-leak",
+		chunks: []types.StreamChunk{
+			{ID: "gemini-stream-leak", Content: `Checking now: <tool_call>{"name":"Read","arguments":{"file_path":"test.txt"}}</tool_call>`},
+			{ID: "gemini-stream-leak", Done: true},
+		},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+
+	reqBody := `{
+		"contents":[{"role":"user","parts":[{"text":"Read test.txt"}]}],
+		"tools":[{"functionDeclarations":[{"name":"Read","parameters":{"type":"object"}}]}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", bytes.NewBufferString(reqBody))
+	rec := httptest.NewRecorder()
+
+	bridge.HandleGeminiGenerateContent(rec, req, pool)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "functionCall") || !strings.Contains(bodyStr, "Read") {
+		t.Fatalf("expected functionCall in stream: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "<tool_call") {
+		t.Fatalf("tool markup leaked into text parts: %s", bodyStr)
+	}
+}

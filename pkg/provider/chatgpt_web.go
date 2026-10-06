@@ -238,7 +238,9 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	for {
 		activeConv, hasActive := cm.GetActive(project)
 		var convID, parentID string
-		if !req.FullContext && hasActive && activeConv != nil && !rotatedConv {
+		canReuse := hasActive && activeConv != nil && !rotatedConv &&
+			(activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
+		if canReuse {
 			convID = activeConv.ID
 			parentID = activeConv.ParentID
 		}
@@ -249,10 +251,14 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			parentID = ""
 		}
 
-		// When FullContext is true (Claude Code / API coding agents), execute statelessly
-		// like a true API: evaluate the clean flattened transcript without server-side drift.
-		// Only interactive single-turn sessions (!FullContext) continue server-side threads.
-		prompt := WebBackendPrompt(req, convID != "" && parentID != "")
+		promptReq := req
+		if canReuse && historyHasToolTurns(req.Messages) {
+			cloned := *req
+			cloned.FullContext = false
+			promptReq = &cloned
+		}
+
+		prompt := WebBackendPrompt(promptReq, convID != "" && parentID != "")
 		if parentID == "" {
 			parentID = nilParentMessageID
 		}

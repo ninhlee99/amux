@@ -41,18 +41,26 @@ const webToolCloser = `
 `
 
 var (
-	reThought        = regexp.MustCompile(`(?s)<thought>\s*(.*?)\s*</thought>`)
-	reXMLTool        = regexp.MustCompile(`(?s)<tool_call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool_call>`)
-	reInvokeTool     = regexp.MustCompile(`(?s)<(?:invoke|function_call)\s+name="?([^"\s>]+)"?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
-	reXMLParam       = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
-	reAMUXTool       = regexp.MustCompile(`(?s)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
-	reToolJSON       = regexp.MustCompile("(?s)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
-	reBashFence      = regexp.MustCompile("(?s)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
+	reThought          = regexp.MustCompile(`(?si)<thought>\s*(.*?)\s*</thought>`)
+	reThinking         = regexp.MustCompile(`(?si)<thinking>\s*(.*?)\s*</thinking>`)
+	reReflection       = regexp.MustCompile(`(?si)<reflection>\s*(.*?)\s*</reflection>`)
+	reXMLTool          = regexp.MustCompile(`(?si)<tool_call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool_call>`)
+	reHyphenTool       = regexp.MustCompile(`(?si)<tool-call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool-call>`)
+	reInvokeTool       = regexp.MustCompile(`(?si)<(?:invoke|function_call)\s+name="?([^"\s>]+)"?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
+	reXMLParam         = regexp.MustCompile(`(?si)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
+	reAMUXTool         = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
+	reToolJSON         = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
+	reBashFence        = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
-	reBracketTool    = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
-	reBracketToolAlt = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
-	reTrailComma     = regexp.MustCompile(`,\s*([}\]])`)
-	reEmptyFence     = regexp.MustCompile("(?s)```[a-zA-Z0-9_-]*\\s*```")
+	reBracketTool      = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
+	reBracketToolAlt   = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
+	reStrayBracketTool = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call)[^\]]*\]`)
+	reEndNotice        = regexp.MustCompile(`(?im)^\[end\]\s+Need data[^\n]*\n?`)
+	reXferNotice       = regexp.MustCompile(`(?im)^\[xfer\]\s+Continue[^\n]*\n?`)
+	reCatalogNotice    = regexp.MustCompile(`(?im)^CATALOG\b[^\n]*\n?`)
+	reToolResultMarker = regexp.MustCompile(`(?im)^\[Tool result[^\n]*\]:?\n?`)
+	reTrailComma       = regexp.MustCompile(`,\s*([}\]])`)
+	reEmptyFence       = regexp.MustCompile("(?si)```[a-zA-Z0-9_-]*\\s*```")
 )
 
 // WebPreamble is appended to a web-backend prompt when the client sent tools[].
@@ -284,6 +292,8 @@ func historyHasTools(hist []types.ChatMessage) bool {
 func hasExplicitWebToolMarkup(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "<tool-call") ||
+		strings.Contains(lower, "<function_call") ||
 		strings.Contains(lower, "[tool_call") ||
 		strings.Contains(lower, "[tool call") ||
 		strings.Contains(lower, "<invoke") ||
@@ -530,6 +540,20 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 	}
 
 	for _, m := range reXMLTool.FindAllStringSubmatch(text, -1) {
+		attrName, attrID, body := m[1], m[2], m[3]
+		if name, id, args, ok := parseToolCallJSON(body); ok {
+			if attrName != "" && name == "" {
+				name = attrName
+			}
+			if attrID != "" && id == "" {
+				id = attrID
+			}
+			add(name, id, args)
+		} else if attrName != "" {
+			add(attrName, attrID, body)
+		}
+	}
+	for _, m := range reHyphenTool.FindAllStringSubmatch(text, -1) {
 		attrName, attrID, body := m[1], m[2], m[3]
 		if name, id, args, ok := parseToolCallJSON(body); ok {
 			if attrName != "" && name == "" {
@@ -1197,11 +1221,19 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 // also print the commands or thinking internal steps as raw assistant text.
 func StripWebToolMarkup(text string) string {
 	s := reThought.ReplaceAllString(text, "")
+	s = reThinking.ReplaceAllString(s, "")
+	s = reReflection.ReplaceAllString(s, "")
 	s = reXMLTool.ReplaceAllString(s, "")
+	s = reHyphenTool.ReplaceAllString(s, "")
 	s = reInvokeTool.ReplaceAllString(s, "")
 	s = reAMUXTool.ReplaceAllString(s, "")
 	s = reBracketTool.ReplaceAllString(s, "")
 	s = reBracketToolAlt.ReplaceAllString(s, "")
+	s = reStrayBracketTool.ReplaceAllString(s, "")
+	s = reEndNotice.ReplaceAllString(s, "")
+	s = reXferNotice.ReplaceAllString(s, "")
+	s = reCatalogNotice.ReplaceAllString(s, "")
+	s = reToolResultMarker.ReplaceAllString(s, "")
 	s = reToolJSON.ReplaceAllString(s, "")
 	s = reBashFence.ReplaceAllString(s, "")
 	s = reEmptyFence.ReplaceAllString(s, "")

@@ -113,6 +113,7 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 	}
 	var sb strings.Builder
 	var thinking strings.Builder
+	var recordedToolCalls []types.ToolCall
 	served := req.ServingAccount
 	for c := range ch {
 		if c.Error != nil {
@@ -140,7 +141,7 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 			}
 		}
 		for _, tc := range c.ToolCalls {
-			// Text-only consult: surface stray tool calls rather than dropping them.
+			recordedToolCalls = append(recordedToolCalls, tc)
 			fmt.Fprintf(&sb, "\n[tool_call %s %s]", tc.Name, tc.Arguments)
 		}
 	}
@@ -150,6 +151,12 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 	text := strings.TrimSpace(sb.String())
 	if clean := tools.StripWebToolMarkup(text); strings.TrimSpace(clean) != "" {
 		text = strings.TrimSpace(clean)
+	} else if len(recordedToolCalls) > 0 {
+		var parts []string
+		for _, tc := range recordedToolCalls {
+			parts = append(parts, fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments))
+		}
+		text = "Provider requested tool execution: " + strings.Join(parts, "; ")
 	}
 	if text == "" && thinking.Len() > 0 {
 		text = strings.TrimSpace(thinking.String())

@@ -23,11 +23,12 @@ type GatewayStatus struct {
 	PID          int            `json:"pid,omitempty"`
 	Port         string         `json:"port"`
 	URL          string         `json:"url"`
-	ClaudeHooked bool           `json:"claude_hooked"`
-	CursorHooked bool           `json:"cursor_hooked"`
-	CodexHooked  bool           `json:"codex_hooked"`
-	AgyHooked    bool           `json:"agy_hooked"`
-	Upstream     string         `json:"upstream,omitempty"`
+	ClaudeHooked   bool           `json:"claude_hooked"`
+	CursorHooked   bool           `json:"cursor_hooked"`
+	WindsurfHooked bool           `json:"windsurf_hooked"`
+	CodexHooked    bool           `json:"codex_hooked"`
+	AgyHooked      bool           `json:"agy_hooked"`
+	Upstream       string         `json:"upstream,omitempty"`
 	Mode         string         `json:"mode,omitempty"`
 	Sessions     int            `json:"sessions"`
 	PublicMode   bool           `json:"public_mode"`
@@ -86,6 +87,7 @@ func GetStatus() GatewayStatus {
 
 	st.ClaudeHooked, _ = IsClaudeHooked()
 	st.CursorHooked, _ = IsCursorHooked()
+	st.WindsurfHooked, _ = IsWindsurfHooked()
 	st.CodexHooked, _ = IsCodexHooked()
 	st.AgyHooked, _ = IsAgyHooked()
 

@@ -219,24 +219,60 @@ func ResolveBinaryPath(binName string) (string, error) {
 // in an isolated sandbox environment with gateway variables injected into
 // the child process only, without mutating global system configurations or launchctl.
 func CmdRun(args []string) {
-	if len(args) == 0 {
-		fmt.Println("Usage: amux run <ide> [args...]")
-		fmt.Println("Supported IDEs: claude, cursor, windsurf, codex, agy (antigravity)")
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		helpRun()
 		return
 	}
 
 	target := strings.ToLower(args[0])
-	extraArgs := args[1:]
+	rawExtraArgs := args[1:]
+
+	// Detect --setup flag
+	setupRequested := false
+	var extraArgs []string
+	for _, arg := range rawExtraArgs {
+		if arg == "--setup" {
+			setupRequested = true
+		} else {
+			extraArgs = append(extraArgs, arg)
+		}
+	}
 
 	gatewayURL := "http://127.0.0.1:8787"
 	if customPort := os.Getenv("AMUX_PORT"); customPort != "" {
 		gatewayURL = "http://127.0.0.1:" + customPort
 	}
 
+	// Auto-setup for IDEs if requested
+	if setupRequested {
+		switch target {
+		case "cursor":
+			if err := hook.SyncCursorSettingsEnv(true, gatewayURL); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ Failed to configure Cursor settings: %v\n", err)
+			} else {
+				fmt.Printf("✓ Successfully configured Cursor settings.json (openai.baseUrl -> %s/v1)\n", gatewayURL)
+			}
+		case "windsurf":
+			if err := hook.SyncWindsurfSettingsEnv(true, gatewayURL); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ Failed to configure Windsurf settings: %v\n", err)
+			} else {
+				fmt.Printf("✓ Successfully configured Windsurf settings.json (openai.baseUrl -> %s/v1)\n", gatewayURL)
+			}
+		case "claude", "claude-code":
+			fmt.Printf("✓ Claude is configured to use AMUX Gateway via ANTHROPIC_BASE_URL=%s\n", gatewayURL)
+		default:
+			fmt.Printf("✓ IDE %s configured for AMUX Gateway (%s)\n", target, gatewayURL)
+		}
+	}
+
 	binName, envOverrides := PrepareSandboxEnv(target, gatewayURL)
 
 	binPath, err := ResolveBinaryPath(binName)
 	if err != nil {
+		if setupRequested {
+			// If user only wanted to set up settings and the IDE binary isn't in PATH, exit cleanly
+			return
+		}
 		fmt.Fprintf(os.Stderr, "amux run: %v\n", err)
 		os.Exit(1)
 	}
@@ -277,10 +313,16 @@ func CmdRun(args []string) {
 		if (ok && strings.TrimSpace(base) != "") || (ok2 && strings.TrimSpace(base2) != "") {
 			fmt.Printf("✓ Cursor AI Chat already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
 		} else {
-			fmt.Printf("💡 Tip: For Cursor GUI AI Chat, ensure Cursor Settings > Models > 'Override OpenAI Base URL' is set to %s/v1 (or run 'amux hook cursor' to auto-configure).\n", gatewayURL)
+			fmt.Printf("💡 Tip: For Cursor GUI AI Chat, run 'amux run cursor --setup' to auto-configure settings.json.\n")
 		}
 	} else if target == "windsurf" {
-		fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, configure OpenAI Base URL to %s/v1 in Settings > Models\n", gatewayURL)
+		wm := hook.LoadWindsurfSettings()
+		base, ok := wm["openai.baseUrl"].(string)
+		if ok && strings.TrimSpace(base) != "" {
+			fmt.Printf("✓ Windsurf Cascade already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else {
+			fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, run 'amux run windsurf --setup' to auto-configure settings.json.\n")
+		}
 	} else if target == "aider" {
 		fmt.Printf("💡 Tip: Aider is pre-configured with AMUX. Run with '--model openai/gpt-4o' or '--model anthropic/claude-3-5-sonnet'\n")
 	} else if target == "opencode" {
@@ -320,7 +362,7 @@ func CmdRun(args []string) {
 }
 
 func helpRun() {
-	fmt.Println("Usage: amux run <ide> [args...]")
+	fmt.Println("Usage: amux run <ide> [--setup] [args...]")
 	fmt.Println("  Runs the selected IDE or coding agent in a sandboxed session")
 	fmt.Println("  pointing to the AMUX Gateway without altering global system files.")
 	fmt.Println()
@@ -334,4 +376,8 @@ func helpRun() {
 	fmt.Println("  opencode  - Runs OpenCode agent with OPENAI_BASE_URL injected")
 	fmt.Println("  zed       - Runs Zed editor with AI proxy variables injected")
 	fmt.Println("  <cmd>     - Arbitrary agent or tool with all AI proxy variables preconfigured")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --setup   - Automatically configures the IDE settings (e.g. Cursor / Windsurf settings.json)")
+	fmt.Println("              to connect to AMUX Gateway before launching.")
 }

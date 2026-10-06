@@ -142,6 +142,8 @@ func CmdDoctor(args []string) {
 	checkTool("VS Code", "code", errCode == nil)
 	_, errZed := exec.LookPath("zed")
 	checkTool("Zed", "zed", errZed == nil)
+	checkTool("Aider", "aider", false)
+	checkTool("OpenCode", "opencode", false)
 
 	// 5. MCP Host Integrations
 	fmt.Println("\n== MCP Host Integrations ==")
@@ -255,11 +257,16 @@ func CmdAudit(args []string) {
 }
 
 func checkTool(name, bin string, available bool) {
-	if available {
+	if p, err := ResolveBinaryPath(bin); err == nil && p != "" {
+		fmt.Printf("✓ %-14s: Available (%s)\n", name, p)
+	} else if available {
 		path, _ := exec.LookPath(bin)
+		if path == "" {
+			path = "configured via app/config"
+		}
 		fmt.Printf("✓ %-14s: Available (%s)\n", name, path)
 	} else {
-		fmt.Printf("- %-14s: Not found on PATH\n", name)
+		fmt.Printf("- %-14s: Not installed\n", name)
 	}
 }
 

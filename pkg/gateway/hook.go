@@ -506,6 +506,8 @@ func HookCursor(baseURL string) error {
 		}
 	}
 	m["cursor.openaiBaseUrl"] = baseURL
+	m["cursor.general.openaiBaseUrl"] = baseURL
+	m["openai.baseUrl"] = baseURL
 
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -527,11 +529,16 @@ func UnhookCursor() error {
 			return fmt.Errorf("unmarshal %s: %w", p, err)
 		}
 	}
-	val, exists := m["cursor.openaiBaseUrl"].(string)
-	if !exists || !isGatewayURL(val) {
+	changed := false
+	for _, key := range []string{"cursor.openaiBaseUrl", "cursor.general.openaiBaseUrl", "openai.baseUrl"} {
+		if val, exists := m[key].(string); exists && isGatewayURL(val) {
+			delete(m, key)
+			changed = true
+		}
+	}
+	if !changed {
 		return nil
 	}
-	delete(m, "cursor.openaiBaseUrl")
 
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -551,8 +558,43 @@ func IsCursorHooked() (bool, string) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return false, ""
 	}
-	if val, ok := m["cursor.openaiBaseUrl"].(string); ok && isGatewayURL(val) {
-		return true, val
+	for _, key := range []string{"cursor.general.openaiBaseUrl", "cursor.openaiBaseUrl", "openai.baseUrl"} {
+		if val, ok := m[key].(string); ok && isGatewayURL(val) {
+			return true, val
+		}
+	}
+	return false, ""
+}
+
+// WindsurfSettingsPath returns path to Windsurf user settings.json.
+func WindsurfSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	macPath := filepath.Join(home, "Library", "Application Support", "Windsurf", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(macPath)); err == nil {
+		return macPath
+	}
+	linuxPath := filepath.Join(home, ".config", "Windsurf", "User", "settings.json")
+	if _, err := os.Stat(filepath.Dir(linuxPath)); err == nil {
+		return linuxPath
+	}
+	return filepath.Join(home, ".codeium", "windsurf", "settings.json")
+}
+
+// IsWindsurfHooked checks if Windsurf is hooked to the gateway.
+func IsWindsurfHooked() (bool, string) {
+	p := WindsurfSettingsPath()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false, ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false, ""
+	}
+	for _, key := range []string{"openai.baseUrl", "codeium.openaiBaseUrl"} {
+		if val, ok := m[key].(string); ok && isGatewayURL(val) {
+			return true, val
+		}
 	}
 	return false, ""
 }

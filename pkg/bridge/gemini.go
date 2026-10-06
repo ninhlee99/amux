@@ -312,6 +312,10 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		ping := time.NewTicker(streamKeepaliveInterval)
 		defer ping.Stop()
 
+		hasTools := len(req.Tools) > 0
+		var bufferedContent strings.Builder
+		flushedContentLen := 0
+
 		for {
 			chunk, ok, recvErr := recvStreamChunk(ctx, streamChan, ping.C, nil)
 			if recvErr != nil {
@@ -343,18 +347,39 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 			}
 			if chunk.Content != "" {
 				fullContent.WriteString(chunk.Content)
-				chunkResp := geminiGenerateResponse{
-					Candidates: []geminiCandidate{{
-						Index: 0,
-						Content: geminiCandidateContent{
-							Role:  "model",
-							Parts: []geminiPart{{Text: chunk.Content}},
-						},
-					}},
+				if hasTools {
+					currentAll := fullContent.String()
+					if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") {
+						bufferedContent.WriteString(chunk.Content)
+					} else {
+						chunkResp := geminiGenerateResponse{
+							Candidates: []geminiCandidate{{
+								Index: 0,
+								Content: geminiCandidateContent{
+									Role:  "model",
+									Parts: []geminiPart{{Text: chunk.Content}},
+								},
+							}},
+						}
+						b, _ := json.Marshal(chunkResp)
+						fmt.Fprintf(w, "data: %s\n\n", b)
+						flusher.Flush()
+						flushedContentLen += len(chunk.Content)
+					}
+				} else {
+					chunkResp := geminiGenerateResponse{
+						Candidates: []geminiCandidate{{
+							Index: 0,
+							Content: geminiCandidateContent{
+								Role:  "model",
+								Parts: []geminiPart{{Text: chunk.Content}},
+							},
+						}},
+					}
+					b, _ := json.Marshal(chunkResp)
+					fmt.Fprintf(w, "data: %s\n\n", b)
+					flusher.Flush()
 				}
-				b, _ := json.Marshal(chunkResp)
-				fmt.Fprintf(w, "data: %s\n\n", b)
-				flusher.Flush()
 			}
 			if len(chunk.ToolCalls) > 0 {
 				toolCalls = append(toolCalls, chunk.ToolCalls...)
@@ -369,6 +394,24 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 					}
 				}
 				if len(toolCalls) > 0 {
+					cleanProse := tools.StripWebToolMarkup(fullContent.String())
+					if len(cleanProse) > flushedContentLen {
+						remaining := cleanProse[flushedContentLen:]
+						if strings.TrimSpace(remaining) != "" {
+							chunkResp := geminiGenerateResponse{
+								Candidates: []geminiCandidate{{
+									Index: 0,
+									Content: geminiCandidateContent{
+										Role:  "model",
+										Parts: []geminiPart{{Text: remaining}},
+									},
+								}},
+							}
+							b, _ := json.Marshal(chunkResp)
+							fmt.Fprintf(w, "data: %s\n\n", b)
+							flusher.Flush()
+						}
+					}
 					toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectGemini)
 					geminiCalls := tools.ToGeminiFunctionCalls(toolCalls)
 					parts := make([]geminiPart, 0, len(geminiCalls))
@@ -392,6 +435,25 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 					b, _ := json.Marshal(chunkResp)
 					fmt.Fprintf(w, "data: %s\n\n", b)
 					flusher.Flush()
+				} else if bufferedContent.Len() > 0 {
+					cleanBuffered := bufferedContent.String()
+					if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
+						cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+					}
+					if cleanBuffered != "" {
+						chunkResp := geminiGenerateResponse{
+							Candidates: []geminiCandidate{{
+								Index: 0,
+								Content: geminiCandidateContent{
+									Role:  "model",
+									Parts: []geminiPart{{Text: cleanBuffered}},
+								},
+							}},
+						}
+						b, _ := json.Marshal(chunkResp)
+						fmt.Fprintf(w, "data: %s\n\n", b)
+						flusher.Flush()
+					}
 				}
 				break
 			}
