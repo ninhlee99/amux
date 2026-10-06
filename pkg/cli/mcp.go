@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -76,13 +77,50 @@ func cmdMCPServe() {
 // amuxBinary is the absolute, symlink-resolved path IDE configs should run.
 func amuxBinary() string {
 	exe, err := os.Executable()
-	if err != nil {
-		return "amux"
+	if err == nil {
+		if r, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = r
+		}
+		lower := strings.ToLower(exe)
+		isTemp := strings.Contains(lower, "go-build") || strings.Contains(lower, "/tmp/") || strings.Contains(lower, "\\temp\\") || strings.Contains(lower, "var/folders")
+		if !isTemp && filepath.Base(exe) == "amux" {
+			return exe
+		}
 	}
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
+
+	// Try finding amux from PATH
+	if p, err := exec.LookPath("amux"); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			if r, err := filepath.EvalSymlinks(abs); err == nil {
+				return r
+			}
+			return abs
+		}
+		return p
 	}
-	return exe
+
+	// Fallback to standard installation paths
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, cand := range []string{
+			filepath.Join(home, ".local", "bin", "amux"),
+			filepath.Join(home, "bin", "amux"),
+			filepath.Join(home, "go", "bin", "amux"),
+			"/usr/local/bin/amux",
+			"/opt/homebrew/bin/amux",
+		} {
+			if _, err := os.Stat(cand); err == nil {
+				return cand
+			}
+		}
+	}
+
+	if exe != "" {
+		lower := strings.ToLower(exe)
+		if !strings.Contains(lower, "go-build") && !strings.Contains(lower, "/tmp/") && !strings.Contains(lower, "var/folders") {
+			return exe
+		}
+	}
+	return "amux"
 }
 
 func mcpTargetsFromArgs(args []string, home string) ([]mcp.Target, bool) {

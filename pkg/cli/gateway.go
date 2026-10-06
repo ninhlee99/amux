@@ -167,8 +167,12 @@ func hookedTools() []string {
 }
 
 // CmdOff returns every tool to native mode: removes all gateway hooks and
-// stops the gateway. Accounts, saved logins and MCP registrations are kept.
-func CmdOff(_ []string) {
+// stops the gateway. If an account ID is provided, it disables that account only.
+func CmdOff(args []string) {
+	if len(args) > 0 {
+		cmdIDOff(args)
+		return
+	}
 	hooked := hookedTools()
 	if err := gateway.Unhook(gateway.TargetAll); err != nil {
 		die("unhook: %v", err)
@@ -189,6 +193,15 @@ func CmdOff(_ []string) {
 		return
 	}
 	fmt.Println("✓ amux is off — every tool uses its own login directly. Restart open sessions to pick this up.")
+}
+
+// CmdOn re-enables a turned-off account in rotation, or starts the gateway if no args given.
+func CmdOn(args []string) {
+	if len(args) > 0 {
+		cmdIDOn(args)
+		return
+	}
+	cmdGatewayStart(args)
 }
 
 func cmdGatewayRestart(args []string) {

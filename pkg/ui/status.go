@@ -185,7 +185,7 @@ func printOneClaudeAccount(s *proxyStatus, a statusAccount) {
 		notes = append(notes, term.Red("re-login needed"))
 	}
 	if a.Disabled {
-		notes = append(notes, term.Dim("am on "+a.Profile))
+		notes = append(notes, term.Dim("amux on "+a.Profile))
 	}
 	if a.AutoSwitches+a.ManualSwitches > 0 {
 		notes = append(notes, term.Dim(fmt.Sprintf("auto %d · manual %d", a.AutoSwitches, a.ManualSwitches)))
@@ -524,7 +524,7 @@ func CmdGuard(args []string) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		term.Error("proxy returned HTTP %d (restart proxy with `am proxy restart` to activate latest features)", resp.StatusCode)
+		term.Error("proxy returned HTTP %d (restart proxy with `amux restart` to activate latest features)", resp.StatusCode)
 		return
 	}
 	var g map[string]any

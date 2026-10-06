@@ -82,19 +82,36 @@ Examples:
 
 func helpOff() {
 	fmt.Print(`Purpose:
-  Go back to native: every tool uses its own login, amux stays out of the way.
+  Turn off an account from rotation, or turn off the gateway and unhook all IDEs.
 
 Usage:
-  amux off
+  amux off [account-id]
 
-Unhooks every tool (Claude Code, Codex, Cursor, Antigravity) and stops the
-gateway, so each tool talks to its own provider with its own login again.
-Accounts, saved logins and MCP registrations are kept; restart open sessions.
+Details:
+  • With an account ID: disables the account so it is skipped during rotation.
+  • Without arguments: unhooks every tool (Claude Code, Codex, Cursor, Antigravity)
+    and stops the gateway, so each tool talks to its own provider directly.
 
 Examples:
-  amux off                          Back to native
-  amux start && amux hook claude    Undo it
-  amux uninstall                    Remove amux completely
+  amux off claude:code:01           Disable account from rotation
+  amux off                          Back to native (unhook and stop gateway)
+`)
+}
+
+func helpOn() {
+	fmt.Print(`Purpose:
+  Re-enable a turned-off account in rotation, or start the gateway daemon.
+
+Usage:
+  amux on [account-id]
+
+Details:
+  • With an account ID: re-enables the account in rotation.
+  • Without arguments: starts the AMUX Gateway daemon.
+
+Examples:
+  amux on claude:code:01            Re-enable account in rotation
+  amux on                           Start the gateway daemon
 `)
 }
 

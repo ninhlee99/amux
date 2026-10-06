@@ -21,6 +21,7 @@ type openAITool struct {
 
 // OpenAIToolCall is the assistant.tool_calls[] wire shape.
 type OpenAIToolCall struct {
+	Index        *int                `json:"index,omitempty"`
 	ID           string              `json:"id"`
 	Type         string              `json:"type"` // "function"
 	ExtraContent *GoogleExtraContent `json:"extra_content,omitempty"`
@@ -104,6 +105,16 @@ func ToOpenAIToolCalls(calls []types.ToolCall) []OpenAIToolCall {
 			oc.ExtraContent = &ec
 		}
 		out = append(out, oc)
+	}
+	return out
+}
+
+// ToOpenAIDeltaToolCalls maps canonical calls to OpenAI streaming delta tool_calls with explicit index.
+func ToOpenAIDeltaToolCalls(calls []types.ToolCall) []OpenAIToolCall {
+	out := ToOpenAIToolCalls(calls)
+	for i := range out {
+		idx := i
+		out[i].Index = &idx
 	}
 	return out
 }

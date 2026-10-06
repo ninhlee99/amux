@@ -203,3 +203,74 @@ func TestHandleChatCompletions_StreamErrorEndsWithDone(t *testing.T) {
 		t.Fatalf("stream error omitted [DONE]: %s", body)
 	}
 }
+
+type captureReqAdapter struct {
+	id      string
+	lastReq *types.ChatRequest
+}
+
+func (c *captureReqAdapter) ID() string    { return c.id }
+func (c *captureReqAdapter) Priority() int { return 1 }
+func (c *captureReqAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	c.lastReq = req
+	ch := make(chan types.StreamChunk, 2)
+	ch <- types.StreamChunk{ID: c.id, Content: "Output received."}
+	ch <- types.StreamChunk{ID: c.id, Done: true}
+	close(ch)
+	return ch, nil
+}
+
+func TestHandleChatCompletions_ToolNameLinking(t *testing.T) {
+	adapter := &captureReqAdapter{id: "capture:01"}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{adapter})
+	pool.SetSubscriptionPoolFilter(func(string) bool { return true })
+
+	body := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": "list directory"},
+			{
+				"role": "assistant",
+				"tool_calls": [
+					{
+						"id": "call_abc123",
+						"type": "function",
+						"function": {"name": "run_command", "arguments": "{\"command\":\"ls\"}"}
+					}
+				]
+			},
+			{
+				"role": "tool",
+				"tool_call_id": "call_abc123",
+				"content": "file1.go\nfile2.go"
+			}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	bridge.HandleChatCompletions(rec, req, pool)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if adapter.lastReq == nil {
+		t.Fatal("adapter did not receive request")
+	}
+
+	msgs := adapter.lastReq.Messages
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	toolMsg := msgs[2]
+	if toolMsg.Role != "tool" {
+		t.Errorf("expected role 'tool', got %s", toolMsg.Role)
+	}
+	if toolMsg.ToolCallID != "call_abc123" {
+		t.Errorf("expected ToolCallID 'call_abc123', got %s", toolMsg.ToolCallID)
+	}
+	if toolMsg.Name != "run_command" {
+		t.Errorf("expected Name 'run_command' linked from assistant call, got %q", toolMsg.Name)
+	}
+}
+

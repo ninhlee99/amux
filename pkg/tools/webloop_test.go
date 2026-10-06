@@ -451,4 +451,187 @@ func TestStripWebToolMarkup_ResidualFences(t *testing.T) {
 	}
 }
 
+func TestParseWebTools_ExpandedAliases(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "run_command"},
+		{Name: "view_file"},
+		{Name: "replace_file_content"},
+		{Name: "grep_search"},
+		{Name: "find_by_name"},
+	}
+
+	// 1. Terminal / bash alias variants
+	text := `<tool_call>
+{"name": "terminal", "arguments": {"command": "echo hi"}}
+</tool_call>
+<tool_call>
+{"name": "cat", "arguments": {"file_path": "main.go"}}
+</tool_call>
+<tool_call>
+{"name": "replace", "arguments": {"file_path": "main.go", "old_string": "a", "new_string": "b"}}
+</tool_call>
+<tool_call>
+{"name": "ripgrep", "arguments": {"query": "func main"}}
+</tool_call>
+<tool_call>
+{"name": "find_files", "arguments": {"pattern": "*.go"}}
+</tool_call>`
+
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 calls, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "run_command" {
+		t.Errorf("expected terminal -> run_command, got %s", calls[0].Name)
+	}
+	if calls[1].Name != "view_file" {
+		t.Errorf("expected cat -> view_file, got %s", calls[1].Name)
+	}
+	if calls[2].Name != "replace_file_content" {
+		t.Errorf("expected replace -> replace_file_content, got %s", calls[2].Name)
+	}
+	if calls[3].Name != "grep_search" {
+		t.Errorf("expected ripgrep -> grep_search, got %s", calls[3].Name)
+	}
+	if calls[4].Name != "find_by_name" {
+		t.Errorf("expected find_files -> find_by_name, got %s", calls[4].Name)
+	}
+}
+
+func TestCoerceToolArgs_AGYCallMCPTool(t *testing.T) {
+	def := types.ToolDef{
+		Name: "call_mcp_tool",
+		InputSchema: []byte(`{
+			"type": "object",
+			"required": ["ServerName", "ToolName", "Arguments"],
+			"properties": {
+				"ServerName": {"type": "string"},
+				"ToolName": {"type": "string"},
+				"Arguments": {"type": "object"}
+			}
+		}`),
+	}
+
+	input := `{"server_name": "stitch", "tool_name": "list_projects", "arguments": {"limit": 10}}`
+	coerced := coerceToolArgs(input, def)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(coerced), &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if parsed["ServerName"] != "stitch" {
+		t.Errorf("expected ServerName='stitch', got %v", parsed["ServerName"])
+	}
+	if parsed["ToolName"] != "list_projects" {
+		t.Errorf("expected ToolName='list_projects', got %v", parsed["ToolName"])
+	}
+	argsMap, ok := parsed["Arguments"].(map[string]any)
+	if !ok || argsMap["limit"] != float64(10) {
+		t.Errorf("expected Arguments.limit=10, got %v", parsed["Arguments"])
+	}
+}
+
+func TestCoerceToolArgs_LineRangesAndPagination(t *testing.T) {
+	// 1. Tool expecting StartLine and EndLine
+	defLineRange := types.ToolDef{
+		Name: "view_file",
+		InputSchema: []byte(`{
+			"type": "object",
+			"properties": {
+				"AbsolutePath": {"type": "string"},
+				"StartLine": {"type": "integer"},
+				"EndLine": {"type": "integer"}
+			}
+		}`),
+	}
+
+	input := `{"file": "test.txt", "offset": 10, "limit": 20}`
+	coerced := coerceToolArgs(input, defLineRange)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(coerced), &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if parsed["StartLine"] != float64(10) {
+		t.Errorf("expected StartLine=10, got %v", parsed["StartLine"])
+	}
+	if parsed["EndLine"] != float64(29) {
+		t.Errorf("expected EndLine=29, got %v", parsed["EndLine"])
+	}
+
+	// 2. Tool expecting offset and limit
+	defOffsetLimit := types.ToolDef{
+		Name: "read_file",
+		InputSchema: []byte(`{
+			"type": "object",
+			"properties": {
+				"path": {"type": "string"},
+				"offset": {"type": "integer"},
+				"limit": {"type": "integer"}
+			}
+		}`),
+	}
+
+	input2 := `{"path": "test.txt", "start_line": 5, "end_line": 15}`
+	coerced2 := coerceToolArgs(input2, defOffsetLimit)
+	var parsed2 map[string]any
+	if err := json.Unmarshal([]byte(coerced2), &parsed2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if parsed2["offset"] != float64(5) {
+		t.Errorf("expected offset=5, got %v", parsed2["offset"])
+	}
+	if parsed2["limit"] != float64(11) {
+		t.Errorf("expected limit=11, got %v", parsed2["limit"])
+	}
+}
+
+func TestCoerceToolArgs_ProjectRootResolution(t *testing.T) {
+	def := types.ToolDef{
+		Name: "view_file",
+		InputSchema: []byte(`{
+			"type": "object",
+			"properties": {
+				"AbsolutePath": {"type": "string"}
+			}
+		}`),
+	}
+
+	coerced := coerceToolArgs(`{"path": "src/main.go"}`, def, "/my/workspace")
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(coerced), &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	expected := "/my/workspace/src/main.go"
+	if parsed["AbsolutePath"] != expected {
+		t.Errorf("expected AbsolutePath=%q, got %v", expected, parsed["AbsolutePath"])
+	}
+}
+
+func TestToOpenAIDeltaToolCalls_Indices(t *testing.T) {
+	calls := []types.ToolCall{
+		{ID: "call_1", Name: "bash", Arguments: `{"command":"ls"}`},
+		{ID: "call_2", Name: "read", Arguments: `{"path":"main.go"}`},
+	}
+	deltas := ToOpenAIDeltaToolCalls(calls)
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 delta tool calls, got %d", len(deltas))
+	}
+	if deltas[0].Index == nil || *deltas[0].Index != 0 {
+		t.Errorf("expected deltas[0].Index = 0, got %v", deltas[0].Index)
+	}
+	if deltas[1].Index == nil || *deltas[1].Index != 1 {
+		t.Errorf("expected deltas[1].Index = 1, got %v", deltas[1].Index)
+	}
+
+	// Verify JSON marshaling includes index
+	b, err := json.Marshal(deltas)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	str := string(b)
+	if !strings.Contains(str, `"index":0`) || !strings.Contains(str, `"index":1`) {
+		t.Errorf("expected marshaled JSON to contain index:0 and index:1, got: %s", str)
+	}
+}
+
+
 

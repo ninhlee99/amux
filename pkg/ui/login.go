@@ -839,12 +839,12 @@ func CmdDoctorProviders() {
 		return
 	}
 	if len(adapters) == 0 {
-		fmt.Println("No providers. Try: am login chatgpt|claude|gemini")
+		fmt.Println("No providers. Try: amux login chatgpt|claude|gemini")
 		return
 	}
 	probeFreeWeb := os.Getenv("AM_DOCTOR_WEB") == "1"
 	probeTools := os.Getenv("AM_DOCTOR_TOOLS") == "1"
-	fmt.Println(term.Bold("=== am doctor providers (live 1-turn probe) ==="))
+	fmt.Println(term.Bold("=== amux doctor providers (live 1-turn probe) ==="))
 	if !probeFreeWeb {
 		fmt.Println(term.Dim("free web skipped (set AM_DOCTOR_WEB=1 to probe)"))
 	}
@@ -1044,7 +1044,7 @@ func CmdAccountsFilter(filter string) {
 
 	accounts := CollectFlatAccounts(filter)
 	if len(accounts) == 0 {
-		term.Warn("No accounts. am login [claude|codex|gemini|cursor]")
+		term.Warn("No accounts. amux login [claude|codex|gemini|cursor]")
 		return
 	}
 
@@ -1063,10 +1063,10 @@ func CmdAccountsFilter(filter string) {
 
 // CmdPool lists accounts currently in the rotate pool (POOL=IN), flat — no group sections.
 func CmdPool() {
-	term.Header("amux pool", "rotate set · am pool add|remove <id>")
+	term.Header("amux pool", "rotate set · amux pool add|remove <id>")
 	rows := collectPoolRows()
 	if len(rows) == 0 {
-		term.Warn("Rotate pool empty. am pool add <id>  (see: am accounts)")
+		term.Warn("Rotate pool empty. amux pool add <id>  (see: amux accounts)")
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
@@ -1183,7 +1183,7 @@ func CmdAccountsCmd(args []string) {
 		fmt.Printf("set %s model to %s\n", args[1], args[2])
 	case "off", "disable":
 		if len(args) < 2 {
-			fmt.Println("Usage: am off <id>   (or: am pool remove <id>)")
+			fmt.Println("Usage: amux off <id>   (or: amux pool remove <id>)")
 			return
 		}
 		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], false); err != nil {
@@ -1191,10 +1191,10 @@ func CmdAccountsCmd(args []string) {
 			return
 		}
 		proxy.Sync()
-		fmt.Printf("off %s — out of rotate (am on %s)\n", args[1], args[1])
+		fmt.Printf("off %s — out of rotate (amux on %s)\n", args[1], args[1])
 	case "on", "enable":
 		if len(args) < 2 {
-			fmt.Println("Usage: am on <id>   (or: am pool add <id>)")
+			fmt.Println("Usage: amux on <id>   (or: amux pool add <id>)")
 			return
 		}
 		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], true); err != nil {
@@ -1204,7 +1204,7 @@ func CmdAccountsCmd(args []string) {
 		proxy.Sync()
 		fmt.Printf("on %s — back in rotate\n", args[1])
 	default:
-		fmt.Println("Usage: am accounts | am accounts rm <id> | am pool add|remove|priority|model")
+		fmt.Println("Usage: amux accounts | amux accounts rm <id> | amux pool add|remove|priority|model")
 	}
 }
 

@@ -208,7 +208,7 @@ func (a *GeminiWebAdapter) initLocked(ctx context.Context, retried bool) error {
 		if strings.Contains(text, "accounts.google.com") || resp.StatusCode == http.StatusUnauthorized {
 			return types.ErrAuthentication
 		}
-		return fmt.Errorf("failed to extract SNlM0e — cookies may be invalid; run: am login gemini-web")
+		return fmt.Errorf("failed to extract SNlM0e — cookies may be invalid; run: amux login gemini-web")
 	}
 	if a.reqID == 0 {
 		a.reqID = 100000 + int(time.Now().UnixNano()%900000)

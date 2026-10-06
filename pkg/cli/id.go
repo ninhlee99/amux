@@ -420,80 +420,90 @@ func cmdIDThreshold(args []string) {
 	fmt.Printf("✓ Updated threshold for %q to %.1f%%\n", target.ID, val)
 }
 
-// cmdIDOff hard-disables an identity so it is never used by the proxy
-// (rotator + pool) until explicitly re-enabled with `amux id on`.
-// For Claude subscription accounts (claude:code:XX) it also marks the
-// underlying profile bundle as disabled so the rotator respects it immediately.
+// cmdIDOff disables an identity or provider so it is never used by the proxy
+// (rotator + pool) until explicitly re-enabled with `amux on <id>`.
 func cmdIDOff(args []string) {
 	if len(args) == 0 {
-		die("usage: amux account off <id>")
+		die("usage: amux off <id>")
 	}
 	targetID := args[0]
-	target, err := identity.Get("", targetID)
-	if err != nil || target == nil {
-		die("identity %q not found", targetID)
-	}
+	found := false
 
-	// 1. Hard-disable in identity store
-	if err := identity.SetEnabled("", targetID, false); err != nil {
-		die("failed to disable identity: %v", err)
-	}
-
-	// 2. For Claude subscription profiles: also mark the profile bundle disabled
-	//    so the rotator (which reads profile metadata, not identities.json) picks
-	//    it up immediately via RefreshFromDisk called during proxy.Sync().
-	if strings.HasPrefix(target.ID, "claude:code") {
-		pName := ""
-		if target.Metadata != nil {
-			if s, ok := target.Metadata["profile_name"].(string); ok {
-				pName = s
+	// 1. Check identity store
+	if target, err := identity.Get("", targetID); err == nil && target != nil {
+		if err := identity.SetEnabled("", targetID, false); err != nil {
+			die("failed to disable identity: %v", err)
+		}
+		if strings.HasPrefix(target.ID, "claude:code") {
+			pName := ""
+			if target.Metadata != nil {
+				if s, ok := target.Metadata["profile_name"].(string); ok {
+					pName = s
+				}
+			}
+			if pName == "" {
+				pName = target.Email()
+			}
+			if pName != "" && pName != "-" {
+				_ = profile.SetDisabled("claude", pName, true)
 			}
 		}
-		if pName == "" {
-			pName = target.Email()
-		}
-		if pName != "" && pName != "-" {
-			_ = profile.SetDisabled("claude", pName, true)
-		}
+		found = true
+	}
+
+	// 2. Also check provider accounts.json
+	if err := provider.SetEnabled(provider.DefaultAccountsPath(), targetID, false); err == nil {
+		found = true
+	}
+
+	if !found {
+		die("account or provider %q not found", targetID)
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ %s is off — never used until: amux account on %s\n", targetID, targetID)
+	fmt.Printf("✓ %s is off — out of rotation (amux on %s)\n", targetID, targetID)
 }
 
-// cmdIDOn re-enables a hard-disabled identity.
+// cmdIDOn re-enables a disabled identity or provider.
 func cmdIDOn(args []string) {
 	if len(args) == 0 {
-		die("usage: amux account on <id>")
+		die("usage: amux on <id>")
 	}
 	targetID := args[0]
-	target, err := identity.Get("", targetID)
-	if err != nil || target == nil {
-		die("identity %q not found", targetID)
-	}
+	found := false
 
-	// 1. Re-enable in identity store
-	if err := identity.SetEnabled("", targetID, true); err != nil {
-		die("failed to enable identity: %v", err)
-	}
-
-	// 2. For Claude subscription profiles: clear the profile bundle disabled flag
-	if strings.HasPrefix(target.ID, "claude:code") {
-		pName := ""
-		if target.Metadata != nil {
-			if s, ok := target.Metadata["profile_name"].(string); ok {
-				pName = s
+	// 1. Check identity store
+	if target, err := identity.Get("", targetID); err == nil && target != nil {
+		if err := identity.SetEnabled("", targetID, true); err != nil {
+			die("failed to enable identity: %v", err)
+		}
+		if strings.HasPrefix(target.ID, "claude:code") {
+			pName := ""
+			if target.Metadata != nil {
+				if s, ok := target.Metadata["profile_name"].(string); ok {
+					pName = s
+				}
+			}
+			if pName == "" {
+				pName = target.Email()
+			}
+			if pName != "" && pName != "-" {
+				_ = profile.SetDisabled("claude", pName, false)
 			}
 		}
-		if pName == "" {
-			pName = target.Email()
-		}
-		if pName != "" && pName != "-" {
-			_ = profile.SetDisabled("claude", pName, false)
-		}
+		found = true
+	}
+
+	// 2. Also check provider accounts.json
+	if err := provider.SetEnabled(provider.DefaultAccountsPath(), targetID, true); err == nil {
+		found = true
+	}
+
+	if !found {
+		die("account or provider %q not found", targetID)
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ %s is on again.\n", targetID)
+	fmt.Printf("✓ %s is back in rotation.\n", targetID)
 }
 

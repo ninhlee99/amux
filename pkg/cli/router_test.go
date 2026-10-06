@@ -26,6 +26,8 @@ func TestRouter_DomainRouteRegistration(t *testing.T) {
 		"restart": "gateway",
 		"hook":    "gateway",
 		"unhook":  "gateway",
+		"on":      "gateway",
+		"off":     "gateway",
 		"env":     "gateway",
 		"gateway": "gateway",
 

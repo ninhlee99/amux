@@ -140,6 +140,12 @@ func (r *Router) registerGatewayRoutes() {
 		HelpHandler: helpOff,
 	})
 
+	r.Register("on", CommandRoute{
+		Domain:      domain,
+		Handler:     CmdOn,
+		HelpHandler: helpOn,
+	})
+
 	r.Register("pool", CommandRoute{
 		Domain:      "identity",
 		Handler:     CmdPool,

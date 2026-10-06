@@ -231,7 +231,7 @@ func RefreshWebAuthFromProfile(target WebLoginTarget, timeout time.Duration) (*C
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("no %s in profile %s — run am login %s", target.CookieName, target.Profile, target.Name)
+	return nil, fmt.Errorf("no %s in profile %s — run amux login %s", target.CookieName, target.Profile, target.Name)
 }
 
 // CaptureCookieViaBrowser opens a dedicated Chromium window and returns the

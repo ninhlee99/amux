@@ -186,10 +186,11 @@ func MaybeWrapWebStream(source string, req *types.ChatRequest, inner <-chan type
 	if inner == nil || req == nil || len(req.Tools) == 0 {
 		return inner
 	}
-	return wrapWebStream(source, req.Tools, req.Messages, inner)
+	proj := req.Project()
+	return wrapWebStream(source, req.Tools, req.Messages, inner, proj)
 }
 
-func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage, inner <-chan types.StreamChunk) <-chan types.StreamChunk {
+func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage, inner <-chan types.StreamChunk, projectRoot ...string) <-chan types.StreamChunk {
 	out := make(chan types.StreamChunk, 8)
 	go func() {
 		defer close(out)
@@ -230,7 +231,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				}
 			}
 		}
-		calls, forced := FinalizeWebToolCalls(text, defs, hist)
+		calls, forced := FinalizeWebToolCalls(text, defs, hist, projectRoot...)
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
 			cleanText := text
@@ -261,14 +262,14 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 }
 
 // FinalizeWebToolCalls parses web text into tool calls and coerces arg keys to the client dialect schema.
-func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMessage) (calls []types.ToolCall, forced bool) {
+func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMessage, projectRoot ...string) (calls []types.ToolCall, forced bool) {
 	if strings.TrimSpace(text) == "" || len(defs) == 0 {
 		return nil, false
 	}
 	// When prior tool history exists or explicit markup is present, avoid interpreting plain markdown bash codeblocks as tool executions.
 	allowBashFence := !historyHasTools(hist) && !hasExplicitWebToolMarkup(text)
 	calls = parseWebTools(text, defs, allowBashFence)
-	return coerceAllToolArgs(calls, defs), false
+	return coerceAllToolArgs(calls, defs, projectRoot...), false
 }
 
 func historyHasTools(hist []types.ChatMessage) bool {
@@ -321,21 +322,21 @@ func findToolDef(by map[string]types.ToolDef, names ...string) (types.ToolDef, b
 }
 
 func toolArgKey(d types.ToolDef, prefer ...string) string {
-	keys := schemaKeys(d.InputSchema, 8)
+	keys := schemaKeys(d.InputSchema, 30)
+	if len(keys) == 0 {
+		if len(prefer) > 0 {
+			return prefer[0]
+		}
+		return ""
+	}
 	for _, p := range prefer {
 		for _, k := range keys {
-			if k == p {
-				return p
+			if strings.EqualFold(k, p) {
+				return k
 			}
 		}
 	}
-	if len(keys) > 0 {
-		return keys[0]
-	}
-	if len(prefer) > 0 {
-		return prefer[0]
-	}
-	return "input"
+	return ""
 }
 
 func logWebTools(source string, calls []types.ToolCall, raw string) {
@@ -352,8 +353,8 @@ func logWebTools(source string, calls []types.ToolCall, raw string) {
 }
 
 // ParseWebTools extracts tool calls from a web model's text reply.
-func ParseWebTools(text string, defs []types.ToolDef) []types.ToolCall {
-	return coerceAllToolArgs(parseWebTools(text, defs, true), defs)
+func ParseWebTools(text string, defs []types.ToolDef, projectRoot ...string) []types.ToolCall {
+	return coerceAllToolArgs(parseWebTools(text, defs, true), defs, projectRoot...)
 }
 
 func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []types.ToolCall {
@@ -378,29 +379,44 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		lower := strings.ToLower(name)
 		switch {
 		case lower == "bash" || lower == "shell" || lower == "run_terminal_command" ||
-			lower == "run_command" || lower == "exec_command":
+			lower == "run_command" || lower == "exec_command" || lower == "terminal" ||
+			lower == "execute_bash" || lower == "run_shell_command" || lower == "cmd" ||
+			lower == "sh" || lower == "bash_command" || lower == "execute_command":
 			if d, ok := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell"); ok {
 				return d.Name, true
 			}
-		case lower == "read" || lower == "read_file" || lower == "view_file":
-			if d, ok := findToolDef(by, "read", "read_file", "view_file"); ok {
+		case lower == "read" || lower == "read_file" || lower == "view_file" ||
+			lower == "view" || lower == "cat" || lower == "show_file" ||
+			lower == "open_file" || lower == "get_file_content" || lower == "readfile":
+			if d, ok := findToolDef(by, "read", "read_file", "view_file", "view"); ok {
 				return d.Name, true
 			}
-		case lower == "write" || lower == "write_file" || lower == "write_to_file":
+		case lower == "write" || lower == "write_file" || lower == "write_to_file" ||
+			lower == "create_file" || lower == "new_file" || lower == "save_file" ||
+			lower == "overwrite_file" || lower == "touch" || lower == "writefile":
 			if d, ok := findToolDef(by, "write", "write_file", "write_to_file"); ok {
 				return d.Name, true
 			}
 		case lower == "edit" || lower == "edit_file" || lower == "replace_file_content" ||
-			lower == "patch" || lower == "str_replace_editor":
-			if d, ok := findToolDef(by, "edit", "edit_file", "replace_file_content", "patch", "str_replace_editor"); ok {
+			lower == "patch" || lower == "str_replace_editor" || lower == "replace" ||
+			lower == "modify_file" || lower == "update_file" || lower == "apply_patch" ||
+			lower == "patch_file" || lower == "editfile":
+			if d, ok := findToolDef(by, "edit", "edit_file", "replace_file_content", "patch", "str_replace_editor", "replace"); ok {
 				return d.Name, true
 			}
-		case lower == "grep" || lower == "grep_search" || lower == "search_code" || lower == "search":
+		case lower == "grep" || lower == "grep_search" || lower == "search_code" ||
+			lower == "search" || lower == "ripgrep" || lower == "find_in_files" ||
+			lower == "code_search" || lower == "search_files":
 			if d, ok := findToolDef(by, "grep", "grep_search", "search_code", "search"); ok {
 				return d.Name, true
 			}
-		case lower == "find" || lower == "find_by_name" || lower == "glob" || lower == "file_search":
+		case lower == "find" || lower == "find_by_name" || lower == "glob" ||
+			lower == "file_search" || lower == "locate_files" || lower == "find_files":
 			if d, ok := findToolDef(by, "find", "find_by_name", "glob", "file_search"); ok {
+				return d.Name, true
+			}
+		case lower == "list_dir" || lower == "list_directory" || lower == "ls" || lower == "dir" || lower == "list_files":
+			if d, ok := findToolDef(by, "list_dir", "list_directory", "list_files", "glob", "find_by_name"); ok {
 				return d.Name, true
 			}
 		case lower == "agent" || lower == "invoke_subagent" || lower == "subagent" ||
@@ -417,11 +433,15 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		// MCP tool matching: e.g. "mcp__server__tool" <-> "server_tool" or "mcp_server_tool"
 		cleanName := strings.TrimPrefix(lower, "mcp__")
 		cleanName = strings.TrimPrefix(cleanName, "mcp_")
-		cleanNameNorm := strings.ReplaceAll(strings.ReplaceAll(cleanName, "__", "_"), "-", "_")
+		cleanName = strings.TrimPrefix(cleanName, "mcp.")
+		cleanNameNorm := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(cleanName, "__", "_"), "-", "_"), ".", "_")
+		cleanNameNorm = strings.ReplaceAll(cleanNameNorm, "/", "_")
 		for k, canon := range allow {
 			kClean := strings.TrimPrefix(k, "mcp__")
 			kClean = strings.TrimPrefix(kClean, "mcp_")
-			kCleanNorm := strings.ReplaceAll(strings.ReplaceAll(kClean, "__", "_"), "-", "_")
+			kClean = strings.TrimPrefix(kClean, "mcp.")
+			kCleanNorm := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(kClean, "__", "_"), "-", "_"), ".", "_")
+			kCleanNorm = strings.ReplaceAll(kCleanNorm, "/", "_")
 			if kCleanNorm == cleanNameNorm || strings.HasSuffix(kCleanNorm, "_"+cleanNameNorm) {
 				return canon, true
 			}
@@ -615,7 +635,7 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 	return out
 }
 
-func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.ToolCall {
+func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef, projectRoot ...string) []types.ToolCall {
 	if len(calls) == 0 || len(defs) == 0 {
 		return calls
 	}
@@ -625,7 +645,7 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.Too
 	}
 	for i := range calls {
 		if d, ok := by[strings.ToLower(calls[i].Name)]; ok {
-			calls[i].Arguments = coerceToolArgs(calls[i].Arguments, d)
+			calls[i].Arguments = coerceToolArgs(calls[i].Arguments, d, projectRoot...)
 		}
 	}
 	return calls
@@ -633,7 +653,7 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef) []types.Too
 
 // coerceToolArgs remaps common aliases (path↔file_path, cmd↔command, content↔CodeContent,
 // old↔new strings, grep/find queries) to the keys the client dialect schema expects.
-func coerceToolArgs(argsJSON string, def types.ToolDef) string {
+func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) string {
 	var m map[string]any
 	if json.Unmarshal([]byte(argsJSON), &m) != nil || len(m) == 0 {
 		return argsJSON
@@ -654,6 +674,39 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 				return
 			}
 		}
+	}
+
+	root := ""
+	if len(projectRoot) > 0 {
+		root = strings.TrimSpace(projectRoot[0])
+	}
+	resolvePath := func(p string) string {
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		if root != "" {
+			return filepath.Join(root, p)
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+
+	toInt := func(v any) (int, bool) {
+		switch val := v.(type) {
+		case int:
+			return val, true
+		case int64:
+			return int(val), true
+		case float64:
+			return int(val), true
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+				return n, true
+			}
+		}
+		return 0, false
 	}
 
 	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory")
@@ -691,6 +744,17 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 		return false
 	}
 
+	// AGY call_mcp_tool parameter normalization
+	if strings.EqualFold(def.Name, "call_mcp_tool") {
+		remap("ServerName", "server_name", "server", "Server", "serverName")
+		remap("ToolName", "tool_name", "tool", "Tool", "toolName")
+		remap("Arguments", "arguments", "args", "params", "parameters")
+		if _, hasArgs := m["Arguments"]; !hasArgs {
+			m["Arguments"] = map[string]any{}
+			changed = true
+		}
+	}
+
 	// Unwrap single-item array strings for path/cmd if web model generated an array
 	for _, k := range []string{"file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "command", "CommandLine"} {
 		if arr, ok := m[k].([]any); ok && len(arr) > 0 {
@@ -721,7 +785,11 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 	}
 	if hasKey("Cwd") {
 		if _, ok := m["Cwd"]; !ok {
-			m["Cwd"] = "."
+			if root != "" {
+				m["Cwd"] = root
+			} else {
+				m["Cwd"] = "."
+			}
 			changed = true
 		}
 	}
@@ -763,9 +831,59 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 	// Resolve relative paths to absolute for strict tools (e.g. AGY view_file)
 	if hasKey("AbsolutePath") {
 		if p, ok := m["AbsolutePath"].(string); ok && p != "" && !filepath.IsAbs(p) {
-			if abs, err := filepath.Abs(p); err == nil {
-				m["AbsolutePath"] = abs
-				changed = true
+			m["AbsolutePath"] = resolvePath(p)
+			changed = true
+		}
+	}
+
+	// Line range and pagination parameter translation
+	if hasKey("StartLine") || hasKey("EndLine") {
+		remap("StartLine", "start_line", "start", "start_line_number")
+		remap("EndLine", "end_line", "end", "end_line_number")
+		if _, ok := m["StartLine"]; !ok {
+			if offVal, ok := m["offset"]; ok {
+				if offNum, ok := toInt(offVal); ok {
+					st := offNum
+					if st <= 0 {
+						st = 1
+					}
+					m["StartLine"] = st
+					changed = true
+					if _, hasEnd := m["EndLine"]; !hasEnd {
+						if limVal, ok := m["limit"]; ok {
+							if limNum, ok := toInt(limVal); ok && limNum > 0 {
+								m["EndLine"] = st + limNum - 1
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if hasKey("offset") || hasKey("limit") {
+		remap("offset", "StartLine", "start_line", "start")
+		if _, ok := m["limit"]; !ok {
+			endKey := ""
+			for _, k := range []string{"EndLine", "end_line", "end", "end_line_number"} {
+				if _, ok := m[k]; ok {
+					endKey = k
+					break
+				}
+			}
+			if endKey != "" {
+				if endNum, ok := toInt(m[endKey]); ok {
+					st := 1
+					if stVal, ok := m["offset"]; ok {
+						if sNum, ok := toInt(stVal); ok {
+							st = sNum
+						}
+					}
+					if endNum >= st {
+						m["limit"] = endNum - st + 1
+						delete(m, endKey)
+						changed = true
+					}
+				}
 			}
 		}
 	}
@@ -775,9 +893,13 @@ func coerceToolArgs(argsJSON string, def types.ToolDef) string {
 	var foundStart, foundEnd int
 	checkPath := ""
 	if p, ok := m["TargetFile"].(string); ok && p != "" {
-		checkPath = p
+		checkPath = resolvePath(p)
 	} else if p, ok := m["AbsolutePath"].(string); ok && p != "" {
-		checkPath = p
+		checkPath = resolvePath(p)
+	} else if p, ok := m["file_path"].(string); ok && p != "" {
+		checkPath = resolvePath(p)
+	} else if p, ok := m["path"].(string); ok && p != "" {
+		checkPath = resolvePath(p)
 	}
 	if checkPath != "" {
 		if contentBytes, err := os.ReadFile(checkPath); err == nil {

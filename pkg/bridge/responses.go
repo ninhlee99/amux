@@ -213,30 +213,36 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 
 		outputIndex := 0
 		if textPartStarted {
-			// Finish text part
-			textDoneJSON, _ := json.Marshal(map[string]any{
-				"type":          "response.output_text.done",
-				"output_index":  0,
-				"content_index": 0,
-				"text":          fullContent.String(),
-			})
-			fmt.Fprintf(w, "event: response.output_text.done\ndata: %s\n\n", textDoneJSON)
+			finalText := fullContent.String()
+			if len(toolCalls) > 0 {
+				finalText = tools.StripWebToolMarkup(finalText)
+			}
+			if strings.TrimSpace(finalText) != "" {
+				// Finish text part
+				textDoneJSON, _ := json.Marshal(map[string]any{
+					"type":          "response.output_text.done",
+					"output_index":  0,
+					"content_index": 0,
+					"text":          finalText,
+				})
+				fmt.Fprintf(w, "event: response.output_text.done\ndata: %s\n\n", textDoneJSON)
 
-			itemDoneJSON, _ := json.Marshal(map[string]any{
-				"type":         "response.output_item.done",
-				"output_index": 0,
-				"item": map[string]any{
-					"id":     itemID,
-					"type":   "message",
-					"status": "completed",
-					"role":   "assistant",
-					"content": []map[string]string{
-						{"type": "text", "text": fullContent.String()},
+				itemDoneJSON, _ := json.Marshal(map[string]any{
+					"type":         "response.output_item.done",
+					"output_index": 0,
+					"item": map[string]any{
+						"id":     itemID,
+						"type":   "message",
+						"status": "completed",
+						"role":   "assistant",
+						"content": []map[string]string{
+							{"type": "text", "text": finalText},
+						},
 					},
-				},
-			})
-			fmt.Fprintf(w, "event: response.output_item.done\ndata: %s\n\n", itemDoneJSON)
-			outputIndex++
+				})
+				fmt.Fprintf(w, "event: response.output_item.done\ndata: %s\n\n", itemDoneJSON)
+				outputIndex++
+			}
 		}
 
 		// Emit tool call output items
@@ -360,14 +366,18 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 
 	var outputItems []map[string]any
-	if fullContent.Len() > 0 {
+	cleanText := fullContent.String()
+	if len(toolCalls) > 0 {
+		cleanText = tools.StripWebToolMarkup(cleanText)
+	}
+	if strings.TrimSpace(cleanText) != "" {
 		outputItems = append(outputItems, map[string]any{
 			"id":     fmt.Sprintf("item_%d", time.Now().UnixNano()),
 			"type":   "message",
 			"status": "completed",
 			"role":   "assistant",
 			"content": []map[string]string{
-				{"type": "text", "text": fullContent.String()},
+				{"type": "text", "text": cleanText},
 			},
 		})
 	}
@@ -483,6 +493,23 @@ func responsesBodyToChatRequest(body []byte) (*types.ChatRequest, error) {
 					msg.ToolCalls = tools.FromOpenAIToolCalls(m.ToolCalls)
 				}
 				req.Messages = append(req.Messages, msg)
+			}
+		}
+	}
+
+	// Link role="tool" messages to their tool name using preceding assistant tool_calls
+	toolNameMap := make(map[string]string)
+	for _, msg := range req.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID != "" && tc.Name != "" {
+				toolNameMap[tc.ID] = tc.Name
+			}
+		}
+	}
+	for i := range req.Messages {
+		if strings.EqualFold(req.Messages[i].Role, "tool") && req.Messages[i].Name == "" {
+			if name, ok := toolNameMap[req.Messages[i].ToolCallID]; ok {
+				req.Messages[i].Name = name
 			}
 		}
 	}

@@ -809,7 +809,7 @@ func (a *AntigravityAdapter) ensureAccessToken(ctx context.Context) (string, err
 		if a.creds.AccessToken != "" {
 			return a.creds.AccessToken, nil
 		}
-		return "", fmt.Errorf("antigravity: refresh token missing, please re-login via 'am login agy'")
+		return "", fmt.Errorf("antigravity: refresh token missing, please re-login via 'amux login agy'")
 	}
 
 	// Refresh OAuth token
