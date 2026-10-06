@@ -72,6 +72,57 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = "am-proxy"
 		}
+	case "aider":
+		binName = "aider"
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
+		envOverrides["GOOGLE_GEMINI_BASE_URL"] = gatewayURL
+		envOverrides["GEMINI_API_BASE"] = gatewayURL
+		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
+		envOverrides["OLLAMA_API_BASE"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("GEMINI_API_KEY") == "" {
+			envOverrides["GEMINI_API_KEY"] = "am-proxy"
+		}
+	case "opencode":
+		binName = "opencode"
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
+	case "cline", "roo", "roo-code":
+		binName = target
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
+	case "zed":
+		binName = "zed"
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+		}
 	default:
 		// Arbitrary command execution with universal proxy variables
 		binName = target
@@ -106,9 +157,17 @@ func ResolveBinaryPath(binName string) (string, error) {
 	// Fallback check standard binary paths in case shell PATH is stripped
 	commonBinDirs := []string{
 		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+		filepath.Join(home, ".pyenv", "shims"),
+		filepath.Join(home, ".local", "pipx", "venvs", binName, "bin"),
+		filepath.Join(home, "Library", "Python", "3.12", "bin"),
+		filepath.Join(home, "Library", "Python", "3.11", "bin"),
+		filepath.Join(home, "Library", "Python", "3.10", "bin"),
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
 		filepath.Join(home, ".npm-global", "bin"),
+		"/usr/bin",
+		"/bin",
 	}
 	for _, dir := range commonBinDirs {
 		candidate := filepath.Join(dir, binName)
@@ -133,6 +192,17 @@ func ResolveBinaryPath(binName string) (string, error) {
 		candidates = []string{
 			"/Applications/Antigravity.app/Contents/MacOS/Antigravity",
 			filepath.Join(home, "Applications/Antigravity.app/Contents/MacOS/Antigravity"),
+		}
+	case "zed":
+		candidates = []string{
+			"/Applications/Zed.app/Contents/MacOS/cli",
+			"/Applications/Zed.app/Contents/MacOS/Zed",
+			filepath.Join(home, "Applications/Zed.app/Contents/MacOS/Zed"),
+		}
+	case "code", "vscode":
+		candidates = []string{
+			"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+			"/usr/local/bin/code",
 		}
 	}
 	for _, c := range candidates {
@@ -196,6 +266,10 @@ func CmdRun(args []string) {
 		fmt.Printf("💡 Tip: For Cursor GUI AI Chat, ensure Cursor Settings > Models > 'Override OpenAI Base URL' is set to %s/v1\n", gatewayURL)
 	} else if target == "windsurf" {
 		fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, configure OpenAI Base URL to %s/v1 in Settings > Models\n", gatewayURL)
+	} else if target == "aider" {
+		fmt.Printf("💡 Tip: Aider is pre-configured with AMUX. Run with '--model openai/gpt-4o' or '--model anthropic/claude-3-5-sonnet'\n")
+	} else if target == "opencode" {
+		fmt.Printf("💡 Tip: Opencode is pre-configured with proxy baseUrl %s/v1\n", gatewayURL)
 	}
 
 	// Build process environment
@@ -232,14 +306,17 @@ func CmdRun(args []string) {
 
 func helpRun() {
 	fmt.Println("Usage: amux run <ide> [args...]")
-	fmt.Println("  Runs the selected IDE (claude, cursor, windsurf, codex, agy) in a sandboxed session")
+	fmt.Println("  Runs the selected IDE or coding agent in a sandboxed session")
 	fmt.Println("  pointing to the AMUX Gateway without altering global system files.")
 	fmt.Println()
-	fmt.Println("Supported IDE targets:")
+	fmt.Println("Supported IDE & agent targets:")
 	fmt.Println("  claude    - Runs Claude Code CLI with ANTHROPIC_BASE_URL injected")
 	fmt.Println("  cursor    - Runs Cursor IDE with OPENAI_BASE_URL injected")
 	fmt.Println("  windsurf  - Runs Windsurf IDE with OPENAI_BASE_URL & ANTHROPIC_BASE_URL injected")
 	fmt.Println("  codex     - Runs OpenAI Codex CLI with OPENAI_BASE_URL injected")
 	fmt.Println("  agy       - Runs Google Antigravity CLI with GEMINI_BASE_URL injected")
+	fmt.Println("  aider     - Runs Aider CLI with OPENAI_API_BASE & ANTHROPIC_BASE_URL injected")
+	fmt.Println("  opencode  - Runs OpenCode agent with OPENAI_BASE_URL injected")
+	fmt.Println("  zed       - Runs Zed editor with AI proxy variables injected")
 	fmt.Println("  <cmd>     - Arbitrary agent or tool with all AI proxy variables preconfigured")
 }

@@ -105,19 +105,32 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		ch, err = pool.Send(ctx, req)
 	}
 	if err != nil {
+		if errors.Is(err, types.ErrAuthentication) {
+			return nil, fmt.Errorf("%w (run 'amux login' to refresh credentials)", err)
+		}
 		return nil, err
 	}
 	var sb strings.Builder
+	var thinking strings.Builder
 	served := req.ServingAccount
 	for c := range ch {
 		if c.Error != nil {
 			if sb.Len() == 0 {
+				if errors.Is(c.Error, types.ErrAuthentication) {
+					return nil, fmt.Errorf("%w (run 'amux login' to refresh credentials)", c.Error)
+				}
 				return nil, c.Error
 			}
 			break
 		}
 		if c.ID != "" && served == "" {
 			served = c.ID
+		}
+		if c.Thinking != "" {
+			thinking.WriteString(c.Thinking)
+			if onDelta != nil && sb.Len() == 0 {
+				onDelta("🧠 Thinking...")
+			}
 		}
 		if c.Content != "" {
 			sb.WriteString(c.Content)
@@ -134,6 +147,9 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		return nil, err
 	}
 	text := strings.TrimSpace(sb.String())
+	if text == "" && thinking.Len() > 0 {
+		text = strings.TrimSpace(thinking.String())
+	}
 	if text == "" {
 		return nil, errors.New("the provider returned an empty answer")
 	}

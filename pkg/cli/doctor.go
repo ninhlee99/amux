@@ -83,25 +83,25 @@ func CmdDoctor(args []string) {
 	c := http.Client{Timeout: 3 * time.Second}
 	if resp, err := c.Get("https://api.anthropic.com"); err == nil {
 		_ = resp.Body.Close()
-		fmt.Printf("OK (%d)\n", resp.StatusCode)
+		fmt.Println("OK (Reachable)")
 	} else {
-		fmt.Printf("WARN (%v)\n", err)
+		fmt.Printf("WARN (Unreachable: %v)\n", err)
 	}
 
 	fmt.Print("[Network] Checking OpenAI API connectivity... ")
 	if resp, err := c.Get("https://api.openai.com"); err == nil {
 		_ = resp.Body.Close()
-		fmt.Printf("OK (%d)\n", resp.StatusCode)
+		fmt.Println("OK (Reachable)")
 	} else {
-		fmt.Printf("WARN (%v)\n", err)
+		fmt.Printf("WARN (Unreachable: %v)\n", err)
 	}
 
 	fmt.Print("[Network] Checking Google Gemini API connectivity... ")
 	if resp, err := c.Get("https://generativelanguage.googleapis.com"); err == nil {
 		_ = resp.Body.Close()
-		fmt.Printf("OK (%d)\n", resp.StatusCode)
+		fmt.Println("OK (Reachable)")
 	} else {
-		fmt.Printf("WARN (%v)\n", err)
+		fmt.Printf("WARN (Unreachable: %v)\n", err)
 	}
 
 	// 3.5. Binary Location and PATH
@@ -163,6 +163,7 @@ func CmdDoctor(args []string) {
 
 	// 6. Identities Health Check
 	fmt.Println("\n== Identity Health Check ==")
+	_, _ = identity.MigrateLegacyAccounts("", "")
 	reports, err := identity.CheckAllHealth("")
 	if err != nil || len(reports) == 0 {
 		fmt.Println("No accounts configured. (Add with 'amux login [provider]')")

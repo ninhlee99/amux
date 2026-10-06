@@ -175,3 +175,23 @@ func TestWebBackendPrompt_ContinuingThreadPreservesTaskGoal(t *testing.T) {
 	}
 }
 
+func TestWebBackendPrompt_ContinuingThreadWithoutFullContextPreservesToolResults(t *testing.T) {
+	req := &types.ChatRequest{
+		FullContext: false,
+		Tools:       []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "check directory structure"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{Name: "Bash", Arguments: `{"command":"ls -la"}`}}},
+			{Role: "tool", ToolCallID: "toolu_web_1", Content: "total 40\ndrwxr-xr-x 5 staff 160 main.go"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	if !strings.Contains(got, "main.go") {
+		t.Fatalf("continuing thread without FullContext must preserve tool results, got: %s", got)
+	}
+	if !strings.Contains(got, "check directory structure") {
+		t.Fatalf("continuing thread must preserve user task, got: %s", got)
+	}
+}
+
+

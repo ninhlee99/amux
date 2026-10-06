@@ -41,32 +41,60 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 		return call
 	}
 
-	// Check MCP conversion: call_mcp_tool -> mcp__server__tool
+	// Check MCP conversion: call_mcp_tool -> client MCP tools (mcp__server__tool, mcp_server_tool, server__tool, server_tool, tool)
 	if strings.EqualFold(call.Name, "call_mcp_tool") {
 		var args map[string]any
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err == nil {
 			server, _ := args["ServerName"].(string)
 			tool, _ := args["ToolName"].(string)
 			if server != "" && tool != "" {
-				candidate := fmt.Sprintf("mcp__%s__%s", server, tool)
-				for _, d := range defs {
-					if strings.EqualFold(d.Name, candidate) {
-						call.Name = d.Name
-						if inner, ok := args["Arguments"].(map[string]any); ok && inner != nil {
-							b, _ := json.Marshal(inner)
-							call.Arguments = string(b)
-						} else {
-							call.Arguments = "{}"
+				candidates := []string{
+					fmt.Sprintf("mcp__%s__%s", server, tool),
+					fmt.Sprintf("mcp_%s_%s", server, tool),
+					fmt.Sprintf("%s__%s", server, tool),
+					fmt.Sprintf("%s_%s", server, tool),
+					tool,
+				}
+				for _, cand := range candidates {
+					for _, d := range defs {
+						if strings.EqualFold(d.Name, cand) {
+							call.Name = d.Name
+							if inner, ok := args["Arguments"].(map[string]any); ok && inner != nil {
+								b, _ := json.Marshal(inner)
+								call.Arguments = string(b)
+							} else if innerStr, ok := args["Arguments"].(string); ok && innerStr != "" {
+								if json.Valid([]byte(innerStr)) {
+									call.Arguments = innerStr
+								} else {
+									b, _ := json.Marshal(map[string]any{"input": innerStr})
+									call.Arguments = string(b)
+								}
+							} else {
+								// If Arguments is empty or missing, see if other args exist (excluding control keys)
+								filtered := make(map[string]any)
+								for k, v := range args {
+									if k != "ServerName" && k != "ToolName" && k != "toolAction" && k != "toolSummary" && k != "Arguments" {
+										filtered[k] = v
+									}
+								}
+								if len(filtered) > 0 {
+									b, _ := json.Marshal(filtered)
+									call.Arguments = string(b)
+								} else {
+									call.Arguments = "{}"
+								}
+							}
+							return g.NormalizeCall(call, defs, clientDialect)
 						}
-						return g.NormalizeCall(call, defs, clientDialect)
 					}
 				}
 			}
 		}
 	}
 
-	// Check MCP conversion: mcp__server__tool -> call_mcp_tool
-	if strings.HasPrefix(strings.ToLower(call.Name), "mcp__") {
+	// Check MCP conversion: mcp__server__tool / mcp_server_tool -> call_mcp_tool
+	lowerCallName := strings.ToLower(call.Name)
+	if strings.HasPrefix(lowerCallName, "mcp__") || strings.HasPrefix(lowerCallName, "mcp_") {
 		var hasCallMCP bool
 		var callMCPDef types.ToolDef
 		for _, d := range defs {
@@ -77,10 +105,17 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 			}
 		}
 		if hasCallMCP {
-			parts := strings.Split(call.Name, "__")
-			if len(parts) >= 3 {
-				server := parts[1]
-				tool := strings.Join(parts[2:], "__")
+			clean := strings.TrimPrefix(lowerCallName, "mcp__")
+			clean = strings.TrimPrefix(clean, "mcp_")
+			var server, tool string
+			if parts := strings.SplitN(clean, "__", 2); len(parts) == 2 {
+				server = parts[0]
+				tool = parts[1]
+			} else if parts := strings.SplitN(clean, "_", 2); len(parts) == 2 {
+				server = parts[0]
+				tool = parts[1]
+			}
+			if server != "" && tool != "" {
 				var origArgs map[string]any
 				_ = json.Unmarshal([]byte(call.Arguments), &origArgs)
 				if origArgs == nil {
@@ -90,10 +125,11 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 					"ServerName":  server,
 					"ToolName":    tool,
 					"Arguments":   origArgs,
-					"toolAction":  "Running " + tool,
-					"toolSummary": "Run " + tool,
+					"toolAction":  g.inferToolAction(tool),
+					"toolSummary": g.inferToolSummary(tool),
 				}
-				b, _ := json.Marshal(wrapped)
+				normalized := g.normalizeArguments(wrapped, callMCPDef, clientDialect)
+				b, _ := json.Marshal(normalized)
 				call.Name = callMCPDef.Name
 				call.Arguments = string(b)
 				return call

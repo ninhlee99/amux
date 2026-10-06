@@ -53,7 +53,11 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		}
 		body = contextHandoffPreamble + body
 	} else if continuingThread {
-		body = PromptWithSystem(msgs, lastUserPrompt(msgs))
+		if historyHasToolTurns(msgs) {
+			body = BuildDeltaWebPrompt(msgs)
+		} else {
+			body = PromptWithSystem(msgs, lastUserPrompt(msgs))
+		}
 	} else {
 		body = BuildConcatenatedPrompt(msgs)
 	}

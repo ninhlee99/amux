@@ -362,6 +362,9 @@ func (a *ClaudeWebAdapter) ResetConversationForScope(scopeKey string) {
 }
 
 func lastUserPrompt(messages []types.ChatMessage) string {
+	if historyHasToolTurns(messages) {
+		return BuildDeltaWebPrompt(messages)
+	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		if strings.EqualFold(messages[i].Role, "user") && messages[i].Content != "" {
 			return messages[i].Content

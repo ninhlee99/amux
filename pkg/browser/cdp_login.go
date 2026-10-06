@@ -126,7 +126,7 @@ func CaptureWebAuthViaBrowser(target WebLoginTarget, timeout time.Duration) (*Ca
 
 	fmt.Printf("Browser opened (%s). Log in THERE (dedicated window) — waiting for %s (timeout %s)…\n",
 		filepath.Base(bin), target.CookieName, timeout.Round(time.Second))
-	fmt.Println("Tip: stay in the window amux opened (profile ~/.am/browser-profiles/" + target.Profile + ").")
+	fmt.Printf("Tip: stay in the window amux opened (profile %s).\n", filepath.Join(types.BaseDir(), "browser-profiles", target.Profile))
 
 	lastBeat := time.Now()
 	for time.Now().Before(deadline) {

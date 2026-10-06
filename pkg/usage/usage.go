@@ -136,7 +136,7 @@ func PrintUsageReport(args []string) {
 	}
 	fmt.Printf("%s\n\n", term.Bold("token usage — "+label))
 	if len(filtered) == 0 {
-		fmt.Println(term.Dim("no requests logged in this window (see ~/.am/usage.log)"))
+		fmt.Printf("%s\n", term.Dim(fmt.Sprintf("no requests logged in this window (see %s)", UsageLogPath())))
 		return
 	}
 

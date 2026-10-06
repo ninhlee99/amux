@@ -21,11 +21,9 @@ func autoMigrateCheck() {
 		}
 	}
 
-	// One-time automatic non-destructive migration if identities.json does not exist
+	// Sync identities and active tool profiles so all CLI commands see consistent state
 	idPath := identity.DefaultIdentitiesPath()
-	if _, err := os.Stat(idPath); os.IsNotExist(err) {
-		_, _ = identity.MigrateLegacyAccounts("", idPath)
-	}
+	_, _ = identity.MigrateLegacyAccounts("", idPath)
 }
 
 func copyDirNonDestructive(src, dst string) error {

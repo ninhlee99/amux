@@ -261,3 +261,87 @@ func TestNormalizeToolCalls_AutoAbsPathAndLineBounds(t *testing.T) {
 		t.Errorf("expected StartLine 1 for 'package main', got %v", mEdit["StartLine"])
 	}
 }
+
+func TestToolGateway_MCPBidirectionalNormalization(t *testing.T) {
+	// Case 1: Model emits mcp_github_create_issue (single underscore) -> Client is AGY with call_mcp_tool
+	agyMCPDef := types.ToolDef{
+		Name: "call_mcp_tool",
+		InputSchema: json.RawMessage(`{
+			"type": "OBJECT",
+			"properties": {
+				"ServerName": {"type": "STRING"},
+				"ToolName": {"type": "STRING"},
+				"Arguments": {"type": "OBJECT"},
+				"toolAction": {"type": "STRING"},
+				"toolSummary": {"type": "STRING"}
+			},
+			"required": ["ServerName", "ToolName", "Arguments", "toolAction", "toolSummary"]
+		}`),
+	}
+
+	incomingSingleUnderscore := []types.ToolCall{
+		{
+			ID:        "mcp_call_1",
+			Name:      "mcp_github_create_issue",
+			Arguments: `{"title":"Issue Title","body":"Issue details"}`,
+		},
+	}
+
+	norm1 := tools.NormalizeToolCalls(incomingSingleUnderscore, []types.ToolDef{agyMCPDef}, tools.DialectGemini)
+	if len(norm1) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(norm1))
+	}
+	if norm1[0].Name != "call_mcp_tool" {
+		t.Errorf("expected call_mcp_tool, got %s", norm1[0].Name)
+	}
+	var m1 map[string]any
+	if err := json.Unmarshal([]byte(norm1[0].Arguments), &m1); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if m1["ServerName"] != "github" {
+		t.Errorf("expected ServerName 'github', got %v", m1["ServerName"])
+	}
+	if m1["ToolName"] != "create_issue" {
+		t.Errorf("expected ToolName 'create_issue', got %v", m1["ToolName"])
+	}
+	innerArgs, ok := m1["Arguments"].(map[string]any)
+	if !ok || innerArgs["title"] != "Issue Title" {
+		t.Errorf("expected inner Arguments title 'Issue Title', got %v", m1["Arguments"])
+	}
+
+	// Case 2: Model emits call_mcp_tool with JSON string -> Client is Claude Code with mcp__github__create_issue
+	claudeDef := types.ToolDef{
+		Name: "mcp__github__create_issue",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"title": {"type": "string"},
+				"body": {"type": "string"}
+			},
+			"required": ["title"]
+		}`),
+	}
+
+	incomingCallMCP := []types.ToolCall{
+		{
+			ID:   "call_mcp_cl",
+			Name: "call_mcp_tool",
+			Arguments: `{"ServerName":"github","ToolName":"create_issue","Arguments":{"title":"Bug report","body":"Steps"}}`,
+		},
+	}
+
+	norm2 := tools.NormalizeToolCalls(incomingCallMCP, []types.ToolDef{claudeDef}, tools.DialectClaude)
+	if len(norm2) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(norm2))
+	}
+	if norm2[0].Name != "mcp__github__create_issue" {
+		t.Errorf("expected mcp__github__create_issue, got %s", norm2[0].Name)
+	}
+	var m2 map[string]any
+	if err := json.Unmarshal([]byte(norm2[0].Arguments), &m2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if m2["title"] != "Bug report" {
+		t.Errorf("expected title 'Bug report', got %v", m2["title"])
+	}
+}
