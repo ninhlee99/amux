@@ -57,6 +57,8 @@ AMUX được thiết kế theo tư tưởng **Domain-Driven Design (DDD)** và 
 | **Universal Gateway** | `pkg/proxy` & `pkg/gateway` | Máy chủ Reverse Proxy HTTP tại cổng `:8787`, cơ chế bảo mật Public Gateway bằng Ephemeral Bearer Token (`amux-<hex>`), bộ đệm chống brute-force (10 lỗi/phút), và chuyển tiếp bitwise 1:1. |
 | **Multi-Tier Router** | `pkg/router` | Điều phối thứ tự ưu tiên 3 tầng (Subscription → Web → API Key), quản lý cooldown tự thích ứng theo header `Retry-After`, phân loại tác vụ (`classifier.go`), và chỉ tự chọn tài khoản trong pool (subscription chỉ vào pool khi `amux pool add`). |
 | **Protocol Bridges** | `pkg/bridge` | Cầu nối đa giao thức: OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`, Gemini `/v1beta/models/...`, bảo toàn CoT Thinking và Gemini Thought Signatures. |
+| **Tool Engine & WebLoop 2.0** | `pkg/tools` | Canonical UniversalTool IR, chuyển đổi dialect chéo (Claude/Codex/AGY/Cursor), bộ phân giải Lenient Multi-Schema JSON (Gemini, OpenAI, Flat JSON, LangChain), tự tính dòng file AGY, lọc sạch markup `<thought>`/`[tool_call]`. |
+| **MCP Server & Suite** | `pkg/mcp` | Máy chủ Model Context Protocol stdio JSON-RPC 2.0, bộ 7 công cụ lập trình `amux_*`, tích hợp trình duyệt Muse, tự động cấu hình và gỡ bỏ an toàn cho mọi IDE host. |
 | **Anti-Ban Defense** | `pkg/guard` | Lớp phòng vệ 5 tầng: Header Sanitizer, Micro-jitter Pacing, Circuit Breaker, Session Affinity, và Egress Proxy riêng biệt. |
 | **Context Optimization** | `pkg/ctxshrink` | Bảo tồn Prompt Cache Prefix cho Subscription accounts; chỉ kích hoạt nén ngữ cảnh có chọn lọc trên Web accounts hẹp. |
 | **Browser CDP Engine** | `pkg/browser` | Tự động phát hiện Chromium mặc định của hệ điều hành (Brave, Edge, Chrome) và tự động trích xuất cookie xác thực qua Chrome DevTools Protocol. |
@@ -134,13 +136,13 @@ sequenceDiagram
 
 ---
 
-### Luồng 3: Universal Tool Engine & Web-Loop Emulation
+### Luồng 3: Universal Tool Engine & WebLoop 2.0 Emulation
 
-Đảm bảo tài khoản Web Session vẫn có khả năng thực thi công cụ tương đương API trả phí:
+Đảm bảo tài khoản Web Session vẫn có khả năng thực thi công cụ tương đương API trả phí với bộ phân giải tự phục hồi **Lenient Multi-Schema**:
 
 ```mermaid
 flowchart TD
-    Client["IDE Client (Claude Code / Cursor)"] -->|"Gửi tools[] & messages"| Gateway["Gateway :8787"]
+    Client["IDE Client (Claude Code / Cursor / AGY)"] -->|"Gửi tools[] & messages"| Gateway["Gateway :8787"]
     Gateway --> Canonical["Chuyển sang UniversalTool IR"]
     Canonical --> CheckBackend{"Backend phục vụ"}
 
@@ -149,9 +151,12 @@ flowchart TD
 
     CheckBackend -->|"Web Session (Không có Function Calling)"| WebLoop["pkg/tools/webloop.go"]
     WebLoop --> Inject["Nạp định nghĩa UniversalTool vào System Prompt"]
-    Inject --> WebChat["Gửi tới Web Chat Session (Claude/ChatGPT/Gemini Web)"]
-    WebChat --> BócTách["Bóc tách <tool_call>... hoặc ```tool_call..."]
-    BócTách --> ParseNative
+    Inject --> StreamReasoning["Stream Thinking SSE (<thought>)"]
+    StreamReasoning --> WebChat["Gửi tới Web Chat Session (Claude/ChatGPT/Gemini Web)"]
+    WebChat --> BócTách["Bóc tách đa định dạng: <tool_call>, ```tool_call, [Tool call: ...]"]
+    BócTách --> LenientParser["Lenient Multi-Schema AST Repair<br/>(Gemini parameters, OpenAI wrapper, Flat JSON, LangChain)"]
+    LenientParser --> SanitizeMarkup["Loại bỏ markup nội bộ (<thought>, [tool_call])"]
+    SanitizeMarkup --> ParseNative
 
     ParseNative --> FormatSSE["Format thành SSE content_block: tool_use"]
     FormatSSE --> Client
@@ -166,11 +171,17 @@ flowchart TD
 1. **Thư Mục Lưu Trữ Chuẩn Hóa (`~/.amux`)**:
    - Mọi tệp cấu hình (`identities.json`, `config.json`, `gateway.pid`, `gateway.log`) được lưu trữ tập trung tại `~/.amux`.
    - Hệ thống tự động di chuyển dữ liệu từ thư mục cũ sang `~/.amux` trong lần chạy đầu tiên mà không làm mất mát cấu hình.
-2. **Không Khởi Chạy Ứng Dụng (No Launcher Responsibility)**:
-   - AMUX không bao bọc hay can thiệp vào cách khởi chạy IDE (`claude`, `cursor`, `codex`). Developer chạy công cụ trực tiếp.
-3. **Bảo Toàn Prompt Cache Tuyệt Đối**:
+2. **Không Ô Nhiễm Môi Trường (Zero-Pollution Sandbox)**:
+   - AMUX cung cấp lệnh `amux run <ide>` để khởi chạy IDE trong tiến trình con (child process) với biến môi trường sandbox cô lập 100%, không ô nhiễm shell rc hay launchctl. Khi thoát ra, hệ thống sạch sẽ nguyên bản.
+   - Khi chạy trực tiếp (`claude`, `cursor`, `codex`), IDE chạy Native trực tiếp với token từ Keychain.
+3. **Kiểm Tra Tính Sẵn Sàng (Pre-flight Validation)**:
+   - Trước khi khởi chạy `amux run`, hệ thống đối chiếu tài khoản trên cả `identities.json` và `accounts.json`.
+   - Với Cursor, `amux run cursor` tự động kiểm tra cấu hình OpenAI Base URL trong `~/.cursor/settings.json` để nhắc nhở và hỗ trợ lập trình viên kết nối.
+4. **Bảo Toàn Prompt Cache Tuyệt Đối**:
    - Khi chuyển đổi giữa các tài khoản Subscription, AMUX giữ nguyên 100% nội dung và thứ tự tin nhắn lịch sử để tận dụng chiết khấu 90% từ Anthropic Prompt Cache.
-4. **Loại Trừ Nghiêm Ngặt Tài Khoản OFF**:
+5. **Loại Trừ Nghiêm Ngặt Tài Khoản OFF**:
    - Tài khoản ngoài pool không bao giờ bị auto-switch hoặc tự động chọn. Subscription mặc định ngoài pool (chỉ thêm thủ công bằng `amux pool add`); Web/API mặc định trong pool.
-5. **Real-time Statusline Trực Quan**:
+6. **Báo Lỗi Chuẩn Dialect (Structured Error Diagnostics)**:
+   - Khi pool tài khoản cạn kiệt (503 Service Unavailable), Gateway trả về lỗi định dạng JSON Anthropic chuẩn (`{"type":"error","error":{"type":"permission_error",...}}`) cho Claude Code thay vì văn bản thô (plain text) để IDE hiển thị thông báo hành động rõ ràng.
+7. **Real-time Statusline Trực Quan**:
    - Cung cấp thông tin tài khoản đang phục vụ, dung lượng token và thanh đo hạn mức 5h/7d trực tiếp trên thanh trạng thái của IDE theo thời gian thực.

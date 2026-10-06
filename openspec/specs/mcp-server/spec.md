@@ -26,7 +26,11 @@ The server SHALL process requests concurrently, cancel a running call on `notifi
 - **THEN** the response is a successful JSON-RPC result with `isError: true` and the reason as text
 
 ### Requirement: Pool tools
-The server SHALL expose `amux_providers` (accounts without secrets), `amux_status` (gateway URLs per client dialect and usable account counts), `amux_ask` (send a self-contained prompt through the account pool with optional workspace context), `amux_review` (multi-file diff code analysis), `amux_diagnose` (error and stack trace investigation), `amux_fix` (code patch and bug fix generation), and `amux_analyze` (project architecture and design analysis). `amux_ask.provider` SHALL accept an exact account id (pins it) or an account family such as `gemini:web` (amux picks within it with failover). Automatic selection in pool tools MUST exclude subscription accounts unless pinned or added to the pool with `amux pool add`.
+The server SHALL expose `amux_providers` (accounts without secrets), `amux_status` (gateway URLs per client dialect and usable account counts), `amux_ask` (send a self-contained prompt through the account pool with optional workspace context), `amux_review` (multi-file diff code analysis), `amux_diagnose` (error and stack trace investigation), `amux_fix` (code patch and bug fix generation), and `amux_analyze` (project architecture and design analysis). `amux_ask.provider` SHALL accept an exact account id (pins it) or an account family such as `gemini:web` (amux picks within it with failover). Automatic selection in pool tools MUST exclude subscription accounts unless pinned or added to the pool with `amux pool add`. Results returned by pool tools SHALL sanitize raw web markup, stripping internal `<thought>` blocks and `[tool_call]` markers before returning output to the client.
+
+#### Scenario: Sanitize raw web tool markup in tool output
+- **WHEN** a web backend answers `amux_ask` or `amux_review` with thinking tags `<thought>...</thought>` or emulated `[tool_call]` blocks
+- **THEN** the returned text is stripped of internal web markup so the MCP client receives clean assistant content
 
 #### Scenario: Ask with automatic selection
 - **WHEN** `amux_ask` is called without `provider` and the pool has a Claude subscription (not added to the pool) and a Gemini web account

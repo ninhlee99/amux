@@ -80,15 +80,16 @@ flowchart TB
 | Claude Code tools (Bash, Read, MCP) | `bridge/claude.go`, `tools/claude.go` | `HandleClaudeMessages` | `claude_test.go`, `dialect_loop_test.go` |
 | Codex tools (exec_command, Responses) | `bridge/responses.go`, `openai.go`, `tools/codex.go` | `HandleOpenAIResponses`, `DialectCodex` | `codex_loop_test.go` |
 | AGY qua proxy | `bridge/gemini.go`, `cli.go` (`amux hook --agy`) | `GOOGLE_GEMINI_BASE_URL` | `agy_loop_test.go` |
-| Web backend + `<tool_call>` | `tools/webloop.go`, `provider/*_web.go` | `MaybeWrapWebStream`, `skipTextOnly` | `webloop_*_test.go` |
+| Web backend + `<tool_call>` + Multi-Schema AST | `tools/webloop.go`, `provider/*_web.go`, `mcp/backend.go` | `MaybeWrapWebStream`, `parseToolCallJSON`, `StripWebToolMarkup`, `skipTextOnly` | `webloop_*_test.go` |
 | Xoay Claude OAuth 5h/7d | `proxy/rotator.go`, `auth/token.go` | `Rotator`, `ForceSwitch` | `rotator_test.go` |
 | Thêm/sửa provider trong pool | `provider/config.go`, `accounts.example.json` | `ProviderConfig`, `BuildAdapters` | `config_test.go` |
 | `amux env` / hook / launchctl | `env/env.go`, `hook/hook.go`, `launchctl.go` | `PrintEnvExports`, `SyncLaunchctlEnv` | `env_test.go`, `settings_env_test.go` |
+| `amux run <ide>` sandbox & preflight | `cli/run.go`, `hook/cursor.go`, `cli/cli.go` | `cmdRun`, `LoadCursorSettings`, `findAppBinary` | `pkg/cli/cli_test.go` |
 | Guard / quarantine / 429 | `guard/*.go` | `Pace`, `IsQuarantined`, `RecordError` | `guard_test.go` |
 | Nén token context (20k budget / 85k runes) | `pkg/ctxshrink/shrink.go`, `bridge/responses.go` | `ShrinkConversation`, `MaxWebRunesLimit` | `pkg/ctxshrink/shrink_test.go` |
 | Ma trận tool chéo (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP) | `bridge/cross_tool_matrix_test.go`, `tools/dialect.go` | `TranslateToolCall`, `CanonicalTool` | `cross_tool_matrix_test.go` |
 | Dừng gateway (`amux stop`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `cmdGatewayStop`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
-| Endpoint `/_am/status` | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus` | `server_test.go` |
+| Endpoint `/_am/status` & structured 503 errors | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus`, `writeAnthropicError` | `server_test.go` |
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
 | MCP server / tool `amux_*`, `muse_*` | `mcp/server.go`, `mcp/tools.go`, `mcp/backend.go`, `cli/mcp.go` | `Serve`, `RegisterAmuxTools`, `RegisterMuseTools`, `PoolMemberFilter` | `pkg/mcp/server_test.go` |
 | `amux mcp install` cho IDE | `mcp/install.go` | `Targets`, `Install`, `setCodexBlock`, `ErrHasComments` | `pkg/mcp/install_test.go` |

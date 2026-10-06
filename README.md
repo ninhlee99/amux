@@ -25,10 +25,10 @@
 
 ## ⚡ Key Highlights
 
-- **Zero-Pollution Sandbox (`amux run <ide>`)**: Run Claude Code, Cursor, Windsurf, Antigravity (AGY), or Codex in an isolated child process pointing to the gateway. Exiting leaves your shell and system settings 100% clean. Direct launches (`claude`, `cursor`) run natively with 0ms overhead.
+- **Zero-Pollution Sandbox (`amux run <ide>`)**: Run Claude Code, Cursor, Windsurf, Antigravity (AGY), or Codex in an isolated child process pointing to the gateway. Pre-flight checks verify account readiness and inspect Cursor OpenAI settings. Exiting leaves your shell and system settings 100% clean. Direct launches (`claude`, `cursor`) run natively with 0ms overhead.
 - **Silent Keychain Rotation**: Maintain multiple accounts per provider. When usage hits 95%, AMUX smoothly rotates credentials or hands over to the next account without breaking your flow.
-- **Web Accounts as Coding Proxies (WebLoop 2.0)**: Connect ChatGPT Web, Gemini Web, Claude Web, or Meta Muse. WebLoop translates natural language and markdown into native agent tool calls with **real-time thinking streams (`<thought>`)**, AST JSON self-healing, and keepalive pulses.
-- **Full Developer MCP Suite (7 Specialized Tools)**: Wire your accounts into any MCP-capable IDE (Cursor, Windsurf, VS Code, Zed, Claude Desktop) with tools like `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, and `amux_analyze`.
+- **Web Accounts as Coding Proxies (WebLoop 2.0)**: Connect ChatGPT Web, Gemini Web, Claude Web, or Meta Muse. WebLoop translates natural language and markdown into native agent tool calls with **real-time thinking streams (`<thought>`)**, **Lenient Multi-Schema AST JSON self-healing** (Gemini `parameters`, OpenAI `function.arguments`, flat JSON, LangChain formats), markup sanitization, and keepalive pulses.
+- **Full Developer MCP Suite (7 Specialized Tools)**: Wire your accounts into any MCP-capable IDE (Cursor, Windsurf, VS Code, Zed, Claude Desktop) with tools like `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, and `amux_analyze`. Results are automatically sanitized of internal web markup.
 - **Zero-Telemetry & Encrypted Secret Vault**: 100% offline and private. Secrets are encrypted locally via AES-256-GCM in macOS Keychain or an isolated keyfile (`~/.amux/master.key`).
 
 ---
@@ -53,8 +53,9 @@
                         │                          ┌─────────────────────────────────────────┐
                         │                          │        WEBLOOP 2.0 TOOL ENGINE          │
                         │                          │  • Real-time Thinking Stream (SSE)      │
-                        │                          │  • Lenient AST JSON Auto-Repair         │
-                        │                          │  • Bracket Parsing [Tool call: ...]     │
+                        │                          │  • Lenient Multi-Schema AST Auto-Repair │
+                        │                          │  • Bracket & Tag-Agnostic Fence Parsing │
+                        │                          │  • Markup Sanitization (<thought>, etc) │
                         │                          │  • Line-bounded file editing for AGY    │
                         │                          └────────────────────┬────────────────────┘
                         │                                               │
@@ -180,6 +181,8 @@ amux mcp uninstall         # Remove AMUX MCP cleanly from all clients
 
 ### Available MCP Tools Suite
 
+All MCP tools automatically sanitize LLM outputs to remove internal web markup (`<thought>`, `[tool_call]`), returning clean, ready-to-use responses.
+
 | Tool | Purpose |
 | :--- | :--- |
 | `amux_ask` | Prompt any provider or model family (e.g., `gemini:web`, `chatgpt`, `claude:code`). |
@@ -196,8 +199,8 @@ amux mcp uninstall         # Remove AMUX MCP cleanly from all clients
 
 | Target | Command | Injected Sandbox Variables | Notes |
 | :--- | :--- | :--- | :--- |
-| **Claude Code** | `amux run claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` | Zero keychain pollution; seamless OAuth token swap. |
-| **Cursor IDE** | `amux run cursor` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Auto-detected from PATH or `/Applications/Cursor.app`. |
+| **Claude Code** | `amux run claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` | Zero keychain pollution; structured Anthropic JSON errors on 503 exhaustion. |
+| **Cursor IDE** | `amux run cursor` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Auto-detects Cursor app & inspects `settings.json` to guide base URL setup. |
 | **Windsurf** | `amux run windsurf` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_BASE_URL` | Auto-detected from PATH or `/Applications/Windsurf.app`. |
 | **Antigravity** | `amux run agy` | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_BASE`, `GOOGLE_GENAI_BASE_URL` | Schema-aware line bounds & `AbsolutePath` resolution. |
 | **Codex CLI** | `amux run codex` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Fallback to direct credentials on pool exhaustion. |

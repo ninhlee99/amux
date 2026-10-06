@@ -12,6 +12,7 @@ import (
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
 
@@ -147,6 +148,9 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		return nil, err
 	}
 	text := strings.TrimSpace(sb.String())
+	if clean := tools.StripWebToolMarkup(text); strings.TrimSpace(clean) != "" {
+		text = strings.TrimSpace(clean)
+	}
 	if text == "" && thinking.Len() > 0 {
 		text = strings.TrimSpace(thinking.String())
 	}

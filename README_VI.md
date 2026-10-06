@@ -25,10 +25,10 @@
 
 ## ⚡ Điểm Nổi Bật Cốt Lõi
 
-- **Môi Trường Sandbox Cô Lập 100% (`amux run <ide>`)**: Chạy Claude Code, Cursor, Windsurf, Antigravity (AGY), hoặc Codex trong tiến trình con được cô lập trỏ về Gateway. Khi thoát ra, shell và cấu hình hệ thống nguyên vẹn 100%. Các lệnh gọi trực tiếp (`claude`, `cursor`) luôn chạy Native nguyên bản với độ trễ 0ms.
+- **Môi Trường Sandbox Cô Lập 100% (`amux run <ide>`)**: Chạy Claude Code, Cursor, Windsurf, Antigravity (AGY), hoặc Codex trong tiến trình con được cô lập trỏ về Gateway. Tự động kiểm tra tính sẵn sàng của tài khoản và cấu hình OpenAI của Cursor. Khi thoát ra, shell và cấu hình hệ thống nguyên vẹn 100%. Các lệnh gọi trực tiếp (`claude`, `cursor`) luôn chạy Native nguyên bản với độ trễ 0ms.
 - **Xoay Tua Keychain Ngầm (Silent Keychain Rotation)**: Lưu nhiều tài khoản cho mỗi nhà cung cấp. Khi tài khoản chạm ngưỡng 95% hạn mức, AMUX tự động hoán đổi credential trong Keychain hoặc chuyển tiếp sang tài khoản khả dụng tiếp theo.
-- **Web Accounts Làm AI Coding Proxy (WebLoop 2.0)**: Biến phiên Web miễn phí (ChatGPT Web, Gemini Web, Claude Web, Meta Muse) thành backend cho IDE. Động cơ WebLoop hỗ trợ **stream suy nghĩ thời gian thực (`<thought>`)**, tự phục hồi JSON AST hư hỏng và gửi tín hiệu keepalive chống rớt mạng.
-- **Bộ Công Cụ MCP Toàn Diện (7 Công Cụ Chuyên Sâu)**: Tích hợp trực tiếp vào mọi IDE hỗ trợ MCP (Cursor, Windsurf, Claude Desktop, VS Code, Zed) với các công cụ lập trình mạnh mẽ: `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, và `amux_analyze`.
+- **Web Accounts Làm AI Coding Proxy (WebLoop 2.0)**: Biến phiên Web miễn phí (ChatGPT Web, Gemini Web, Claude Web, Meta Muse) thành backend cho IDE. Động cơ WebLoop hỗ trợ **stream suy nghĩ thời gian thực (`<thought>`)**, **bộ phân giải Lenient Multi-Schema AST JSON tự phục hồi** (Gemini `parameters`, OpenAI `function.arguments`, Flat JSON, LangChain), lọc sạch markup rác và gửi tín hiệu keepalive chống rớt mạng.
+- **Bộ Công Cụ MCP Toàn Diện (7 Công Cụ Chuyên Sâu)**: Tích hợp trực tiếp vào mọi IDE hỗ trợ MCP (Cursor, Windsurf, Claude Desktop, VS Code, Zed) với các công cụ lập trình mạnh mẽ: `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, và `amux_analyze`. Kết quả trả về được tự động làm sạch khỏi các thẻ markup web nội bộ.
 - **Bảo Mật Cục Bộ & Không Thu Thập Dữ Liệu (Zero-Telemetry)**: Hoạt động 100% offline trên máy của bạn. Mọi secret lưu tại `~/.amux` được mã hóa AES-256-GCM qua macOS Keychain hoặc file khóa riêng biệt (`~/.amux/master.key`).
 
 ---
@@ -53,8 +53,9 @@
                         │                          ┌─────────────────────────────────────────┐
                         │                          │        WEBLOOP 2.0 TOOL ENGINE          │
                         │                          │  • Stream Thinking liên tục (SSE)       │
-                        │                          │  • Tự sửa lỗi JSON AST hư hỏng          │
-                        │                          │  • Phân giải ngoặc [Tool call: ...]     │
+                        │                          │  • Lenient Multi-Schema AST Auto-Repair │
+                        │                          │  • Phân giải đa fence & ngoặc [Tool...] │
+                        │                          │  • Lọc sạch markup (<thought>, v.v.)    │
                         │                          │  • Tự tính dòng thực tế cho AGY         │
                         │                          └────────────────────┬────────────────────┘
                         │                                               │
@@ -180,6 +181,8 @@ amux mcp uninstall         # Gỡ bỏ cấu hình MCP sạch sẽ khỏi các I
 
 ### Bộ 7 Công Cụ MCP Chuyên Nghiệp
 
+Tất cả công cụ MCP tự động loại bỏ các thẻ markup nội bộ (`<thought>`, `[tool_call]`), đảm bảo trả về nội dung sạch sẽ cho IDE client.
+
 | Công Cụ | Chức Năng |
 | :--- | :--- |
 | `amux_ask` | Hỏi đáp với bất kỳ mô hình hoặc nhóm provider nào (`gemini:web`, `chatgpt`, `claude:code`). |
@@ -196,8 +199,8 @@ amux mcp uninstall         # Gỡ bỏ cấu hình MCP sạch sẽ khỏi các I
 
 | IDE Mục Tiêu | Lệnh Chạy Sandbox | Biến Môi Trường Được Bơm Vào | Ghi Chú |
 | :--- | :--- | :--- | :--- |
-| **Claude Code** | `amux run claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` | Không ô nhiễm Keychain; hoán đổi token OAuth mượt mà. |
-| **Cursor IDE** | `amux run cursor` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Tự động quét từ PATH hoặc `/Applications/Cursor.app`. |
+| **Claude Code** | `amux run claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` | Không ô nhiễm Keychain; trả về lỗi JSON Anthropic chuẩn khi hết pool (503). |
+| **Cursor IDE** | `amux run cursor` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Tự động phát hiện Cursor & kiểm tra `settings.json` để hỗ trợ thiết lập base URL. |
 | **Windsurf** | `amux run windsurf` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_BASE_URL` | Tự động quét từ PATH hoặc `/Applications/Windsurf.app`. |
 | **Antigravity** | `amux run agy` | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_BASE`, `GOOGLE_GENAI_BASE_URL` | Tự động nắn chỉnh `AbsolutePath` và tính dòng thực tế. |
 | **Codex CLI** | `amux run codex` | `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY` | Tự động fallback về direct credentials nếu hết pool. |

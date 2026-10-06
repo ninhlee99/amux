@@ -130,13 +130,23 @@ tasks:
     tests: [pkg/bridge/agy_loop_test.go]
 
   - id: web-tool-emulation
-    keywords: [webloop, tool_call, chatgpt web, claude web, text-only]
+    keywords: [webloop, tool_call, chatgpt web, claude web, text-only, multi-schema, lenient parser, parameters, function arguments, flat json, sanitize markup]
     read_first:
       - pkg/tools/webloop.go
       - pkg/provider/chatgpt_web.go
       - pkg/provider/claude_web.go
-    symbols: [MaybeWrapWebStream, SupportsTools]
+      - pkg/mcp/backend.go
+    symbols: [MaybeWrapWebStream, SupportsTools, parseToolCallJSON, StripWebToolMarkup, repairJSON]
     tests: [pkg/tools/webloop_test.go, pkg/tools/webloop_emulate_test.go]
+
+  - id: ide-runner-sandbox
+    keywords: [amux run, sandbox, cursor settings, child process, isolated env, preflight account check]
+    read_first:
+      - pkg/cli/run.go
+      - pkg/hook/cursor.go
+      - pkg/cli/cli.go
+    symbols: [cmdRun, LoadCursorSettings, findAppBinary]
+    tests: [pkg/cli/cli_test.go]
 
   - id: claude-oauth-rotate
     keywords: [rotator, 5h, 7d, claude subscription, oauth refresh]

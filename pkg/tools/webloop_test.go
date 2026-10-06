@@ -372,3 +372,71 @@ func TestParseWebTools_XMLAttributes(t *testing.T) {
 		t.Fatalf("expected pwd argument, got: %s", calls5[0].Arguments)
 	}
 }
+
+func TestParseWebTools_LenientMultiSchemaFormats(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+		{Name: "Read", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
+	}
+
+	// 1. Gemini parameters format
+	geminiText := `<tool_call>
+{"name": "Bash", "parameters": {"command": "git log -n 5"}}
+</tool_call>`
+	geminiCalls := ParseWebTools(geminiText, defs)
+	if len(geminiCalls) != 1 || geminiCalls[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from Gemini parameters format, got: %+v", geminiCalls)
+	}
+	if !strings.Contains(geminiCalls[0].Arguments, "git log -n 5") {
+		t.Fatalf("expected git log in arguments, got: %s", geminiCalls[0].Arguments)
+	}
+
+	// 2. Flat JSON format (no arguments wrapper)
+	flatText := `<tool_call>
+{"name": "Bash", "command": "npm test"}
+</tool_call>`
+	flatCalls := ParseWebTools(flatText, defs)
+	if len(flatCalls) != 1 || flatCalls[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from flat JSON format, got: %+v", flatCalls)
+	}
+	if !strings.Contains(flatCalls[0].Arguments, "npm test") {
+		t.Fatalf("expected npm test in arguments, got: %s", flatCalls[0].Arguments)
+	}
+
+	// 3. OpenAI function calling format with stringified arguments
+	openaiStrText := `<tool_call>
+{"function": {"name": "Read", "arguments": "{\"file_path\": \"main.go\"}"}}
+</tool_call>`
+	openaiStrCalls := ParseWebTools(openaiStrText, defs)
+	if len(openaiStrCalls) != 1 || openaiStrCalls[0].Name != "Read" {
+		t.Fatalf("expected 1 Read call from OpenAI stringified arguments format, got: %+v", openaiStrCalls)
+	}
+	if !strings.Contains(openaiStrCalls[0].Arguments, "main.go") {
+		t.Fatalf("expected main.go in arguments, got: %s", openaiStrCalls[0].Arguments)
+	}
+
+	// 4. OpenAI function calling format with object arguments
+	openaiObjText := `<tool_call>
+{"function": {"name": "Bash", "arguments": {"command": "cargo build"}}}
+</tool_call>`
+	openaiObjCalls := ParseWebTools(openaiObjText, defs)
+	if len(openaiObjCalls) != 1 || openaiObjCalls[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from OpenAI object arguments format, got: %+v", openaiObjCalls)
+	}
+	if !strings.Contains(openaiObjCalls[0].Arguments, "cargo build") {
+		t.Fatalf("expected cargo build in arguments, got: %s", openaiObjCalls[0].Arguments)
+	}
+
+	// 5. LangChain / Agent action format
+	actionText := `<tool_call>
+{"action": "Bash", "action_input": {"command": "python -m pytest"}}
+</tool_call>`
+	actionCalls := ParseWebTools(actionText, defs)
+	if len(actionCalls) != 1 || actionCalls[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from LangChain action format, got: %+v", actionCalls)
+	}
+	if !strings.Contains(actionCalls[0].Arguments, "python -m pytest") {
+		t.Fatalf("expected python -m pytest in arguments, got: %s", actionCalls[0].Arguments)
+	}
+}
+

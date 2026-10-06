@@ -54,9 +54,17 @@ Besides env/config hooks, amux SHALL offer `amux mcp install` so any MCP-capable
 - **THEN** Claude Code is still logged in with the same account
 
 ### Requirement: Isolated runtime runner
-The CLI SHALL provide `amux run <command>` which launches any tool/IDE with temporary injected environment variables in a child process without mutating global shell profile files or launchctl. For Antigravity and Gemini CLI agents, it SHALL inject `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_BASE`, and `GOOGLE_GENAI_BASE_URL`.
+The CLI SHALL provide `amux run <command>` which launches any tool/IDE with temporary injected environment variables in a child process without mutating global shell profile files or launchctl. For Antigravity and Gemini CLI agents, it SHALL inject `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_BASE`, and `GOOGLE_GENAI_BASE_URL`. Before launching, `amux run` SHALL verify account availability across both `identities.json` and `accounts.json`, warning and guiding the user to login if no accounts are configured. When launching Cursor via `amux run cursor`, amux SHALL inspect Cursor's settings (`settings.json`) and inform the user whether Cursor AI Chat is already bound to `:8787/v1` or provide guidance on configuring OpenAI base URL.
 
 #### Scenario: Running client in sandbox wrapper
 - **WHEN** user executes `amux run claude` or `amux run agy`
 - **THEN** the child process receives the isolated proxy endpoints while parent shell and system settings remain pristine
+
+#### Scenario: Pre-run account availability check
+- **WHEN** user executes `amux run` with neither active identities nor provider accounts configured
+- **THEN** the command warns the user with actionable instructions to run `amux login`
+
+#### Scenario: Cursor AI Chat settings inspection
+- **WHEN** user executes `amux run cursor`
+- **THEN** amux checks Cursor's configuration and indicates whether Cursor AI Chat is already pointed at `:8787/v1`
 

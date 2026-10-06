@@ -46,7 +46,7 @@ var (
 	reInvokeTool     = regexp.MustCompile(`(?s)<(?:invoke|function_call)\s+name="?([^"\s>]+)"?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
 	reXMLParam       = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
 	reAMUXTool       = regexp.MustCompile(`(?s)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
-	reToolJSON       = regexp.MustCompile("(?s)```(?:tool_call|json)\\s*\n(\\{[\\s\\S]*?\\})\\s*```")
+	reToolJSON       = regexp.MustCompile("(?s)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence      = regexp.MustCompile("(?s)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
 	reBracketTool    = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
@@ -928,56 +928,146 @@ func parseToolCallJSON(raw string) (name, id, args string, ok bool) {
 	raw = jsonrepair.StripMarkdownFences(raw)
 	raw = strings.TrimSpace(raw)
 	raw = reTrailComma.ReplaceAllString(raw, "$1")
-	var probe struct {
-		Name      string          `json:"name"`
-		ID        string          `json:"id"`
-		Arguments json.RawMessage `json:"arguments"`
-		Input     json.RawMessage `json:"input"`
-	}
-	if json.Unmarshal([]byte(raw), &probe) != nil || probe.Name == "" {
-		repaired := jsonrepair.Repair(raw)
-		repaired = reTrailComma.ReplaceAllString(repaired, "$1")
-		if json.Unmarshal([]byte(repaired), &probe) != nil || probe.Name == "" {
-			// Fallback: extract name, id, and command/args via regex
-			reName := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
-			if m := reName.FindStringSubmatch(raw); len(m) > 1 {
-				name = m[1]
-				reID := regexp.MustCompile(`"id"\s*:\s*"([^"]+)"`)
-				if mid := reID.FindStringSubmatch(raw); len(mid) > 1 {
-					id = mid[1]
+
+	extractFromMap := func(m map[string]json.RawMessage) (string, string, string, bool) {
+		var n, i, a string
+		// 1. Extract name (name, Name, action, tool, or function.name)
+		for _, k := range []string{"name", "Name", "action", "tool"} {
+			if v, found := m[k]; found {
+				var s string
+				if json.Unmarshal(v, &s) == nil && s != "" {
+					n = s
+					break
 				}
-				// 1. Try "command" / "CommandLine" / "cmd"
-				reCmd := regexp.MustCompile(`(?s)"(?:command|CommandLine|cmd)"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
-				if mcmd := reCmd.FindStringSubmatch(raw); len(mcmd) > 1 {
-					cmd := mcmd[1]
-					b, _ := json.Marshal(map[string]string{"command": cmd})
-					return name, id, string(b), true
-				}
-				// 2. Try "file_path" / "path" / "AbsolutePath" / "TargetFile"
-				rePath := regexp.MustCompile(`(?s)"(?:file_path|path|AbsolutePath|TargetFile)"\s*:\s*"(.*?)"`)
-				if mpath := rePath.FindStringSubmatch(raw); len(mpath) > 1 {
-					filePath := mpath[1]
-					payload := map[string]string{"file_path": filePath}
-					reContent := regexp.MustCompile(`(?s)"(?:content|CodeContent|new_string|ReplacementContent)"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
-					if mcont := reContent.FindStringSubmatch(raw); len(mcont) > 1 {
-						payload["content"] = mcont[1]
-					}
-					b, _ := json.Marshal(payload)
-					return name, id, string(b), true
-				}
-				return name, id, "{}", true
 			}
+		}
+		if n == "" {
+			if fnRaw, found := m["function"]; found {
+				var fnObj map[string]json.RawMessage
+				if json.Unmarshal(fnRaw, &fnObj) == nil {
+					for _, k := range []string{"name", "Name"} {
+						if v, f := fnObj[k]; f {
+							var s string
+							if json.Unmarshal(v, &s) == nil && s != "" {
+								n = s
+								break
+							}
+						}
+					}
+					if fnArgs, f := fnObj["arguments"]; f {
+						a = string(fnArgs)
+					}
+				}
+			}
+		}
+		if n == "" {
 			return "", "", "", false
 		}
+
+		// 2. Extract id
+		for _, k := range []string{"id", "ID", "tool_call_id"} {
+			if v, found := m[k]; found {
+				var s string
+				if json.Unmarshal(v, &s) == nil && s != "" {
+					i = s
+					break
+				}
+			}
+		}
+
+		// 3. Extract arguments / parameters / input
+		if a == "" {
+			for _, k := range []string{"arguments", "Arguments", "parameters", "Parameters", "input", "Input", "action_input", "tool_input"} {
+				if v, found := m[k]; found && len(v) > 0 && string(v) != "null" {
+					a = string(v)
+					break
+				}
+			}
+		}
+
+		// If arguments was a stringified JSON string (e.g. "\"{\\\"command\\\": ...}\"")
+		if strings.HasPrefix(strings.TrimSpace(a), `"`) {
+			var unquoted string
+			if json.Unmarshal([]byte(a), &unquoted) == nil && json.Valid([]byte(unquoted)) {
+				a = unquoted
+			}
+		}
+
+		// 4. If a is still empty or "{}", check for flat arguments: e.g. {"name": "Bash", "command": "git status"}
+		if a == "" || strings.TrimSpace(a) == "{}" {
+			remaining := make(map[string]any)
+			for k, v := range m {
+				lowerK := strings.ToLower(k)
+				if lowerK == "name" || lowerK == "id" || lowerK == "type" ||
+					lowerK == "action" || lowerK == "tool" || lowerK == "thought" ||
+					lowerK == "function" || lowerK == "explanation" || lowerK == "reasoning" {
+					continue
+				}
+				var parsedVal any
+				if json.Unmarshal(v, &parsedVal) == nil {
+					remaining[k] = parsedVal
+				} else {
+					remaining[k] = string(v)
+				}
+			}
+			if len(remaining) > 0 {
+				if b, err := json.Marshal(remaining); err == nil {
+					a = string(b)
+				}
+			}
+		}
+
+		if a == "" {
+			a = "{}"
+		}
+		return n, i, a, true
 	}
-	a := probe.Arguments
-	if len(a) == 0 {
-		a = probe.Input
+
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &m) == nil {
+		if n, i, a, found := extractFromMap(m); found {
+			return n, i, a, true
+		}
 	}
-	if len(a) == 0 {
-		return probe.Name, probe.ID, "{}", true
+
+	repaired := jsonrepair.Repair(raw)
+	repaired = reTrailComma.ReplaceAllString(repaired, "$1")
+	if json.Unmarshal([]byte(repaired), &m) == nil {
+		if n, i, a, found := extractFromMap(m); found {
+			return n, i, a, true
+		}
 	}
-	return probe.Name, probe.ID, string(a), true
+
+	// Fallback regex extraction
+	reName := regexp.MustCompile(`"(?:name|Name|action|tool)"\s*:\s*"([^"]+)"`)
+	if match := reName.FindStringSubmatch(raw); len(match) > 1 {
+		name = match[1]
+		reID := regexp.MustCompile(`"(?:id|ID)"\s*:\s*"([^"]+)"`)
+		if mid := reID.FindStringSubmatch(raw); len(mid) > 1 {
+			id = mid[1]
+		}
+		// 1. Try "command" / "CommandLine" / "cmd"
+		reCmd := regexp.MustCompile(`(?s)"(?:command|CommandLine|cmd)"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
+		if mcmd := reCmd.FindStringSubmatch(raw); len(mcmd) > 1 {
+			cmd := mcmd[1]
+			b, _ := json.Marshal(map[string]string{"command": cmd})
+			return name, id, string(b), true
+		}
+		// 2. Try "file_path" / "path" / "AbsolutePath" / "TargetFile"
+		rePath := regexp.MustCompile(`(?s)"(?:file_path|path|AbsolutePath|TargetFile)"\s*:\s*"(.*?)"`)
+		if mpath := rePath.FindStringSubmatch(raw); len(mpath) > 1 {
+			filePath := mpath[1]
+			payload := map[string]string{"file_path": filePath}
+			reContent := regexp.MustCompile(`(?s)"(?:content|CodeContent|new_string|ReplacementContent)"\s*:\s*"(.*)"\s*\}*\s*\}*$`)
+			if mcont := reContent.FindStringSubmatch(raw); len(mcont) > 1 {
+				payload["content"] = mcont[1]
+			}
+			b, _ := json.Marshal(payload)
+			return name, id, string(b), true
+		}
+		return name, id, "{}", true
+	}
+	return "", "", "", false
 }
 
 // StripWebToolMarkup removes protocol / bash fences / thought tags so Claude Code does not

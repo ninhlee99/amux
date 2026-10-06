@@ -44,9 +44,13 @@ The gateway SHALL bind to loopback by default. When started public (`amux start 
 - **THEN** the gateway answers 401 and records the failure for brute-force limiting
 
 ### Requirement: No hidden spend from the host's own keys
-While the gateway is up and no pool account can serve a request, it MUST refuse the request rather than fall back to the host process's own `ANTHROPIC_API_KEY`.
+While the gateway is up and no pool account can serve a request, it MUST refuse the request rather than fall back to the host process's own `ANTHROPIC_API_KEY`. When refusing on `/v1/messages` due to pool exhaustion, the gateway SHALL return HTTP 503 formatted as a valid Anthropic API JSON error (`{"type":"error","error":{"type":"permission_error","message":"..."}}`) so client coding tools (such as Claude Code) surface actionable guidance instead of plain-text errors.
 
 #### Scenario: Pool exhausted
 - **WHEN** every pool account is cooling down and the caller brought no credential
 - **THEN** the gateway returns an error instead of using an environment API key
+
+#### Scenario: Pool exhausted returns structured Anthropic error
+- **WHEN** every pool account is cooling down or unavailable and Claude Code calls `POST /v1/messages`
+- **THEN** the gateway returns HTTP 503 with an Anthropic JSON error structure containing the failure explanation
 

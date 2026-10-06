@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"amux-accounts/pkg/gateway"
+	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/provider"
 )
 
 // PrepareSandboxEnv computes the binary name and environment variables to inject.
@@ -257,13 +259,26 @@ func CmdRun(args []string) {
 	}
 
 	// Check if accounts exist to give immediate helpful guidance
-	if cfg, err := identity.LoadConfig(""); err == nil && len(cfg.Identities) == 0 {
+	hasAccounts := false
+	if cfg, err := identity.LoadConfig(""); err == nil && len(cfg.Identities) > 0 {
+		hasAccounts = true
+	} else if accts, err := provider.LoadAccounts(provider.DefaultAccountsPath()); err == nil && len(accts) > 0 {
+		hasAccounts = true
+	}
+	if !hasAccounts {
 		fmt.Println("⚠ Notice: No accounts configured in AMUX yet. Run 'amux login' to connect Claude, ChatGPT, Gemini, or an API key.")
 	}
 
 	fmt.Printf("⚡ AMUX Sandbox: %s → %s (isolated session)\n", binName, gatewayURL)
 	if target == "cursor" {
-		fmt.Printf("💡 Tip: For Cursor GUI AI Chat, ensure Cursor Settings > Models > 'Override OpenAI Base URL' is set to %s/v1\n", gatewayURL)
+		cm := hook.LoadCursorSettings()
+		base, ok := cm["cursor.general.openaiBaseUrl"].(string)
+		base2, ok2 := cm["openai.baseUrl"].(string)
+		if (ok && strings.TrimSpace(base) != "") || (ok2 && strings.TrimSpace(base2) != "") {
+			fmt.Printf("✓ Cursor AI Chat already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else {
+			fmt.Printf("💡 Tip: For Cursor GUI AI Chat, ensure Cursor Settings > Models > 'Override OpenAI Base URL' is set to %s/v1 (or run 'amux hook cursor' to auto-configure).\n", gatewayURL)
+		}
 	} else if target == "windsurf" {
 		fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, configure OpenAI Base URL to %s/v1 in Settings > Models\n", gatewayURL)
 	} else if target == "aider" {
