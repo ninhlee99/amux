@@ -15,6 +15,7 @@ import (
 
 // CmdDashboard launches the interactive TUI Dashboard for AMUX.
 func CmdDashboard(args []string) {
+	_, _ = identity.MigrateLegacyAccounts("", "")
 	jsonMode := false
 	onceMode := false
 

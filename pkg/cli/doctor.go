@@ -142,8 +142,10 @@ func CmdDoctor(args []string) {
 	checkTool("VS Code", "code", errCode == nil)
 	_, errZed := exec.LookPath("zed")
 	checkTool("Zed", "zed", errZed == nil)
-	checkTool("Aider", "aider", false)
-	checkTool("OpenCode", "opencode", false)
+	_, errAider := exec.LookPath("aider")
+	checkTool("Aider", "aider", errAider == nil)
+	_, errOpenCode := exec.LookPath("opencode")
+	checkTool("OpenCode", "opencode", errOpenCode == nil)
 
 	// 5. MCP Host Integrations
 	fmt.Println("\n== MCP Host Integrations ==")

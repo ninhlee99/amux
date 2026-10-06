@@ -438,7 +438,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 				} else if bufferedContent.Len() > 0 {
 					cleanBuffered := bufferedContent.String()
 					if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
-						cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+						cleanBuffered = tools.StripInternalThoughtAndToolTags(cleanBuffered)
 					}
 					if cleanBuffered != "" {
 						chunkResp := geminiGenerateResponse{

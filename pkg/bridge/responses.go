@@ -131,6 +131,10 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		ping := time.NewTicker(streamKeepaliveInterval)
 		defer ping.Stop()
 
+		hasTools := len(req.Tools) > 0
+		var bufferedContent strings.Builder
+		flushedContentLen := 0
+
 		for {
 			chunk, ok, recvErr := recvStreamChunk(ctx, stream, ping.C, commentKeepalive(w, flusher))
 			if recvErr != nil {
@@ -151,42 +155,85 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 			if chunk.Content != "" {
 				fullContent.WriteString(chunk.Content)
 
-				if !textPartStarted {
-					textPartStarted = true
-					// Emit output_item.added and content_part.added
-					itemAddJSON, _ := json.Marshal(map[string]any{
-						"type":         "response.output_item.added",
-						"output_index": 0,
-						"item": map[string]any{
-							"id":      itemID,
-							"type":    "message",
-							"status":  "in_progress",
-							"role":    "assistant",
-							"content": []any{},
-						},
-					})
-					fmt.Fprintf(w, "event: response.output_item.added\ndata: %s\n\n", itemAddJSON)
+				if hasTools {
+					currentAll := fullContent.String()
+					if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") {
+						bufferedContent.WriteString(chunk.Content)
+					} else {
+						if !textPartStarted {
+							textPartStarted = true
+							itemAddJSON, _ := json.Marshal(map[string]any{
+								"type":         "response.output_item.added",
+								"output_index": 0,
+								"item": map[string]any{
+									"id":      itemID,
+									"type":    "message",
+									"status":  "in_progress",
+									"role":    "assistant",
+									"content": []any{},
+								},
+							})
+							fmt.Fprintf(w, "event: response.output_item.added\ndata: %s\n\n", itemAddJSON)
 
-					partAddJSON, _ := json.Marshal(map[string]any{
-						"type":          "response.content_part.added",
+							partAddJSON, _ := json.Marshal(map[string]any{
+								"type":          "response.content_part.added",
+								"output_index":  0,
+								"content_index": 0,
+								"part": map[string]string{
+									"type": "text",
+									"text": "",
+								},
+							})
+							fmt.Fprintf(w, "event: response.content_part.added\ndata: %s\n\n", partAddJSON)
+						}
+
+						deltaJSON, _ := json.Marshal(map[string]any{
+							"type":          "response.output_text.delta",
+							"output_index":  0,
+							"content_index": 0,
+							"delta":         chunk.Content,
+						})
+						fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", deltaJSON)
+						flusher.Flush()
+						flushedContentLen += len(chunk.Content)
+					}
+				} else {
+					if !textPartStarted {
+						textPartStarted = true
+						itemAddJSON, _ := json.Marshal(map[string]any{
+							"type":         "response.output_item.added",
+							"output_index": 0,
+							"item": map[string]any{
+								"id":      itemID,
+								"type":    "message",
+								"status":  "in_progress",
+								"role":    "assistant",
+								"content": []any{},
+							},
+						})
+						fmt.Fprintf(w, "event: response.output_item.added\ndata: %s\n\n", itemAddJSON)
+
+						partAddJSON, _ := json.Marshal(map[string]any{
+							"type":          "response.content_part.added",
+							"output_index":  0,
+							"content_index": 0,
+							"part": map[string]string{
+								"type": "text",
+								"text": "",
+							},
+						})
+						fmt.Fprintf(w, "event: response.content_part.added\ndata: %s\n\n", partAddJSON)
+					}
+
+					deltaJSON, _ := json.Marshal(map[string]any{
+						"type":          "response.output_text.delta",
 						"output_index":  0,
 						"content_index": 0,
-						"part": map[string]string{
-							"type": "text",
-							"text": "",
-						},
+						"delta":         chunk.Content,
 					})
-					fmt.Fprintf(w, "event: response.content_part.added\ndata: %s\n\n", partAddJSON)
+					fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", deltaJSON)
+					flusher.Flush()
 				}
-
-				deltaJSON, _ := json.Marshal(map[string]any{
-					"type":          "response.output_text.delta",
-					"output_index":  0,
-					"content_index": 0,
-					"delta":         chunk.Content,
-				})
-				fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", deltaJSON)
-				flusher.Flush()
 			}
 
 			if len(chunk.ToolCalls) > 0 {
@@ -212,37 +259,154 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 
 		outputIndex := 0
-		if textPartStarted {
-			finalText := fullContent.String()
-			if len(toolCalls) > 0 {
-				finalText = tools.StripWebToolMarkup(finalText)
+		if len(toolCalls) > 0 {
+			cleanProse := tools.StripWebToolMarkup(fullContent.String())
+			if len(cleanProse) > flushedContentLen {
+				remaining := cleanProse[flushedContentLen:]
+				if strings.TrimSpace(remaining) != "" {
+					if !textPartStarted {
+						textPartStarted = true
+						itemAddJSON, _ := json.Marshal(map[string]any{
+							"type":         "response.output_item.added",
+							"output_index": outputIndex,
+							"item": map[string]any{
+								"id":      itemID,
+								"type":    "message",
+								"status":  "in_progress",
+								"role":    "assistant",
+								"content": []any{},
+							},
+						})
+						fmt.Fprintf(w, "event: response.output_item.added\ndata: %s\n\n", itemAddJSON)
+						partAddJSON, _ := json.Marshal(map[string]any{
+							"type":          "response.content_part.added",
+							"output_index":  outputIndex,
+							"content_index": 0,
+							"part": map[string]string{
+								"type": "text",
+								"text": "",
+							},
+						})
+						fmt.Fprintf(w, "event: response.content_part.added\ndata: %s\n\n", partAddJSON)
+					}
+					deltaJSON, _ := json.Marshal(map[string]any{
+						"type":          "response.output_text.delta",
+						"output_index":  outputIndex,
+						"content_index": 0,
+						"delta":         remaining,
+					})
+					fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", deltaJSON)
+					flusher.Flush()
+				}
 			}
-			if strings.TrimSpace(finalText) != "" {
-				// Finish text part
+			if textPartStarted {
 				textDoneJSON, _ := json.Marshal(map[string]any{
 					"type":          "response.output_text.done",
-					"output_index":  0,
+					"output_index":  outputIndex,
 					"content_index": 0,
-					"text":          finalText,
+					"text":          cleanProse,
 				})
 				fmt.Fprintf(w, "event: response.output_text.done\ndata: %s\n\n", textDoneJSON)
-
 				itemDoneJSON, _ := json.Marshal(map[string]any{
 					"type":         "response.output_item.done",
-					"output_index": 0,
+					"output_index": outputIndex,
 					"item": map[string]any{
 						"id":     itemID,
 						"type":   "message",
 						"status": "completed",
 						"role":   "assistant",
 						"content": []map[string]string{
-							{"type": "text", "text": finalText},
+							{"type": "text", "text": cleanProse},
 						},
 					},
 				})
 				fmt.Fprintf(w, "event: response.output_item.done\ndata: %s\n\n", itemDoneJSON)
 				outputIndex++
 			}
+		} else if bufferedContent.Len() > 0 {
+			cleanBuffered := bufferedContent.String()
+			cleanBuffered = tools.StripInternalThoughtAndToolTags(cleanBuffered)
+			if cleanBuffered != "" {
+				if !textPartStarted {
+					textPartStarted = true
+					itemAddJSON, _ := json.Marshal(map[string]any{
+						"type":         "response.output_item.added",
+						"output_index": outputIndex,
+						"item": map[string]any{
+							"id":      itemID,
+							"type":    "message",
+							"status":  "in_progress",
+							"role":    "assistant",
+							"content": []any{},
+						},
+					})
+					fmt.Fprintf(w, "event: response.output_item.added\ndata: %s\n\n", itemAddJSON)
+					partAddJSON, _ := json.Marshal(map[string]any{
+						"type":          "response.content_part.added",
+						"output_index":  outputIndex,
+						"content_index": 0,
+						"part": map[string]string{
+							"type": "text",
+							"text": "",
+						},
+					})
+					fmt.Fprintf(w, "event: response.content_part.added\ndata: %s\n\n", partAddJSON)
+				}
+				deltaJSON, _ := json.Marshal(map[string]any{
+					"type":          "response.output_text.delta",
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"delta":         cleanBuffered,
+				})
+				fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", deltaJSON)
+				textDoneJSON, _ := json.Marshal(map[string]any{
+					"type":          "response.output_text.done",
+					"output_index":  outputIndex,
+					"content_index": 0,
+					"text":          cleanBuffered,
+				})
+				fmt.Fprintf(w, "event: response.output_text.done\ndata: %s\n\n", textDoneJSON)
+				itemDoneJSON, _ := json.Marshal(map[string]any{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item": map[string]any{
+						"id":     itemID,
+						"type":   "message",
+						"status": "completed",
+						"role":   "assistant",
+						"content": []map[string]string{
+							{"type": "text", "text": cleanBuffered},
+						},
+					},
+				})
+				fmt.Fprintf(w, "event: response.output_item.done\ndata: %s\n\n", itemDoneJSON)
+				outputIndex++
+			}
+		} else if textPartStarted {
+			finalText := fullContent.String()
+			textDoneJSON, _ := json.Marshal(map[string]any{
+				"type":          "response.output_text.done",
+				"output_index":  0,
+				"content_index": 0,
+				"text":          finalText,
+			})
+			fmt.Fprintf(w, "event: response.output_text.done\ndata: %s\n\n", textDoneJSON)
+
+			itemDoneJSON, _ := json.Marshal(map[string]any{
+				"type":         "response.output_item.done",
+				"output_index": 0,
+				"item": map[string]any{
+					"id":     itemID,
+					"type":   "message",
+					"status": "completed",
+					"role":   "assistant",
+					"content": []map[string]string{
+						{"type": "text", "text": finalText},
+					},
+				},
+			})
+			fmt.Fprintf(w, "event: response.output_item.done\ndata: %s\n\n", itemDoneJSON)
+			outputIndex++
 		}
 
 		// Emit tool call output items

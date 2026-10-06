@@ -51,6 +51,8 @@ var (
 	reAMUXTool         = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
 	reToolJSON         = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence        = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
+	reGeminiCall       = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
+	reToolCallFence    = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
 	reBracketTool      = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
 	reBracketToolAlt   = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
@@ -244,7 +246,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		if len(calls) == 0 {
 			cleanText := text
 			if hasExplicitWebToolMarkup(text) || strings.Contains(text, "<thought") {
-				cleanText = StripWebToolMarkup(text)
+				cleanText = StripInternalThoughtAndToolTags(text)
 			}
 			if cleanText != "" {
 				out <- types.StreamChunk{ID: id, Content: cleanText, LogText: text}
@@ -298,6 +300,8 @@ func hasExplicitWebToolMarkup(text string) bool {
 		strings.Contains(lower, "[tool call") ||
 		strings.Contains(lower, "<invoke") ||
 		strings.Contains(lower, "<<<amux_tool") ||
+		strings.Contains(lower, "call:default_api:") ||
+		strings.Contains(lower, "call:") ||
 		(strings.Contains(text, `"name"`) &&
 			(strings.Contains(text, `"arguments"`) || strings.Contains(text, `"input"`)))
 }
@@ -474,18 +478,36 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		if !ok {
 			// If incoming is call_mcp_tool, inspect args to map to client's mcp__server__tool
 			if strings.EqualFold(name, "call_mcp_tool") {
-				var mcpArgs struct {
-					ServerName string          `json:"ServerName"`
-					ToolName   string          `json:"ToolName"`
-					Arguments  json.RawMessage `json:"Arguments"`
-				}
-				if json.Unmarshal([]byte(args), &mcpArgs) == nil && mcpArgs.ServerName != "" && mcpArgs.ToolName != "" {
-					candidate := "mcp__" + mcpArgs.ServerName + "__" + mcpArgs.ToolName
-					if c, found := canonical(candidate); found {
-						canon = c
-						ok = true
-						if len(mcpArgs.Arguments) > 0 && string(mcpArgs.Arguments) != "null" {
-							args = string(mcpArgs.Arguments)
+				var mcpRaw map[string]json.RawMessage
+				if json.Unmarshal([]byte(args), &mcpRaw) == nil {
+					var serverName, toolName string
+					for _, sk := range []string{"ServerName", "server_name", "server", "Server", "serverName"} {
+						if v, found := mcpRaw[sk]; found {
+							_ = json.Unmarshal(v, &serverName)
+							if serverName != "" {
+								break
+							}
+						}
+					}
+					for _, tk := range []string{"ToolName", "tool_name", "tool", "Tool", "toolName"} {
+						if v, found := mcpRaw[tk]; found {
+							_ = json.Unmarshal(v, &toolName)
+							if toolName != "" {
+								break
+							}
+						}
+					}
+					if serverName != "" && toolName != "" {
+						candidate := "mcp__" + serverName + "__" + toolName
+						if c, found := canonical(candidate); found {
+							canon = c
+							ok = true
+							for _, ak := range []string{"Arguments", "arguments", "args", "params"} {
+								if v, f := mcpRaw[ak]; f && len(v) > 0 && string(v) != "null" {
+									args = string(v)
+									break
+								}
+							}
 						}
 					}
 				}
@@ -497,8 +519,12 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 
 		// If client expects call_mcp_tool and incoming is an mcp__server__tool name:
 		if strings.EqualFold(canon, "call_mcp_tool") && (strings.HasPrefix(strings.ToLower(name), "mcp__") || strings.HasPrefix(strings.ToLower(name), "mcp_")) {
-			clean := strings.TrimPrefix(strings.ToLower(name), "mcp__")
-			clean = strings.TrimPrefix(clean, "mcp_")
+			clean := name
+			if strings.HasPrefix(strings.ToLower(clean), "mcp__") {
+				clean = clean[5:]
+			} else if strings.HasPrefix(strings.ToLower(clean), "mcp_") {
+				clean = clean[4:]
+			}
 			parts := strings.SplitN(clean, "__", 2)
 			if len(parts) < 2 {
 				parts = strings.SplitN(clean, "_", 2)
@@ -628,6 +654,17 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 	}
 	for _, m := range reAMUXTool.FindAllStringSubmatch(text, -1) {
 		add(m[1], m[2], m[3])
+	}
+	for _, m := range reGeminiCall.FindAllStringSubmatch(text, -1) {
+		name, raw := m[1], strings.TrimSpace(m[2])
+		if n, i, a, ok := parseToolCallJSON(raw); ok {
+			if n == "" {
+				n = name
+			}
+			add(n, i, a)
+		} else {
+			add(name, "", raw)
+		}
 	}
 	for _, m := range reToolJSON.FindAllStringSubmatch(text, -1) {
 		// Route through parseToolCallJSON (not a bare json.Unmarshal) so a
@@ -981,10 +1018,15 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 			m["EndLine"] = foundEnd
 			changed = true
 		} else if v, ok := m["EndLine"]; !ok || v == nil {
-			if fileLines > 0 {
+			st := 1
+			if sVal, ok := toInt(m["StartLine"]); ok && sVal > 0 {
+				st = sVal
+			}
+			maxEnd := st + 799
+			if fileLines > 0 && fileLines < maxEnd {
 				m["EndLine"] = fileLines
 			} else {
-				m["EndLine"] = 1000
+				m["EndLine"] = maxEnd
 			}
 			changed = true
 		} else if s, isStr := v.(string); isStr {
@@ -993,8 +1035,18 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 				changed = true
 			}
 		}
+		// Clamp to at most StartLine + 799 (max 800 lines limit)
+		st := 1
+		if sVal, ok := toInt(m["StartLine"]); ok && sVal > 0 {
+			st = sVal
+		}
+		maxEnd := st + 799
+		if curEnd, ok := toInt(m["EndLine"]); ok && curEnd > maxEnd {
+			m["EndLine"] = maxEnd
+			changed = true
+		}
 		if fileLines > 0 {
-			if curEnd, ok := m["EndLine"].(int); ok && curEnd > fileLines {
+			if curEnd, ok := toInt(m["EndLine"]); ok && curEnd > fileLines {
 				m["EndLine"] = fileLines
 				changed = true
 			}
@@ -1230,12 +1282,38 @@ func StripWebToolMarkup(text string) string {
 	s = reBracketTool.ReplaceAllString(s, "")
 	s = reBracketToolAlt.ReplaceAllString(s, "")
 	s = reStrayBracketTool.ReplaceAllString(s, "")
+	s = reGeminiCall.ReplaceAllString(s, "")
 	s = reEndNotice.ReplaceAllString(s, "")
 	s = reXferNotice.ReplaceAllString(s, "")
 	s = reCatalogNotice.ReplaceAllString(s, "")
 	s = reToolResultMarker.ReplaceAllString(s, "")
+	s = reToolCallFence.ReplaceAllString(s, "")
 	s = reToolJSON.ReplaceAllString(s, "")
 	s = reBashFence.ReplaceAllString(s, "")
+	s = reEmptyFence.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+// StripInternalThoughtAndToolTags removes thinking tags (<thought>, <thinking>, <reflection>)
+// and tool markup tags (<tool_call>, [tool_call], <invoke>, call:default_api:, etc.) while strictly preserving
+// legitimate user-facing markdown code blocks (e.g. ```bash, ```json, ```go) in conversational output.
+func StripInternalThoughtAndToolTags(text string) string {
+	s := reThought.ReplaceAllString(text, "")
+	s = reThinking.ReplaceAllString(s, "")
+	s = reReflection.ReplaceAllString(s, "")
+	s = reXMLTool.ReplaceAllString(s, "")
+	s = reHyphenTool.ReplaceAllString(s, "")
+	s = reInvokeTool.ReplaceAllString(s, "")
+	s = reAMUXTool.ReplaceAllString(s, "")
+	s = reBracketTool.ReplaceAllString(s, "")
+	s = reBracketToolAlt.ReplaceAllString(s, "")
+	s = reStrayBracketTool.ReplaceAllString(s, "")
+	s = reGeminiCall.ReplaceAllString(s, "")
+	s = reEndNotice.ReplaceAllString(s, "")
+	s = reXferNotice.ReplaceAllString(s, "")
+	s = reCatalogNotice.ReplaceAllString(s, "")
+	s = reToolResultMarker.ReplaceAllString(s, "")
+	s = reToolCallFence.ReplaceAllString(s, "")
 	s = reEmptyFence.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }

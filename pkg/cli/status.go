@@ -48,6 +48,7 @@ func CmdStatus(args []string) {
 	}
 
 	fmt.Println()
+	_, _ = identity.MigrateLegacyAccounts("", "")
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
 		fmt.Println("No accounts yet. Add one with: amux login")

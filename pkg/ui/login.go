@@ -655,6 +655,13 @@ func loginGeminiWeb(f loginFlags) {
 			}
 		}
 	}
+	if cookieHeader == "" && key == "" && !wantBrowser {
+		if tok, bName, err := browser.ExtractCookie("google.com", "__Secure-1PSID"); err == nil && tok != "" {
+			fmt.Printf("✓ Auto-extracted Google __Secure-1PSID from %s!\n", bName)
+			key = tok
+			cookieHeader = "__Secure-1PSID=" + tok
+		}
+	}
 	if cookieHeader == "" && key == "" {
 		if useDefaultBrowser || f.defBrowser {
 			openForManualPaste(browser.GeminiWebLogin)

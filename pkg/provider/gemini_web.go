@@ -138,7 +138,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			}
 			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 		}
-		if !req.FullContext && len(newMeta) > 0 && newMeta[0] != "" {
+		if len(newMeta) > 0 && newMeta[0] != "" {
 			cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
 		}
 		out := make(chan types.StreamChunk, 2)

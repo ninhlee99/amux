@@ -272,3 +272,56 @@ func TestHandleOpenAIResponses_ToolCalls(t *testing.T) {
 		t.Errorf("unexpected tool message: %+v", toolMsg)
 	}
 }
+
+func TestHandleOpenAIResponses_Streaming_HidesRawToolMarkupFromDelta(t *testing.T) {
+	backend := &mockResponsesBackend{
+		id: "chatgpt:01",
+		chunks: []types.StreamChunk{
+			{
+				ID: "chatgpt:01",
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_123",
+						Name:      "exec_command",
+						Arguments: `{"cmd":"pwd"}`,
+					},
+				},
+				Content: `<thought>Thinking about running pwd</thought><tool_call>{"name":"exec_command","arguments":{"cmd":"pwd"}}</tool_call>`,
+			},
+			{ID: "chatgpt:01", Done: true, FinishReason: "tool_calls"},
+		},
+	}
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{backend})
+
+	reqBody := map[string]any{
+		"model":  "gpt-5-codex",
+		"input":  "Where am I?",
+		"stream": true,
+		"tools": []map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "exec_command",
+					"description": "Execute a shell command",
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	bridge.HandleOpenAIResponses(w, req, pool)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "response.output_text.delta") {
+		t.Errorf("expected no output_text.delta when chunk only has tool markup, got: %s", body)
+	}
+	if !strings.Contains(body, "function_call") || !strings.Contains(body, "exec_command") {
+		t.Errorf("expected function_call in SSE stream, got: %s", body)
+	}
+}
+

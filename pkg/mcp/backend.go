@@ -149,7 +149,7 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		return nil, err
 	}
 	text := strings.TrimSpace(sb.String())
-	if clean := tools.StripWebToolMarkup(text); strings.TrimSpace(clean) != "" {
+	if clean := tools.StripInternalThoughtAndToolTags(text); strings.TrimSpace(clean) != "" {
 		text = strings.TrimSpace(clean)
 	} else if len(recordedToolCalls) > 0 {
 		var parts []string

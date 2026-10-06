@@ -14,6 +14,7 @@ import (
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/provider"
+	"amux-accounts/pkg/proxy"
 )
 
 // PrepareSandboxEnv computes the binary name and environment variables to inject.
@@ -22,44 +23,49 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		"AMUX_SANDBOX": "1",
 	}
 
+	defaultToken := "am-proxy"
+	if tok, err := proxy.LoadAuthToken(); err == nil && tok != "" {
+		defaultToken = tok
+	}
+
 	var binName string
 	switch target {
 	case "claude", "claude-code":
 		binName = "claude"
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 	case "cursor":
 		binName = "cursor"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 	case "windsurf", "windsurf-cli":
 		binName = "windsurf"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 	case "codex", "codex-cli":
 		binName = "codex"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 	case "agy", "antigravity":
 		binName = "agy"
@@ -72,7 +78,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		envOverrides["GEMINI_API_BASE"] = gatewayURL
 		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
 		if os.Getenv("GEMINI_API_KEY") == "" {
-			envOverrides["GEMINI_API_KEY"] = "am-proxy"
+			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
 	case "aider":
 		binName = "aider"
@@ -84,46 +90,46 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
 		envOverrides["OLLAMA_API_BASE"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 		if os.Getenv("GEMINI_API_KEY") == "" {
-			envOverrides["GEMINI_API_KEY"] = "am-proxy"
+			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
 	case "opencode":
 		binName = "opencode"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 	case "cline", "roo", "roo-code":
 		binName = target
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 	case "zed":
 		binName = "zed"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 	default:
 		// Arbitrary command execution with universal proxy variables
@@ -135,16 +141,16 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		envOverrides["GEMINI_API_BASE"] = gatewayURL
 		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
 		if os.Getenv("OPENAI_API_KEY") == "" {
-			envOverrides["OPENAI_API_KEY"] = "am-proxy"
+			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = "am-proxy"
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
 		}
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = "am-proxy"
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
 		if os.Getenv("GEMINI_API_KEY") == "" {
-			envOverrides["GEMINI_API_KEY"] = "am-proxy"
+			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
 	}
 	return binName, envOverrides
@@ -258,6 +264,12 @@ func CmdRun(args []string) {
 			} else {
 				fmt.Printf("✓ Successfully configured Windsurf settings.json (openai.baseUrl -> %s/v1)\n", gatewayURL)
 			}
+		case "codex", "codex-cli":
+			if err := hook.SyncCodexSettingsEnv(true, gatewayURL); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ Failed to configure Codex config: %v\n", err)
+			} else {
+				fmt.Printf("✓ Successfully configured Codex config.toml (openai_base_url -> %s/v1)\n", gatewayURL)
+			}
 		case "claude", "claude-code":
 			fmt.Printf("✓ Claude is configured to use AMUX Gateway via ANTHROPIC_BASE_URL=%s\n", gatewayURL)
 		default:
@@ -323,6 +335,15 @@ func CmdRun(args []string) {
 		} else {
 			fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, run 'amux run windsurf --setup' to auto-configure settings.json.\n")
 		}
+	} else if target == "codex" || target == "codex-cli" {
+		cfgPath := hook.CodexConfigPath()
+		if b, err := os.ReadFile(cfgPath); err == nil && strings.Contains(string(b), gatewayURL) {
+			fmt.Printf("✓ Codex CLI already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else {
+			fmt.Printf("💡 Tip: For persistent Codex config, run 'amux run codex --setup' to auto-configure config.toml.\n")
+		}
+	} else if target == "agy" || target == "antigravity" {
+		fmt.Printf("✓ AGY (Antigravity) connected to AMUX Gateway (%s)\n", gatewayURL)
 	} else if target == "aider" {
 		fmt.Printf("💡 Tip: Aider is pre-configured with AMUX. Run with '--model openai/gpt-4o' or '--model anthropic/claude-3-5-sonnet'\n")
 	} else if target == "opencode" {

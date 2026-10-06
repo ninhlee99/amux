@@ -533,8 +533,19 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	if thinkingContent.Len() > 0 {
 		content = append(content, map[string]string{"type": "thinking", "thinking": thinkingContent.String()})
 	}
-	if fullContent.Len() > 0 {
-		content = append(content, map[string]string{"type": "text", "text": fullContent.String()})
+	if len(toolCalls) > 0 {
+		cleanProse := tools.StripWebToolMarkup(fullContent.String())
+		if strings.TrimSpace(cleanProse) != "" {
+			content = append(content, map[string]string{"type": "text", "text": cleanProse})
+		}
+	} else if fullContent.Len() > 0 {
+		cleanProse := fullContent.String()
+		if strings.Contains(cleanProse, "<thought") || strings.Contains(cleanProse, "<thinking") {
+			cleanProse = tools.StripInternalThoughtAndToolTags(cleanProse)
+		}
+		if strings.TrimSpace(cleanProse) != "" {
+			content = append(content, map[string]string{"type": "text", "text": cleanProse})
+		}
 	}
 	for _, b := range tools.ToClaudeToolUseBlocks(toolCalls) {
 		content = append(content, b)
@@ -889,7 +900,7 @@ loop:
 	} else if bufferedContent.Len() > 0 {
 		cleanBuffered := bufferedContent.String()
 		if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
-			cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+			cleanBuffered = tools.StripInternalThoughtAndToolTags(cleanBuffered)
 		}
 		if cleanBuffered != "" {
 			ensureTextBlock()

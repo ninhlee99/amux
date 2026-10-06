@@ -264,7 +264,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 				} else if bufferedContent.Len() > 0 {
 					cleanBuffered := bufferedContent.String()
 					if strings.Contains(cleanBuffered, "<thought") || strings.Contains(cleanBuffered, "<thinking") {
-						cleanBuffered = tools.StripWebToolMarkup(cleanBuffered)
+						cleanBuffered = tools.StripInternalThoughtAndToolTags(cleanBuffered)
 					}
 					if cleanBuffered != "" {
 						chunkJSON, _ := json.Marshal(map[string]any{

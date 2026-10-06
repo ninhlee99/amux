@@ -633,5 +633,97 @@ func TestToOpenAIDeltaToolCalls_Indices(t *testing.T) {
 	}
 }
 
+func TestParseWebTools_GeminiNativeCall(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "view_file", InputSchema: []byte(`{"properties":{"AbsolutePath":{"type":"string"}}}`)},
+	}
+	text := `Let me check that file:
+call:default_api:view_file{AbsolutePath: "/workspace/main.go", StartLine: 1, EndLine: 50}
+`
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "view_file" {
+		t.Errorf("expected view_file, got %s", calls[0].Name)
+	}
+	if !strings.Contains(calls[0].Arguments, "/workspace/main.go") {
+		t.Errorf("expected args to have path, got %s", calls[0].Arguments)
+	}
+}
+
+func TestStripInternalThoughtAndToolTags_PreservesMarkdownFences(t *testing.T) {
+	input := `<thought>
+I should explain how to run tests.
+</thought>
+Here is how you run tests:
+
+` + "```bash" + `
+go test ./...
+` + "```" + `
+
+And the JSON config is:
+` + "```json" + `
+{"key": "value"}
+` + "```" + `
+`
+	got := StripInternalThoughtAndToolTags(input)
+	if strings.Contains(got, "<thought>") || strings.Contains(got, "I should explain") {
+		t.Errorf("thought was not stripped: %s", got)
+	}
+	if !strings.Contains(got, "```bash\ngo test ./...\n```") {
+		t.Errorf("bash code fence was lost: %s", got)
+	}
+	if !strings.Contains(got, `{"key": "value"}`) {
+		t.Errorf("json code fence was lost: %s", got)
+	}
+}
+
+func TestCoerceToolArgs_ClampRangeLimits(t *testing.T) {
+	def := types.ToolDef{
+		Name: "view_file",
+		InputSchema: []byte(`{
+			"type": "object",
+			"properties": {
+				"AbsolutePath": {"type": "string"},
+				"StartLine": {"type": "integer"},
+				"EndLine": {"type": "integer"}
+			}
+		}`),
+	}
+	// StartLine = 10, EndLine = 1500 (exceeds max 800 lines limit)
+	coerced := coerceToolArgs(`{"AbsolutePath": "/workspace/main.go", "StartLine": 10, "EndLine": 1500}`, def, "/workspace")
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(coerced), &parsed); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	endLine, ok := parsed["EndLine"].(float64)
+	if !ok || int(endLine) != 809 {
+		t.Errorf("expected EndLine clamped to 809 (10 + 799), got %v", parsed["EndLine"])
+	}
+}
+
+func TestParseWebTools_PreservesServerNameCasing(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "call_mcp_tool", InputSchema: []byte(`{"properties":{"ServerName":{"type":"string"},"ToolName":{"type":"string"}}}`)},
+	}
+	text := `<tool_call>
+{"name": "call_mcp_tool", "arguments": {"server_name": "StitchMCP", "tool_name": "list_projects"}}
+</tool_call>`
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].Arguments), &args); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	serverName, _ := args["ServerName"].(string)
+	if serverName != "StitchMCP" {
+		t.Errorf("expected ServerName='StitchMCP', got %q", serverName)
+	}
+}
+
+
 
 
