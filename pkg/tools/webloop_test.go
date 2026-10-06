@@ -440,3 +440,15 @@ func TestParseWebTools_LenientMultiSchemaFormats(t *testing.T) {
 	}
 }
 
+func TestStripWebToolMarkup_ResidualFences(t *testing.T) {
+	input := "Here is my plan:\n```xml\n<tool_call>\n{\"name\": \"Bash\", \"command\": \"ls\"}\n</tool_call>\n```\nAll done."
+	stripped := StripWebToolMarkup(input)
+	if strings.Contains(stripped, "```") {
+		t.Fatalf("expected code fence to be completely stripped, got: %q", stripped)
+	}
+	if !strings.Contains(stripped, "Here is my plan:") || !strings.Contains(stripped, "All done.") {
+		t.Fatalf("expected surrounding prose to be preserved, got: %q", stripped)
+	}
+}
+
+

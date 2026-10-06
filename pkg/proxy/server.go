@@ -315,7 +315,15 @@ func newReverseProxy(upstream string, rot *Rotator) (*httputil.ReverseProxy, err
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("proxy error: %v", err)
-			http.Error(w, "amux proxy: upstream error", http.StatusBadGateway)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "api_error",
+					"message": fmt.Sprintf("amux proxy upstream error: %v", err),
+				},
+			})
 		},
 	}, nil
 }
@@ -590,7 +598,15 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		if strings.HasSuffix(path, "/messages") {
 			body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 			if err != nil {
-				http.Error(w, "read request body: "+err.Error(), http.StatusBadRequest)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"type": "error",
+					"error": map[string]any{
+						"type":    "invalid_request_error",
+						"message": "read request body: " + err.Error(),
+					},
+				})
 				return
 			}
 			if privacy.Enabled {
@@ -654,9 +670,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				usePool = true
 			}
 
-			// Model safeguard & default:
-			// If ANTHROPIC_MODEL is not explicitly set to an Opus model by the user,
-			// always default and downgrade to the current Sonnet. Never upgrade to Opus on fallback.
 			envModel := strings.ToLower(strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")))
 			userExplicitOpus := strings.Contains(envModel, "opus")
 			if !userExplicitOpus {
@@ -722,7 +735,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			case hasAPIKey:
 				usePool = false
 			case rot.ShouldFailoverToProviderPool():
-				usePool = toolPool.Len() > 0
+				usePool = toolPool != nil && toolPool.AutoRotateCount() > 0
 				if usePool {
 					autoFromClaude = true
 					log.Printf("amux: all Claude accounts unavailable — failover to provider pool (API→web)")
@@ -733,7 +746,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 				usePool = false
 			default:
-				usePool = toolPool.Len() > 0
+				usePool = toolPool != nil && toolPool.AutoRotateCount() > 0
 			}
 
 			// If session switched account (e.g. rate limit, auto-rotate, failover),
@@ -853,6 +866,9 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 func isAnthropicClient(r *http.Request) bool {
 	if r == nil {
 		return false
+	}
+	if strings.HasSuffix(r.URL.Path, "/messages") || strings.HasSuffix(r.URL.Path, "/messages/count_tokens") {
+		return true
 	}
 	if strings.TrimSpace(r.Header.Get("anthropic-version")) != "" {
 		return true
@@ -1064,7 +1080,8 @@ func serveWithResilience(
 	}
 
 	// All Claude profiles rate-limited or exhausted: fail over in-flight request to provider pool
-	if toolPool != nil && toolPool.Len() > 0 && r.Context().Err() == nil {
+	// All Claude profiles rate-limited or exhausted: fail over in-flight request to provider pool
+	if toolPool != nil && toolPool.AutoRotateCount() > 0 && r.Context().Err() == nil {
 		poolName := toolPool.Preferred()
 		if poolName == "" {
 			poolName = "provider-pool"
@@ -1091,10 +1108,11 @@ func serveWithResilience(
 			return
 		} else {
 			log.Printf("amux: failover to provider pool error: %v", err)
+			return // HandleClaudeMessages already wrote error response to w; do not double-write
 		}
 	}
 
-	// No provider pool available or failover also failed: commit the original error response to client
+	// No auto-rotatable provider pool available: commit the original error response to client cleanly
 	if lastInterceptor != nil {
 		lastInterceptor.commit()
 	}

@@ -378,7 +378,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	req, err := ToChatRequest(rawBody)
 	if err != nil {
 		logChatRequest(r, pool, nil, "", "error", err.Error(), 0, 0, time.Now(), nil)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAnthropicJSONError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return err
 	}
 	EnrichRequestMetadata(r, req)
@@ -425,7 +425,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 			writeAnthropicSSEError(w, flusher, err)
 			return err
 		}
-		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
+		writeAnthropicJSONError(w, http.StatusBadGateway, "api_error", fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return err
 	}
 
@@ -450,7 +450,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	var finalUsage *types.UsageStats
 	for chunk := range stream {
 		if chunk.Error != nil {
-			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
+			writeAnthropicJSONError(w, http.StatusBadGateway, "api_error", chunk.Error.Error())
 			return chunk.Error
 		}
 		if chunk.Usage != nil {
@@ -662,7 +662,7 @@ func beginAnthropicSSE(w http.ResponseWriter, req *types.ChatRequest, msgID stri
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeAnthropicJSONError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
 		return nil, fmt.Errorf("streaming unsupported")
 	}
 
@@ -698,6 +698,18 @@ func writeAnthropicSSEError(w http.ResponseWriter, flusher http.Flusher, err err
 	})
 	fmt.Fprintf(w, "event: error\ndata: %s\n\n", errJSON)
 	flusher.Flush()
+}
+
+func writeAnthropicJSONError(w http.ResponseWriter, status int, errType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"type":    errType,
+			"message": message,
+		},
+	})
 }
 
 func writeAnthropicSSEPing(w http.ResponseWriter, flusher http.Flusher) {
@@ -951,12 +963,12 @@ func mapFinishReasonAnthropic(fr string) string {
 // HandleClaudeCountTokens handles Anthropic /v1/messages/count_tokens requests.
 func HandleClaudeCountTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAnthropicJSONError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		writeAnthropicJSONError(w, http.StatusBadRequest, "invalid_request_error", "read body: "+err.Error())
 		return
 	}
 	req, err := ToChatRequest(body)

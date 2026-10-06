@@ -353,3 +353,44 @@ func TestAccountPoolRouter_TierStrictPriority(t *testing.T) {
 		t.Fatalf("expected api_key tier last, got %q", got)
 	}
 }
+
+func TestAccountPoolRouter_AutoRotateCountAndStatusInPool(t *testing.T) {
+	aSub := &mockGroupAdapter{mockAdapter: mockAdapter{id: "claude-sub-1", priority: 1, content: "sub"}, grp: "claude_sub"}
+	aWeb := &mockGroupAdapter{mockAdapter: mockAdapter{id: "gemini-web-1", priority: 1, content: "web"}, grp: "gemini_web"}
+	adapters := []types.ProviderAdapter{aSub, aWeb}
+
+	r := router.NewAccountPoolRouter(adapters)
+	// Without sub filter, subscription is NOT eligible for auto rotate.
+	r.SetSubscriptionPoolFilter(func(id string) bool { return false })
+
+	// Only gemini-web-1 can auto rotate (count == 1)
+	if count := r.AutoRotateCount(); count != 1 {
+		t.Fatalf("expected AutoRotateCount 1, got %d", count)
+	}
+
+	st := r.Status()
+	if len(st) != 2 {
+		t.Fatalf("expected 2 status entries, got %d", len(st))
+	}
+	for _, entry := range st {
+		id := entry["id"].(string)
+		inPool := entry["in_pool"].(bool)
+		if id == "claude-sub-1" && inPool {
+			t.Fatalf("expected claude-sub-1 in_pool=false, got true")
+		}
+		if id == "gemini-web-1" && !inPool {
+			t.Fatalf("expected gemini-web-1 in_pool=true, got false")
+		}
+	}
+
+	// Now add sub to pool filter
+	r.SetSubscriptionPoolFilter(func(id string) bool { return id == "claude-sub-1" })
+	if count := r.AutoRotateCount(); count != 2 {
+		t.Fatalf("expected AutoRotateCount 2, got %d", count)
+	}
+	for _, entry := range r.Status() {
+		if !entry["in_pool"].(bool) {
+			t.Fatalf("expected all in_pool=true after pool add, got false for %v", entry["id"])
+		}
+	}
+}

@@ -291,7 +291,27 @@ func writeAuthError(w http.ResponseWriter, r *http.Request, status int, errType,
 		})
 		return
 	}
-	http.Error(w, msg, status)
+	if strings.Contains(r.URL.Path, "/v1beta/") || strings.Contains(r.URL.Path, "generateContent") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    status,
+				"message": msg,
+				"status":  "UNAUTHENTICATED",
+			},
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"code":    "unauthorized",
+			"message": msg,
+			"type":    "server_error",
+		},
+	})
 }
 
 func requireAuth(token string, h http.Handler) http.Handler {

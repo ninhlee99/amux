@@ -52,6 +52,7 @@ var (
 	reBracketTool    = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
 	reBracketToolAlt = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
 	reTrailComma     = regexp.MustCompile(`,\s*([}\]])`)
+	reEmptyFence     = regexp.MustCompile("(?s)```[a-zA-Z0-9_-]*\\s*```")
 )
 
 // WebPreamble is appended to a web-backend prompt when the client sent tools[].
@@ -1081,5 +1082,6 @@ func StripWebToolMarkup(text string) string {
 	s = reBracketToolAlt.ReplaceAllString(s, "")
 	s = reToolJSON.ReplaceAllString(s, "")
 	s = reBashFence.ReplaceAllString(s, "")
+	s = reEmptyFence.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }

@@ -22,13 +22,13 @@ import (
 // through pkg/tools so the same pool adapters serve Claude Code and Cursor.
 func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.AccountPoolRouter) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeOpenAIJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		writeOpenAIJSONError(w, http.StatusBadRequest, "bad_request", "failed to read body")
 		return
 	}
 	if privacy.Enabled {
@@ -40,7 +40,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 
 	req, err := openAIBodyToChatRequest(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		writeOpenAIJSONError(w, http.StatusBadRequest, "invalid_json", fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 	req.ClientDialect = openaiClientDialect(r)
@@ -79,7 +79,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		var ok bool
 		initialFlusher, ok = beginSSE(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			writeOpenAIJSONError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 			return
 		}
 	}
@@ -98,7 +98,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 			writeOpenAIStreamError(w, initialFlusher, err)
 			return
 		}
-		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
+		writeOpenAIJSONError(w, http.StatusBadGateway, "service_unavailable", fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return
 	}
 
@@ -282,7 +282,7 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	finishReason := "stop"
 	for chunk := range stream {
 		if chunk.Error != nil {
-			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
+			writeOpenAIJSONError(w, http.StatusBadGateway, "provider_error", chunk.Error.Error())
 			return
 		}
 		if chunk.Usage != nil {
@@ -522,3 +522,16 @@ func writeOpenAIStreamError(w http.ResponseWriter, flusher http.Flusher, err err
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
+
+func writeOpenAIJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "server_error",
+			"code":    code,
+		},
+	})
+}
+

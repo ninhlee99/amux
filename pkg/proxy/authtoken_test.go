@@ -406,3 +406,39 @@ func TestRecordFailedAuth_PerIPSliceBounded(t *testing.T) {
 		t.Errorf("expected IP %s to be rate limited", ip)
 	}
 }
+
+func TestWriteAuthError_DialectResponses(t *testing.T) {
+	// 1. Anthropic client
+	reqAnthropic := httptest.NewRequest("POST", "/v1/messages", nil)
+	recAnthropic := httptest.NewRecorder()
+	writeAuthError(recAnthropic, reqAnthropic, http.StatusUnauthorized, "authentication_error", "bad token")
+	if recAnthropic.Code != http.StatusUnauthorized {
+		t.Fatalf("anthropic status: want 401, got %d", recAnthropic.Code)
+	}
+	if !strings.Contains(recAnthropic.Body.String(), `"authentication_error"`) || !strings.Contains(recAnthropic.Body.String(), `"bad token"`) {
+		t.Fatalf("anthropic body not JSON: %s", recAnthropic.Body.String())
+	}
+
+	// 2. Gemini client
+	reqGemini := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	recGemini := httptest.NewRecorder()
+	writeAuthError(recGemini, reqGemini, http.StatusUnauthorized, "authentication_error", "bad token")
+	if recGemini.Code != http.StatusUnauthorized {
+		t.Fatalf("gemini status: want 401, got %d", recGemini.Code)
+	}
+	if !strings.Contains(recGemini.Body.String(), `"UNAUTHENTICATED"`) || !strings.Contains(recGemini.Body.String(), `"bad token"`) {
+		t.Fatalf("gemini body not JSON: %s", recGemini.Body.String())
+	}
+
+	// 3. OpenAI / other client
+	reqOpenAI := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	recOpenAI := httptest.NewRecorder()
+	writeAuthError(recOpenAI, reqOpenAI, http.StatusUnauthorized, "authentication_error", "bad token")
+	if recOpenAI.Code != http.StatusUnauthorized {
+		t.Fatalf("openai status: want 401, got %d", recOpenAI.Code)
+	}
+	if !strings.Contains(recOpenAI.Body.String(), `"unauthorized"`) || !strings.Contains(recOpenAI.Body.String(), `"bad token"`) {
+		t.Fatalf("openai body not JSON: %s", recOpenAI.Body.String())
+	}
+}
+

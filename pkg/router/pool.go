@@ -154,8 +154,12 @@ func (r *AccountPoolRouter) SetSubscriptionPoolFilter(fn func(id string) bool) {
 
 func (r *AccountPoolRouter) canAutoRotate(a types.ProviderAdapter) bool {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.canAutoRotateLocked(a)
+}
+
+func (r *AccountPoolRouter) canAutoRotateLocked(a types.ProviderAdapter) bool {
 	filter, subPool := r.autoRotateFilter, r.subPoolFilter
-	r.mu.RUnlock()
 	id := a.ID()
 	if AdapterAccountType(a) == types.AccountTypeSubscription {
 		if subPool == nil || !subPool(id) {
@@ -166,6 +170,19 @@ func (r *AccountPoolRouter) canAutoRotate(a types.ProviderAdapter) bool {
 		return filter(id)
 	}
 	return true
+}
+
+// AutoRotateCount returns the number of adapters eligible for automatic rotation in the pool.
+func (r *AccountPoolRouter) AutoRotateCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, a := range r.adapters {
+		if r.canAutoRotateLocked(a) {
+			count++
+		}
+	}
+	return count
 }
 
 // applyTaskClassification inspects the request and dynamically enables thinking
@@ -798,7 +815,7 @@ func (r *AccountPoolRouter) Status() []map[string]any {
 			"preferred":     a.ID() == r.preferred,
 			"manual_pin":    a.ID() == r.preferred && r.manualPin,
 			"last_used":     a.ID() == r.lastUsed,
-			"in_pool":       true,
+			"in_pool":       r.canAutoRotateLocked(a),
 			"health_score":  report.Score,
 			"health_status": report.Status,
 		}

@@ -236,14 +236,14 @@ func geminiBodyToChatRequest(model string, stream bool, body []byte) (*types.Cha
 // HandleGeminiGenerateContent handles Antigravity and Gemini SDK requests.
 func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *router.AccountPoolRouter) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeGeminiJSONError(w, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", "method not allowed")
 		return
 	}
 
 	model, stream := parseGeminiModelAndStream(r.URL.Path, r.URL.RawQuery)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		writeGeminiJSONError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "failed to read body")
 		return
 	}
 
@@ -256,7 +256,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 	req, err := geminiBodyToChatRequest(model, stream, body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		writeGeminiJSONError(w, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 
@@ -279,7 +279,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 		var ok bool
 		initialFlusher, ok = beginGeminiSSE(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			writeGeminiJSONError(w, http.StatusInternalServerError, "INTERNAL", "streaming unsupported")
 			return
 		}
 	}
@@ -298,7 +298,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 			writeGeminiStreamError(w, initialFlusher, err)
 			return
 		}
-		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
+		writeGeminiJSONError(w, http.StatusBadGateway, "UNAVAILABLE", fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return
 	}
 
@@ -411,7 +411,7 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 
 	for chunk := range streamChan {
 		if chunk.Error != nil {
-			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
+			writeGeminiJSONError(w, http.StatusBadGateway, "UNAVAILABLE", chunk.Error.Error())
 			return
 		}
 		if chunk.Thinking != "" {
@@ -507,18 +507,18 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 // HandleGeminiCountTokens handles /models/...:countTokens requests for Antigravity & Gemini SDKs.
 func HandleGeminiCountTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeGeminiJSONError(w, http.StatusMethodNotAllowed, "INVALID_ARGUMENT", "method not allowed")
 		return
 	}
 	model, _ := parseGeminiModelAndStream(r.URL.Path, r.URL.RawQuery)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		writeGeminiJSONError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "failed to read body")
 		return
 	}
 	req, err := geminiBodyToChatRequest(model, false, body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		writeGeminiJSONError(w, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 	tokens := estimateInputTokens(req)
@@ -572,6 +572,19 @@ func writeGeminiStreamError(w http.ResponseWriter, flusher http.Flusher, err err
 	fmt.Fprintf(w, "data: %s\n\n", payload)
 	flusher.Flush()
 }
+
+func writeGeminiJSONError(w http.ResponseWriter, status int, errStatus, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"code":    status,
+			"message": message,
+			"status":  errStatus,
+		},
+	})
+}
+
 
 // beginGeminiSSE commits the SSE response headers without emitting SSE comments.
 // google.golang.org/genai (used by agy) does not support SSE comment lines (e.g. ": ...")

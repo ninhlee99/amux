@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,5 +103,48 @@ func TestServeWithResilience_FailoverToPoolOnExhausted429(t *testing.T) {
 	}
 	if mode.Get() != "provider" {
 		t.Errorf("expected mode to switch to provider, got %s", mode.Get())
+	}
+}
+
+func TestServeWithResilience_ExhaustedWithNoPoolEmitsSingleError(t *testing.T) {
+	t.Setenv("AM_HOME", t.TempDir())
+	rot := NewRotator("claude")
+	rot.order = []string{"profile-a"}
+	rot.idx = 0
+	rot.tokens = map[string]*types.Token{
+		"profile-a": {Access: "tok-a", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+
+	rp := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rot.Observe(&http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"60"}},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`))
+	})
+
+	mode := &ProxyMode{}
+	// Empty pool: AutoRotateCount() == 0
+	pool := router.NewAccountPoolRouter(nil)
+	body := []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	serveWithResilience(rec, req, rp, rot, pool, mode, body, nil)
+
+	// Must cleanly return 429 once, with exact json body and NO prepended text
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 Too Many Requests, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	bodyStr := strings.TrimSpace(rec.Body.String())
+	if strings.Contains(bodyStr, "all providers failed") {
+		t.Fatalf("body should not contain failover failure text, got: %s", bodyStr)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(bodyStr), &parsed); err != nil {
+		t.Fatalf("response body must be valid JSON (no double-write corruption), err: %v, raw: %s", err, bodyStr)
 	}
 }

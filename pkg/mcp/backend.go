@@ -173,7 +173,7 @@ func (b *PoolBackend) Status(context.Context) (map[string]any, error) {
 				"openai (Codex, Cursor, opencode)": "OPENAI_BASE_URL=" + base + "/v1",
 				"gemini (Gemini CLI, Antigravity)": "GOOGLE_GEMINI_BASE_URL=" + base,
 			},
-			"hint": "start with `amux start`; wire IDEs with `amux hook` or `amux mcp install`",
+			"hint": "start with `amux start`; run IDEs in sandbox with `amux run <ide>` or wire tools with `amux mcp install`",
 		},
 	}
 	if ps, err := b.Providers(); err == nil {

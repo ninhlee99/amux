@@ -21,13 +21,13 @@ import (
 // used by modern Codex CLI and agent environments.
 func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.AccountPoolRouter) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeResponsesJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		writeResponsesJSONError(w, http.StatusBadRequest, "bad_request", "failed to read body")
 		return
 	}
 	if privacy.Enabled {
@@ -39,7 +39,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 
 	req, err := responsesBodyToChatRequest(body)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
+		writeResponsesJSONError(w, http.StatusBadRequest, "invalid_json", fmt.Sprintf("invalid json: %v", err))
 		return
 	}
 	EnrichRequestMetadata(r, req)
@@ -78,7 +78,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		var ok bool
 		initialFlusher, ok = beginSSE(w)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			writeResponsesJSONError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 			return
 		}
 	}
@@ -97,7 +97,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 			writeResponsesStreamError(w, initialFlusher, err, "")
 			return
 		}
-		http.Error(w, fmt.Sprintf("all providers failed: %v", err), http.StatusBadGateway)
+		writeResponsesJSONError(w, http.StatusBadGateway, "service_unavailable", fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return
 	}
 
@@ -330,7 +330,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	for chunk := range stream {
 		if chunk.Error != nil {
 			logChatRequest(r, pool, req, "", "", chunk.Error.Error(), 0, 0, started, nil)
-			http.Error(w, chunk.Error.Error(), http.StatusBadGateway)
+			writeResponsesJSONError(w, http.StatusBadGateway, "provider_error", chunk.Error.Error())
 			return
 		}
 		if chunk.LogText != "" {
@@ -598,3 +598,16 @@ func writeResponsesStreamError(w http.ResponseWriter, flusher http.Flusher, err 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
+
+func writeResponsesJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "server_error",
+			"code":    code,
+		},
+	})
+}
+
