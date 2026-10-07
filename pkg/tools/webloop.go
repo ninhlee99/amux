@@ -36,6 +36,12 @@ Assistant: <tool_call>
 Multiple blocks OK. CATALOG
 `
 
+// webToolReminder heads continuing-thread prompts. Web threads only see the
+// full preamble on their first turn; without restating that tools exist and
+// how to call them, ChatGPT drifts into "I have no tool access" a few turns in.
+const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools.
+`
+
 const webToolCloser = `
 [end] Need data → <tool_call> now. Have tool results → answer fully. No checklist / paste / "no tools".
 `
@@ -61,6 +67,7 @@ var (
 	reEndNotice        = regexp.MustCompile(`(?im)^\[end\]\s+Need data[^\n]*\n?`)
 	reXferNotice       = regexp.MustCompile(`(?im)^\[xfer\]\s+Continue[^\n]*\n?`)
 	reCatalogNotice    = regexp.MustCompile(`(?im)^CATALOG\b[^\n]*\n?`)
+	reToolsLiveNotice  = regexp.MustCompile(`(?im)^TOOLS LIVE:[^\n]*\n?`)
 	reToolResultMarker = regexp.MustCompile(`(?im)^\[Tool result[^\n]*\]:?\n?`)
 	reTrailComma       = regexp.MustCompile(`,\s*([}\]])`)
 	reEmptyFence       = regexp.MustCompile("(?si)```[a-zA-Z0-9_-]*\\s*```")
@@ -182,7 +189,7 @@ func WebCatalogOnly(defs []types.ToolDef) string {
 	if len(defs) == 0 {
 		return ""
 	}
-	return "CATALOG\n" + catalogBlock(defs)
+	return webToolReminder + "CATALOG\n" + catalogBlock(defs)
 }
 
 func catalogBlock(defs []types.ToolDef) string {
@@ -1528,6 +1535,7 @@ func StripWebToolMarkup(text string) string {
 	s = reEndNotice.ReplaceAllString(s, "")
 	s = reXferNotice.ReplaceAllString(s, "")
 	s = reCatalogNotice.ReplaceAllString(s, "")
+	s = reToolsLiveNotice.ReplaceAllString(s, "")
 	s = reToolResultMarker.ReplaceAllString(s, "")
 	s = reToolCallFence.ReplaceAllString(s, "")
 	s = reToolJSON.ReplaceAllString(s, "")
@@ -1556,6 +1564,7 @@ func StripInternalThoughtAndToolTags(text string) string {
 	s = reEndNotice.ReplaceAllString(s, "")
 	s = reXferNotice.ReplaceAllString(s, "")
 	s = reCatalogNotice.ReplaceAllString(s, "")
+	s = reToolsLiveNotice.ReplaceAllString(s, "")
 	s = reToolResultMarker.ReplaceAllString(s, "")
 	s = reToolCallFence.ReplaceAllString(s, "")
 	s = reEmptyFence.ReplaceAllString(s, "")

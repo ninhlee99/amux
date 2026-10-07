@@ -165,6 +165,14 @@ func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
 	if strings.Contains(got, "Coding-agent backend") {
 		t.Fatal("catalog-only must omit full preamble")
 	}
+	// Continuing threads must still restate that tools exist and how to call
+	// them, or ChatGPT web answers "I have no tool access" a few turns in.
+	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, "Never claim you lack tools") {
+		t.Fatal("catalog-only must keep the call format reminder:", got)
+	}
+	if strings.Contains(StripWebToolMarkup("TOOLS LIVE: x\nok"), "TOOLS LIVE") {
+		t.Fatal("echoed reminder must be stripped")
+	}
 }
 
 func TestWebCloser_ForbidsLackOfTools(t *testing.T) {

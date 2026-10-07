@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -33,12 +34,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 	case "claude", "claude-code":
 		binName = "claude"
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
-		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
-		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_AUTH_TOKEN", defaultToken)
 	case "cursor":
 		binName = "cursor"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
@@ -54,12 +50,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
 		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
-		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
-		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 	case "codex", "codex-cli":
 		binName = "codex"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
@@ -92,12 +83,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
-		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
@@ -108,9 +94,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 	case "cline", "roo", "roo-code":
 		binName = target
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
@@ -118,9 +102,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 	case "zed":
 		binName = "zed"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
@@ -128,9 +110,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 	case "code", "vscode":
 		binName = "code"
 		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
@@ -142,12 +122,7 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
-		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
@@ -163,17 +138,72 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("OPENAI_API_KEY") == "" {
 			envOverrides["OPENAI_API_KEY"] = defaultToken
 		}
-		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
-			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
-		}
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
-		}
+		setAnthropicCredential(envOverrides, "ANTHROPIC_API_KEY", defaultToken)
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			envOverrides["GEMINI_API_KEY"] = defaultToken
 		}
 	}
 	return binName, envOverrides
+}
+
+// anthropicCredentialKeys are mutually exclusive in a sandbox: Claude Code warns
+// "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may not work as
+// expected" when it sees both, and the gateway only needs one.
+var anthropicCredentialKeys = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
+
+// setAnthropicCredential injects exactly one Anthropic credential under
+// preferred. A value the user already exported (under either key) wins over
+// defaultToken, but is moved to preferred so the child never sees both.
+func setAnthropicCredential(envOverrides map[string]string, preferred, defaultToken string) {
+	val := defaultToken
+	if v := os.Getenv(preferred); v != "" {
+		val = v
+	} else {
+		for _, k := range anthropicCredentialKeys {
+			if v := os.Getenv(k); v != "" {
+				val = v
+				break
+			}
+		}
+	}
+	envOverrides[preferred] = val
+}
+
+// BuildSandboxEnv merges envOverrides over base (os.Environ form). Overridden
+// keys replace inherited ones instead of duplicating them, and when an
+// Anthropic credential is injected the other one is dropped from base.
+func BuildSandboxEnv(base []string, envOverrides map[string]string) []string {
+	drop := map[string]bool{}
+	for k := range envOverrides {
+		drop[k] = true
+	}
+	for _, k := range anthropicCredentialKeys {
+		if _, ok := envOverrides[k]; ok {
+			for _, other := range anthropicCredentialKeys {
+				drop[other] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(base)+len(envOverrides))
+	for _, kv := range base {
+		k := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			k = kv[:i]
+		}
+		if drop[k] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	keys := make([]string, 0, len(envOverrides))
+	for k := range envOverrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+envOverrides[k])
+	}
+	return out
 }
 
 // ResolveBinaryPath locates the target executable in PATH, standard bin directories, or standard application folders.
@@ -408,10 +438,7 @@ func CmdRun(args []string) {
 	}
 
 	// Build process environment
-	cmdEnv := os.Environ()
-	for k, v := range envOverrides {
-		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
-	}
+	cmdEnv := BuildSandboxEnv(os.Environ(), envOverrides)
 
 	cmd := exec.Command(binPath, extraArgs...)
 	cmd.Env = cmdEnv
