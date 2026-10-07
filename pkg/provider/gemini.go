@@ -42,7 +42,6 @@ type GeminiAdapter struct {
 
 	keyIndex  uint64
 	keyLimits sync.Map // map[string]time.Time (cooldown per key)
-	wrapped   types.ProviderAdapter
 }
 
 func parseGeminiKeys(apiKey string) []string {

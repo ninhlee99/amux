@@ -207,9 +207,9 @@ func streamOpenAISSE(ctx context.Context, id string, resp *http.Response, out ch
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content          string          `json:"content"`
-					ReasoningContent string          `json:"reasoning_content"`
-					Reasoning        string          `json:"reasoning"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
 					ExtraContent     *struct {
 						Google struct {
 							ThoughtSignature string `json:"thought_signature"`

@@ -2,108 +2,86 @@ package proxy
 
 import (
 	"log"
+	"os"
 	"os/exec"
-	"strconv"
+	"os/signal"
+	"syscall"
 	"time"
-
-	"amux-accounts/pkg/hook"
 )
 
-// RunSupervisor is what `am proxy --supervise` runs (spawned by
-// CmdProxyUp instead of the bare server directly). It keeps a real `am
-// proxy` server child alive:
+// RunSupervisor keeps `bin args...` (the gateway daemon) alive:
 //
-//   - clean exit (code 0), only reachable via /_am/shutdown, i.e. a
-//     deliberate `am proxy down` — the supervisor exits cleanly.
-//   - when child is killed or exits unexpectedly: immediately triggers a
-//     restart. If the child fails to become healthy within 5 seconds,
-//     supervisor switches client configs (Claude / Codex / launchctl) back
-//     to native subscription mode so the user can continue coding without
-//     interruption.
-//   - as soon as the proxy recovers and becomes healthy again, supervisor
-//     automatically restores client configs to point back to the proxy.
-//   - uses OS process lifecycle (cmd.Wait) — 0% CPU and 0 extra RAM while running.
-func RunSupervisor(addr, upstream string, threshold float64) error {
-	bin, err := resolveAMBin()
-	if err != nil {
-		return err
-	}
-	SetUsedThreshold(threshold)
-	threshArg := strconv.FormatFloat(ParseUsedThreshold(threshold)*100, 'f', -1, 64)
+//   - exit code 0 is only reachable through /_am/shutdown, i.e. a
+//     deliberate `amux stop` — the supervisor exits cleanly.
+//   - SIGTERM/SIGINT sent to the supervisor is forwarded to the child and
+//     ends the loop, so `amux stop` can always take the whole tree down.
+//   - any other exit is treated as a crash: respawn with exponential
+//     backoff (reset once the child stayed up for supervisorStableUptime).
+//     A crash loop never gives up — it just stays at the maximum backoff.
+//
+// It deliberately leaves client configs alone: native clients stay native
+// and only `amux run` sandboxes point at the gateway.
+func RunSupervisor(bin string, args ...string) error {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sig)
 
-	// Ensure client settings point to proxy initially
-	_ = hook.SyncClientSettingsEnv(true, ProxyBase())
-
+	var crashes []time.Time
 	attempt := 0
-	subModeActive := false
-
 	for {
 		startedAt := time.Now()
-		cmd := exec.Command(bin, "proxy",
-			"--addr", addr,
-			"--upstream", upstream,
-			"--threshold", threshArg,
-		)
-
+		cmd := exec.Command(bin, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {
-			log.Printf("amux proxy supervisor: spawn failed: %v", err)
-			if !subModeActive {
-				_ = hook.SyncClientSettingsEnv(false, "")
-				subModeActive = true
-				log.Printf("amux proxy supervisor: proxy failed to start — switched client configs to native subscription")
+			log.Printf("amux supervisor: spawn failed: %v", err)
+			select {
+			case <-sig:
+				return nil
+			case <-time.After(superBackoff(attempt)):
 			}
-			time.Sleep(superBackoff(attempt))
 			attempt++
 			continue
 		}
 
-		// Wait for child to become reachable on addr (up to 5s)
-		deadline := time.Now().Add(5 * time.Second)
-		startedOk := false
-		for time.Now().Before(deadline) {
-			if ProxyUp() {
-				startedOk = true
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
 
-		if startedOk {
-			if subModeActive {
-				_ = hook.SyncClientSettingsEnv(true, ProxyBase())
-				subModeActive = false
-				log.Printf("amux proxy supervisor: proxy successfully restarted — restored client configs to proxy")
+		var waitErr error
+		select {
+		case waitErr = <-done:
+		case <-sig:
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
 			}
-			attempt = 0
-		} else {
-			// Failed to become reachable within 5s
-			if !subModeActive {
-				_ = hook.SyncClientSettingsEnv(false, "")
-				subModeActive = true
-				log.Printf("amux proxy supervisor: proxy not reachable within 5s — switched client configs to native subscription")
-			}
-		}
-
-		// Block until the child process exits (event-driven via waitpid: 0% CPU, 0 extra RAM)
-		waitErr := cmd.Wait()
-
-		// Clean exit (exit code 0 via /_am/shutdown, i.e. deliberate `am proxy down`)
-		if waitErr == nil && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
-			log.Printf("amux proxy supervisor: server exited cleanly, stopping")
 			return nil
 		}
 
-		log.Printf("amux proxy supervisor: server exited unexpectedly: %v", waitErr)
+		if waitErr == nil {
+			log.Printf("amux supervisor: gateway exited cleanly, stopping")
+			return nil
+		}
+		log.Printf("amux supervisor: gateway exited unexpectedly: %v", waitErr)
 
-		// Child process was KILLED or CRASHED!
-		// If child ran stably for a while before dying, reset attempt counter
-		if time.Since(startedAt) >= supervisorStableUptime {
+		now := time.Now()
+		if now.Sub(startedAt) >= supervisorStableUptime {
 			attempt = 0
+			crashes = nil
+		}
+		crashes = append(crashes, now)
+		if crashLooping(crashes, now) {
+			log.Printf("amux supervisor: gateway is crash-looping (%d crashes in %s) — retrying at max backoff", len(crashes), supervisorCrashWindow)
+			attempt = 1 << 10
 		}
 
-		// If this is a repeat crash without stable uptime, back off slightly before respawn
-		if attempt > 0 {
-			time.Sleep(superBackoff(attempt))
+		select {
+		case <-sig:
+			return nil
+		case <-time.After(superBackoff(attempt)):
 		}
 		attempt++
 	}

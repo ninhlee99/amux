@@ -242,26 +242,6 @@ func DefaultAccountsPath() string {
 	return filepath.Join(types.BaseDir(), "accounts.json")
 }
 
-// legacyIDPrefix maps the old fixed literal IDs the built-in `am login`
-// providers used to write (one account per provider, overwritten on every
-// re-login) to their unified-ID prefix. Used once by MigrateLegacyIDs to
-// rewrite accounts.json in place; anything not in this map (custom `am api
-// add <name>` providers) is left untouched.
-var legacyIDPrefix = map[string]string{
-	"claude-web":       "claude:web",
-	"chatgpt-web":      "chatgpt",
-	"google-ai-studio": "gemini:api",
-	"github-models":    "github:api",
-	"groq":             "groq:api",
-	"groqapi":          "groq:api",
-	"kimi":             "kimi:api",
-	"kimiapi":          "kimi:api",
-	"moonshot":         "kimi:api",
-	"grok":             "grok:api",
-	"grokapi":          "grok:api",
-	"xai":              "grok:api",
-}
-
 // poolIDPrefix maps a ProviderConfig.Type to its unified-ID prefix, for the
 // built-in provider types that always get one. Used by the loginXxx flows in
 // pkg/ui/login.go to compute the next free ID when adding a session.
@@ -347,133 +327,6 @@ func IsKimiEndpoint(baseURL string) bool {
 // IsGrokEndpoint reports whether baseURL points at xAI / Grok.
 func IsGrokEndpoint(baseURL string) bool {
 	return hostMatches(baseURL, "x.ai")
-}
-
-// MigrateLegacyIDs rewrites any provider in accounts.json still using one of
-// the old fixed literal IDs (claude-web, chatgpt-web, google-ai-studio,
-// github-models, groq) or compact flat IDs (geminiapi:01, claudeweb:01, …)
-// to the brand[:method]:NN format. Also remaps account/msg fields in
-// usage.log, requests.log, and events.log. Safe to call on every run: once
-// migrated it's a no-op. Custom `am api add` entries stay untouched except
-// bare "openrouter" / "openrouter:api" → "openrouter:api:01".
-func MigrateLegacyIDs(path string) error {
-	f, err := LoadConfigFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			remapAccountLogs()
-			return nil
-		}
-		return err
-	}
-	if f == nil || len(f.Providers) == 0 {
-		remapAccountLogs()
-		return nil
-	}
-
-	// Count existing entries per prefix so a migrated ID doesn't collide
-	// with one that (in theory) already exists under the new format.
-	counts := map[string]int{}
-	for _, p := range f.Providers {
-		if prefix, _, ok := types.ParseID(p.ID); ok {
-			counts[prefix]++
-		}
-	}
-
-	changed := false
-	for i, p := range f.Providers {
-		prefix, isLegacy := legacyIDPrefix[p.ID]
-		if !isLegacy {
-			continue
-		}
-		counts[prefix]++
-		f.Providers[i].ID = types.FormatID(prefix, counts[prefix])
-		changed = true
-	}
-
-	// Compact → brand:method (geminiapi:01 → gemini:api:01).
-	used := map[string]bool{}
-	for _, p := range f.Providers {
-		used[p.ID] = true
-	}
-	for i, p := range f.Providers {
-		newID, ok := types.MigrateCompactID(p.ID)
-		if !ok || newID == p.ID || used[newID] {
-			continue
-		}
-		delete(used, p.ID)
-		used[newID] = true
-		f.Providers[i].ID = newID
-		changed = true
-	}
-
-	if changed {
-		if err := SaveConfigFile(path, f); err != nil {
-			return err
-		}
-	}
-	remapAccountLogs()
-	return nil
-}
-
-func remapAccountLogs() {
-	base := types.BaseDir()
-	_ = remapJSONLAccountFields(filepath.Join(base, "usage.log"))
-	_ = remapJSONLAccountFields(filepath.Join(base, "requests.log"))
-	_ = remapJSONLAccountFields(filepath.Join(base, "events.log"))
-}
-
-// remapJSONLAccountFields rewrites "account" values (and free-text "msg") in a
-// JSONL file from compact IDs (geminiapi:01) to brand:method form.
-func remapJSONLAccountFields(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if len(data) == 0 {
-		return nil
-	}
-	lines := strings.Split(string(data), "\n")
-	changed := false
-	for i, line := range lines {
-		trim := strings.TrimSpace(line)
-		if trim == "" {
-			continue
-		}
-		var m map[string]any
-		if json.Unmarshal([]byte(trim), &m) != nil {
-			continue
-		}
-		lineChanged := false
-		if acct, ok := m["account"].(string); ok {
-			if newID, ok2 := types.MigrateCompactID(acct); ok2 && newID != acct {
-				m["account"] = newID
-				lineChanged = true
-			}
-		}
-		if msg, ok := m["msg"].(string); ok {
-			if newMsg := types.RemapAccountIDsInText(msg); newMsg != msg {
-				m["msg"] = newMsg
-				lineChanged = true
-			}
-		}
-		if !lineChanged {
-			continue
-		}
-		b, err := json.Marshal(m)
-		if err != nil {
-			continue
-		}
-		lines[i] = string(b)
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	out := strings.Join(lines, "\n")
-	return os.WriteFile(path, []byte(out), 0o600)
 }
 
 // SetPriority updates the priority of one provider by ID and persists it. If
@@ -800,25 +653,6 @@ func LoadAllAddressable(path string) ([]types.ProviderAdapter, error) {
 	return loadAccounts(path, false)
 }
 
-// LookupAdapter builds one adapter by ID, even when out of the priority
-// rotate order — but never for a disabled ("am off") provider.
-func LookupAdapter(path, id string) (types.ProviderAdapter, error) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, fmt.Errorf("empty provider id")
-	}
-	all, err := LoadAllAddressable(path)
-	if err != nil {
-		return nil, err
-	}
-	for _, a := range all {
-		if a.ID() == id {
-			return a, nil
-		}
-	}
-	return nil, fmt.Errorf("provider %q not found or missing credentials", id)
-}
-
 func loadAccounts(path string, rotateOnly bool) ([]types.ProviderAdapter, error) {
 	var adapters []types.ProviderAdapter
 	var providers []ProviderConfig
@@ -1023,15 +857,6 @@ func agyPoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 	}
 }
 
-// AGYAutoRow returns a synthetic display row for auto-surfaced Antigravity adapter.
-func AGYAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
-	a, ok := agyPoolAdapter(providers).(*AntigravityAdapter)
-	if !ok || a == nil {
-		return ProviderConfig{}, false
-	}
-	return ProviderConfig{ID: a.AdapterID, Type: "antigravity", Priority: a.PriorityLvl, Model: a.TargetModel, Group: a.GroupLabel, Plan: a.PlanTier}, true
-}
-
 func agyPoolID() string {
 	metas := profile.ListProfiles("antigravity")
 	if active := profile.ReadActivePointer("antigravity"); active != "" {
@@ -1085,15 +910,6 @@ func claudePoolAdapter(providers []ProviderConfig) types.ProviderAdapter {
 	}
 }
 
-// ClaudeAutoRow returns a synthetic display row for auto-surfaced Claude adapter.
-func ClaudeAutoRow(providers []ProviderConfig) (ProviderConfig, bool) {
-	a, ok := claudePoolAdapter(providers).(*ClaudeAdapter)
-	if !ok || a == nil {
-		return ProviderConfig{}, false
-	}
-	return ProviderConfig{ID: a.AdapterID, Type: "claude", Priority: a.PriorityLvl, Model: a.TargetModel, Group: a.GroupLabel}, true
-}
-
 func claudePoolID() string {
 	metas := profile.ListProfiles("claude")
 	if active := profile.ReadActivePointer("claude"); active != "" {
@@ -1108,7 +924,6 @@ func claudePoolID() string {
 	}
 	return types.FormatID("claude:sub", 1)
 }
-
 
 // IdentityToProviderConfig converts a flat Identity into a ProviderConfig row.
 func IdentityToProviderConfig(id identity.Identity, priority int) ProviderConfig {
@@ -1483,16 +1298,6 @@ func UpdateProviderPlanModel(path, id, plan, model string) error {
 	return fmt.Errorf("provider %s not found", id)
 }
 
-// UpdateProviderConversation persists Claude web org+conversation IDs so the
-// next process reuses the same thread (empty conv clears → next send creates).
-func UpdateProviderConversation(path, id, orgID, conversationID string) error {
-	return UpdateProviderChatState(path, id, ChatState{
-		OrgID:             orgID,
-		ConversationID:    conversationID,
-		ClearConversation: conversationID == "",
-	})
-}
-
 // ChatState is the persisted multi-turn thread for web providers.
 type ChatState struct {
 	OrgID             string
@@ -1502,28 +1307,6 @@ type ChatState struct {
 	ClearConversation bool
 	ClearParent       bool // when true, wipe ParentMessageID even if empty
 	ClearMetadata     bool
-}
-
-// UpdateProviderChatState persists account-level properties (like Claude OrgID)
-// while keeping web conversation IDs ephemeral and scoped in memory.
-func UpdateProviderChatState(path, id string, st ChatState) error {
-	f, err := LoadConfigFile(path)
-	if err != nil {
-		return err
-	}
-	for i, p := range f.Providers {
-		if p.ID != id {
-			continue
-		}
-		if st.OrgID != "" {
-			f.Providers[i].OrgID = st.OrgID
-		}
-		f.Providers[i].ConversationID = ""
-		f.Providers[i].ParentMessageID = ""
-		f.Providers[i].MetadataJSON = ""
-		return SaveConfigFile(path, f)
-	}
-	return fmt.Errorf("provider %s not found", id)
 }
 
 func RemoveProvider(path string, id string) error {

@@ -91,4 +91,3 @@ func ParseCodexClaims(jwtToken string) (email, accountID, plan string) {
 func ParseJWTExpiry(jwtToken string) (time.Time, bool) {
 	return auth.ParseJWTExpiry(jwtToken)
 }
-

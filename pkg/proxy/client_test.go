@@ -99,4 +99,3 @@ func TestCmdProxyDownPublic_RevertsBindAndClearsToken(t *testing.T) {
 		t.Errorf("expected empty token after CmdProxyDownPublic, got: %s", tok)
 	}
 }
-

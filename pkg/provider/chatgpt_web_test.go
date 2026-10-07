@@ -50,7 +50,7 @@ func TestStreamChatGPTWeb_ContainerExecBecomesClientToolCall(t *testing.T) {
 	resp := chatgptSSE(t,
 		map[string]any{
 			"id": "m1", "author": map[string]string{"role": "assistant"}, "recipient": "container.exec",
-			"status": "finished_successfully",
+			"status":  "finished_successfully",
 			"content": map[string]any{"content_type": "code", "text": "bash -lc pwd && ls -la"},
 		},
 		map[string]any{

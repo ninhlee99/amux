@@ -209,8 +209,6 @@ func TestWebBackendPrompt_ContinuingThreadWithoutFullContextPreservesToolResults
 	}
 }
 
-
-
 // A fresh web thread given a transcript that already holds tool turns must be
 // told to continue the task; without the cue ChatGPT answers "Ready. Send the
 // repo task" and the client's tool loop stalls.

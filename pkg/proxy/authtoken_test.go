@@ -362,7 +362,6 @@ func TestRecordFailedAuth_MaxIPCapPreventsUnboundedGrowth(t *testing.T) {
 	}
 }
 
-
 func TestStopAuthRateLimiter_IdempotentNoPanic(t *testing.T) {
 	// StopAuthRateLimiter uses sync.Once internally — calling it more than once
 	// must never panic (no double-close). We can't reset Once state in tests,
@@ -441,4 +440,3 @@ func TestWriteAuthError_DialectResponses(t *testing.T) {
 		t.Fatalf("openai body not JSON: %s", recOpenAI.Body.String())
 	}
 }
-

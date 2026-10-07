@@ -46,7 +46,6 @@ func TestRouter_DomainRouteRegistration(t *testing.T) {
 		"init":       "diagnostics",
 		"statusline": "diagnostics",
 		"whoami":     "diagnostics",
-		"ps":         "diagnostics",
 		"ls":         "diagnostics",
 		"version":    "diagnostics",
 	}
@@ -96,7 +95,7 @@ func TestRouter_DispatchHelpFlags(t *testing.T) {
 	helpCalled := false
 
 	r.Register("test-help", CommandRoute{
-		Domain: "test",
+		Domain:  "test",
 		Handler: func(args []string) {},
 		HelpHandler: func() {
 			helpCalled = true

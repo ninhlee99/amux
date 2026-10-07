@@ -47,12 +47,12 @@ const placeholderAntigravityClientSecret = "GOCSPX-sample-oauth-client-secret"
 // ErrAntigravityClientSecretMissing is returned when no usable Google OAuth client
 // secret is configured for the Antigravity / AGY flow.
 var ErrAntigravityClientSecretMissing = fmt.Errorf(
-	"no Google OAuth client secret configured for Antigravity.\n"+
-		"This build ships a placeholder value, which Google rejects with "+
-		"401 invalid_client.\n"+
-		"Set a real secret from your Google Cloud OAuth client before logging in:\n"+
-		"  export ANTIGRAVITY_CLIENT_SECRET='GOCSPX-...'\n"+
-		"Optionally override the client ID too:\n"+
+	"no Google OAuth client secret configured for Antigravity.\n" +
+		"This build ships a placeholder value, which Google rejects with " +
+		"401 invalid_client.\n" +
+		"Set a real secret from your Google Cloud OAuth client before logging in:\n" +
+		"  export ANTIGRAVITY_CLIENT_SECRET='GOCSPX-...'\n" +
+		"Optionally override the client ID too:\n" +
 		"  export ANTIGRAVITY_CLIENT_ID='....apps.googleusercontent.com'")
 
 func getAntigravityClientSecret() (string, error) {

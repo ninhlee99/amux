@@ -51,17 +51,6 @@ func SaveBindPublic(public bool) error {
 	return saveBindConfig(c)
 }
 
-// SaveBindPort persists the daemon listen port (keeps public flag).
-func SaveBindPort(port string) error {
-	port = strings.TrimSpace(port)
-	if port == "" {
-		return nil
-	}
-	c := loadBindConfig()
-	c.Port = port
-	return saveBindConfig(c)
-}
-
 // SaveBindListen derives public/port from a full listen addr (host:port) and
 // persists them in proxy.bind.json — single source of truth for ListenAddr().
 func SaveBindListen(addr string) error {
@@ -114,8 +103,6 @@ func ProxyAddr() string {
 	}
 	return "127.0.0.1:" + listenPort()
 }
-
-func proxyAddr() string { return ProxyAddr() }
 
 // ListenAddr is the bind address for the daemon process.
 func ListenAddr() string {

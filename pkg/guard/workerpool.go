@@ -38,19 +38,6 @@ type WorkerPool struct {
 	sessions  map[string]*sessionTracker
 }
 
-var (
-	globalWorkerPool     *WorkerPool
-	globalWorkerPoolOnce sync.Once
-)
-
-// GlobalWorkerPool returns the singleton worker pool instance.
-func GlobalWorkerPool() *WorkerPool {
-	globalWorkerPoolOnce.Do(func() {
-		globalWorkerPool = NewWorkerPool(0, 0)
-	})
-	return globalWorkerPool
-}
-
 // NewWorkerPool initializes and starts a bounded worker pool.
 func NewWorkerPool(maxWorkers int, queueSize int) *WorkerPool {
 	if maxWorkers <= 0 {
@@ -217,19 +204,6 @@ func (wp *WorkerPool) Submit(task Task) bool {
 	}
 }
 
-// SubmitWait blocks until the task can be enqueued or executed.
-func (wp *WorkerPool) SubmitWait(task Task) bool {
-	if task == nil || wp.closed.Load() {
-		return false
-	}
-	select {
-	case <-wp.stopCh:
-		return false
-	case wp.taskQueue <- task:
-		return true
-	}
-}
-
 // ExecuteBatch dispatches multiple tasks across the worker pool and blocks until all finish.
 func (wp *WorkerPool) ExecuteBatch(tasks []Task) {
 	if len(tasks) == 0 {
@@ -254,24 +228,9 @@ func (wp *WorkerPool) ExecuteBatch(tasks []Task) {
 	batchWg.Wait()
 }
 
-// ActiveWorkers returns the current number of workers actively executing tasks.
-func (wp *WorkerPool) ActiveWorkers() int {
-	return int(wp.activeWorkers.Load())
-}
-
 // CompletedTasks returns the total number of tasks executed by this pool.
 func (wp *WorkerPool) CompletedTasks() uint64 {
 	return wp.completedTasks.Load()
-}
-
-// QueuedTasks returns the number of tasks currently waiting in the queue.
-func (wp *WorkerPool) QueuedTasks() int {
-	return len(wp.taskQueue)
-}
-
-// MaxWorkers returns the maximum worker capacity of this pool.
-func (wp *WorkerPool) MaxWorkers() int {
-	return wp.maxWorkers
 }
 
 // Close gracefully stops the worker pool and waits for active tasks to complete.

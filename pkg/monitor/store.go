@@ -131,33 +131,6 @@ func LoadEvents(limit int, filter string) []types.EventEntry {
 	return out
 }
 
-// LoadRequests returns recent request records, newest last.
-func LoadRequests(limit int, filter string) []types.RequestEntry {
-	raw := readJSONL(requestsPath())
-	filter = strings.ToLower(strings.TrimSpace(filter))
-	var out []types.RequestEntry
-	for _, line := range raw {
-		var e types.RequestEntry
-		if json.Unmarshal([]byte(line), &e) != nil {
-			continue
-		}
-		if filter != "" {
-			blob := strings.ToLower(strings.Join([]string{
-				e.Dialect, e.Account, e.Model, e.Path, e.Input, e.Output, e.Error, e.StopReason,
-				e.ToolStatus, strings.Join(e.Tools, " "),
-			}, " "))
-			if !strings.Contains(blob, filter) {
-				continue
-			}
-		}
-		out = append(out, e)
-	}
-	if limit > 0 && len(out) > limit {
-		out = out[len(out)-limit:]
-	}
-	return out
-}
-
 func readJSONL(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {

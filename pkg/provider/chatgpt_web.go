@@ -64,7 +64,6 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 	return defaultHTTPClient
 }
 
-
 // BuildConcatenatedPrompt flattens a multi-turn ChatRequest into the single
 // text blob the web adapters (ChatGPT, Claude web) send as one message.
 // Multiple system messages are merged into one "[System Instructions]"

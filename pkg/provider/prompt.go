@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"regexp"
 	"strings"
 
 	"amux-accounts/pkg/ctxshrink"
@@ -215,124 +214,6 @@ func endsWithUserRequest(msgs []types.ChatMessage) bool {
 			return c != "" && !strings.EqualFold(c, "(no content)")
 		}
 		// If role == "system", continue scanning backwards past client reminders.
-	}
-	return false
-}
-
-// slimWebMessages drops client harness system turns. User/tool/assistant stay.
-func slimWebMessages(msgs []types.ChatMessage) []types.ChatMessage {
-	out := make([]types.ChatMessage, 0, len(msgs))
-	for _, m := range msgs {
-		if strings.EqualFold(m.Role, "system") && isClientHarness(m.Content) {
-			continue
-		}
-		if strings.EqualFold(m.Role, "user") {
-			c := stripWebUserNoise(m.Content)
-			if c == "" {
-				orig := strings.TrimSpace(m.Content)
-				if orig != "" && !strings.EqualFold(orig, "(no content)") {
-					c = reTotalTokens.ReplaceAllString(orig, "")
-					c = reHookNotice.ReplaceAllString(c, "")
-					c = strings.TrimSpace(c)
-				}
-				if c == "" {
-					continue
-				}
-			}
-			m.Content = c
-		}
-		out = append(out, m)
-	}
-	// If all user turns were dropped, retain at least one user turn to avoid sending empty prompt
-	if len(out) == 0 && len(msgs) > 0 {
-		for _, m := range msgs {
-			if strings.EqualFold(m.Role, "user") && strings.TrimSpace(m.Content) != "" {
-				out = append(out, m)
-				break
-			}
-		}
-	}
-	return out
-}
-
-var (
-	reSysReminder    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>\s*`)
-	reTotalTokens    = regexp.MustCompile(`(?s)<total_tokens>.*?</total_tokens>\s*`)
-	reScratchpadHint = regexp.MustCompile(`(?im)^First privately list what you need next;[^\n]*\n?`)
-	reHookNotice     = regexp.MustCompile(`(?im)^(?:SessionStart|UserPromptSubmit)\b[^\n]*\n?`)
-	reEnvContext     = regexp.MustCompile(`(?s)<environment_context>.*?</environment_context>\s*`)
-	reLocalCaveat    = regexp.MustCompile(`(?s)<local-command-caveat>.*?</local-command-caveat>\s*`)
-)
-
-func stripWebUserNoise(s string) string {
-	s = cleanSystemReminders(s)
-	s = reTotalTokens.ReplaceAllString(s, "")
-	s = reScratchpadHint.ReplaceAllString(s, "")
-	s = reHookNotice.ReplaceAllString(s, "")
-	s = reEnvContext.ReplaceAllString(s, "")
-	s = reLocalCaveat.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
-}
-
-func cleanSystemReminders(s string) string {
-	return reSysReminder.ReplaceAllStringFunc(s, func(m string) string {
-		trimmed := strings.TrimSpace(m)
-		inner := strings.TrimPrefix(trimmed, "<system-reminder>")
-		inner = strings.TrimSuffix(inner, "</system-reminder>")
-		inner = reTotalTokens.ReplaceAllString(inner, "")
-		inner = reHookNotice.ReplaceAllString(inner, "")
-		inner = reScratchpadHint.ReplaceAllString(inner, "")
-		inner = reLocalCaveat.ReplaceAllString(inner, "")
-		inner = reEnvContext.ReplaceAllString(inner, "")
-		inner = strings.TrimSpace(inner)
-		if inner == "" {
-			return ""
-		}
-		// Strip "You are Claude Code" / harness identity to prevent prompt confusion
-		if strings.Contains(inner, "You are Claude Code") {
-			inner = strings.ReplaceAll(inner, "You are Claude Code", "")
-			inner = strings.TrimSpace(inner)
-		}
-		// If outer text already has user instructions (e.g. text outside <system-reminder>),
-		// and inner is an oversized listing, omit to preserve tokens.
-		outer := strings.TrimSpace(reSysReminder.ReplaceAllString(s, ""))
-		if outer != "" && !strings.EqualFold(outer, "(no content)") {
-			if len(inner) > 1000 {
-				return ""
-			}
-		}
-		if inner == "" {
-			return ""
-		}
-		return "\n[System Context:\n" + inner + "\n]\n"
-	})
-}
-
-func isClientHarness(s string) bool {
-	if strings.Contains(s, "You are Claude Code") || strings.Contains(s, "x-anthropic-billing-header") {
-		return true
-	}
-	if strings.Contains(s, "You are Antigravity") || (strings.Contains(s, "Antigravity") && strings.Contains(s, "agentic")) {
-		return true
-	}
-	if strings.Contains(s, "You are Codex") || strings.Contains(s, "OpenAI Codex") || strings.Contains(s, "codex_cli") {
-		return true
-	}
-	if strings.Contains(s, "You are Cursor") || strings.Contains(s, "Cursor AI") {
-		return true
-	}
-	if strings.Contains(s, "You are Cline") || strings.Contains(s, "Cline, a helpful") {
-		return true
-	}
-	if strings.Contains(s, "You are Roo") || strings.Contains(s, "Roo Code") {
-		return true
-	}
-	low := strings.ToLower(s)
-	if strings.Contains(s, "permission mode") && strings.Contains(low, "tool") {
-		return true
-	}
-	if len([]rune(s)) > 2000 && (strings.Contains(low, "available tools") || strings.Contains(low, "input_schema") || strings.Contains(low, "functiondeclarations")) {
-		return true
 	}
 	return false
 }

@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"amux-accounts/pkg/types"
 )
 
 type fakeBackend struct {
@@ -269,14 +267,6 @@ func TestAmuxReviewAndContext(t *testing.T) {
 	}
 }
 
-type namedAdapter struct{ id string }
-
-func (n namedAdapter) ID() string    { return n.id }
-func (n namedAdapter) Priority() int { return 1 }
-func (n namedAdapter) SendMessageStream(context.Context, *types.ChatRequest) (<-chan types.StreamChunk, error) {
-	return nil, nil
-}
-
 func TestPoolBackend_Providers_IdentitiesIntegration(t *testing.T) {
 	tmpDir := t.TempDir()
 	idPath := filepath.Join(tmpDir, "identities.json")
@@ -308,5 +298,3 @@ func TestPoolBackend_Providers_IdentitiesIntegration(t *testing.T) {
 		t.Fatalf("expected provider ID 'claude:code:01', got %s", providers[0].ID)
 	}
 }
-
-

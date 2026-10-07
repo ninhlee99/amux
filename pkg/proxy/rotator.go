@@ -25,21 +25,6 @@ const (
 	refreshLead = 2 * time.Minute
 )
 
-// package-level default applied by NewRotator; set via SetUsedThreshold
-// before RunProxy / RunSupervisor so --threshold / AM_ROTATE_THRESHOLD
-// reach the daemon without threading a new arg through every call site.
-var usedThresholdDefault = DefaultUsedThreshold
-
-// SetUsedThreshold records the auto-rotate utilization threshold for
-// subsequent NewRotator calls. Accepts either a percent (95) or a
-// fraction (0.95); invalid / zero falls back to DefaultUsedThreshold.
-func SetUsedThreshold(v float64) {
-	usedThresholdDefault = ParseUsedThreshold(v)
-}
-
-// UsedThreshold returns the currently configured package default.
-func UsedThreshold() float64 { return usedThresholdDefault }
-
 // ParseUsedThreshold normalizes a CLI / env value to a 0–1 fraction.
 // Values > 1 are treated as percents (95 → 0.95). ≤0 or >100 → default.
 func ParseUsedThreshold(v float64) float64 {
@@ -122,7 +107,7 @@ func (r *Rotator) PoolSize() int {
 }
 
 func NewRotator(tool string) *Rotator {
-	r := &Rotator{tool: tool, usedThreshold: usedThresholdDefault}
+	r := &Rotator{tool: tool, usedThreshold: DefaultUsedThreshold}
 	r.inPool = func(name, account string) bool {
 		return identity.ProfileInPool("", tool, name, account)
 	}

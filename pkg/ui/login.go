@@ -33,10 +33,10 @@ type loginFlags struct {
 	refresh    string // refresh token when the web session exposes one
 	useBrowser bool   // open Chromium via CDP and capture cookie (default when no token/cookie)
 	noBrowser  bool
-	defBrowser bool   // open the default browser (like OAuth) and paste the cookie back
-	isOAuth    bool   // trigger standalone OAuth flow
-	isDevice   bool   // trigger device code flow
-	isManual   bool   // trigger manual code entry flow
+	defBrowser bool // open the default browser (like OAuth) and paste the cookie back
+	isOAuth    bool // trigger standalone OAuth flow
+	isDevice   bool // trigger device code flow
+	isManual   bool // trigger manual code entry flow
 }
 
 func parseLoginFlags(args []string) (providerName string, f loginFlags, rest []string) {
@@ -308,7 +308,6 @@ func loginCursor(f loginFlags) {
 	fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", id, id)
 	CmdAccounts()
 }
-
 
 // openForManualPaste opens target in the user's default browser (the same way
 // the OAuth flows do) so they can sign in in their normal window. The cookie
@@ -1005,35 +1004,6 @@ func doctorIsFreeWeb(a types.ProviderAdapter) bool {
 	return strings.Contains(strings.ToLower(a.ID()), "free")
 }
 
-func providerKindLabel(typ string) string {
-	switch typ {
-	case "chatgpt_web":
-		return "chatgpt-web"
-	case "claude_web":
-		return "claude-web"
-	case "gemini_web":
-		return "gemini-web"
-	case "gemini":
-		return "gemini-api"
-	case "codex_cli":
-		return "codex"
-	case "openai_compatible":
-		return "api"
-	default:
-		if typ == "" {
-			return "api"
-		}
-		return typ
-	}
-}
-
-func poolMark(in bool) string {
-	if in {
-		return "IN"
-	}
-	return "OUT"
-}
-
 func loadProviderRows() []provider.ProviderConfig {
 	file, err := provider.LoadConfigFile(provider.DefaultAccountsPath())
 	var rows []provider.ProviderConfig
@@ -1121,153 +1091,6 @@ func CmdAccountsFilter(filter string) {
 	}
 	w.Flush()
 	term.PanelEnd()
-}
-
-// CmdPool lists accounts currently in the rotate pool (POOL=IN), flat — no group sections.
-func CmdPool() {
-	term.Header("amux pool", "rotate set · amux pool add|remove <id>")
-	rows := collectPoolRows()
-	if len(rows) == 0 {
-		term.Warn("Rotate pool empty. amux pool add <id>  (see: amux accounts)")
-		return
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, term.Dim("ID\tKIND\tPRIORITY\tMODEL"))
-	for _, r := range rows {
-		prio := "-"
-		if r.Kind != "claude" && r.Kind != "antigravity" {
-			prio = fmt.Sprintf("%d", r.Priority)
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.ID, r.Kind, prio, r.Model)
-	}
-	w.Flush()
-	term.PanelEnd()
-}
-
-type poolRow struct {
-	ID       string
-	Kind     string
-	Model    string
-	Priority int
-}
-
-func collectPoolRows() []poolRow {
-	var rows []poolRow
-	for _, tool := range profile.ToolNames(profile.LoadConfig()) {
-		if tool == "codex" {
-			continue
-		}
-		for _, p := range profile.ListProfiles(tool) {
-			if p.Disabled {
-				continue
-			}
-			pName := p.Name
-			if pName == "" {
-				pName = p.ID
-			}
-			rows = append(rows, poolRow{
-				ID:    pName,
-				Kind:  tool,
-				Model: "-",
-			})
-		}
-	}
-	for _, p := range loadProviderRows() {
-		if !p.InRotatePool() {
-			continue
-		}
-		model := p.Model
-		if model == "" {
-			model = "-"
-		}
-		rows = append(rows, poolRow{
-			ID:       p.ID,
-			Kind:     providerKindLabel(p.Type),
-			Model:    model,
-			Priority: p.Priority,
-		})
-	}
-	return rows
-}
-
-// CmdAccountsCmd handles `am accounts [priority <id> <N>]`.
-func CmdAccountsCmd(args []string) {
-	if len(args) == 0 {
-		CmdAccounts()
-		return
-	}
-
-	switch args[0] {
-	case "ls", "list":
-		filter := ""
-		if len(args) > 1 {
-			filter = args[1]
-		}
-		CmdAccountsFilter(filter)
-	case "rm", "delete", "remove":
-		if len(args) < 2 {
-			fmt.Println("Usage: amux accounts rm <id>")
-			fmt.Println("   or: amux api rm <id>")
-			return
-		}
-		if err := provider.RemoveProvider(provider.DefaultAccountsPath(), args[1]); err != nil {
-			fmt.Printf("Error removing provider: %v\n", err)
-			return
-		}
-		proxy.Sync()
-		fmt.Printf("Removed provider %q from pool\n", args[1])
-	case "priority":
-		if len(args) < 3 {
-			fmt.Println("Usage: amux accounts priority <id> <N>")
-			return
-		}
-		n, err := strconv.Atoi(args[2])
-		if err != nil {
-			fmt.Printf("invalid priority %q: %v\n", args[2], err)
-			return
-		}
-		if err := provider.SetPriority(provider.DefaultAccountsPath(), args[1], n); err != nil {
-			fmt.Printf("Error setting priority: %v\n", err)
-			return
-		}
-		proxy.Sync()
-		fmt.Printf("set %s priority to %d\n", args[1], n)
-	case "model":
-		if len(args) < 3 {
-			fmt.Println("Usage: amux accounts model <id> <model>")
-			return
-		}
-		if err := provider.SetModel(provider.DefaultAccountsPath(), args[1], args[2]); err != nil {
-			fmt.Printf("Error setting model: %v\n", err)
-			return
-		}
-		proxy.Sync()
-		fmt.Printf("set %s model to %s\n", args[1], args[2])
-	case "off", "disable":
-		if len(args) < 2 {
-			fmt.Println("Usage: amux off <id>   (or: amux pool remove <id>)")
-			return
-		}
-		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], false); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
-		}
-		proxy.Sync()
-		fmt.Printf("off %s — out of rotate (amux on %s)\n", args[1], args[1])
-	case "on", "enable":
-		if len(args) < 2 {
-			fmt.Println("Usage: amux on <id>   (or: amux pool add <id>)")
-			return
-		}
-		if err := provider.SetEnabled(provider.DefaultAccountsPath(), args[1], true); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
-		}
-		proxy.Sync()
-		fmt.Printf("on %s — back in rotate\n", args[1])
-	default:
-		fmt.Println("Usage: amux accounts | amux accounts rm <id> | amux pool add|remove|priority|model")
-	}
 }
 
 // CmdAPI handles 'am api add', 'am api rm', 'am api ls'.

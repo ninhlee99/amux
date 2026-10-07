@@ -39,8 +39,3 @@ func ReadLine(prompt string) string {
 	}
 	return strings.TrimSpace(sb.String())
 }
-
-// ReadEnterPrompt waits for user to press Enter. Never blocks waiting for non-empty text.
-func ReadEnterPrompt(prompt string) {
-	_ = ReadLine(prompt)
-}

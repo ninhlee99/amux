@@ -59,20 +59,20 @@ const webToolCloser = `
 `
 
 var (
-	reThought          = regexp.MustCompile(`(?si)<thought>\s*(.*?)\s*</thought>`)
-	reThinking         = regexp.MustCompile(`(?si)<thinking>\s*(.*?)\s*</thinking>`)
-	reReflection       = regexp.MustCompile(`(?si)<reflection>\s*(.*?)\s*</reflection>`)
-	reXMLTool          = regexp.MustCompile(`(?si)<tool_call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool_call>`)
-	reHyphenTool       = regexp.MustCompile(`(?si)<tool-call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool-call>`)
-	reInvokeTool       = regexp.MustCompile(`(?si)<(?:invoke|function_call)(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
-	reXMLParam         = regexp.MustCompile(`(?si)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
-	reAMUXTool         = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
-	reToolJSON         = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
-	reBashFence        = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
-	reBareJSONKey      = regexp.MustCompile(`([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:`)
-	reGeminiCall       = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
-	reActionTool       = regexp.MustCompile(`(?im)^Action:\s*([A-Za-z0-9_-]+)\s*\n(?:Action\s+Input|Input|Arguments|Args):\s*(\{[\s\S]*?\}|"[^"\n]*"|[^\n]+)`)
-	reToolCallFence    = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
+	reThought       = regexp.MustCompile(`(?si)<thought>\s*(.*?)\s*</thought>`)
+	reThinking      = regexp.MustCompile(`(?si)<thinking>\s*(.*?)\s*</thinking>`)
+	reReflection    = regexp.MustCompile(`(?si)<reflection>\s*(.*?)\s*</reflection>`)
+	reXMLTool       = regexp.MustCompile(`(?si)<tool_call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool_call>`)
+	reHyphenTool    = regexp.MustCompile(`(?si)<tool-call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool-call>`)
+	reInvokeTool    = regexp.MustCompile(`(?si)<(?:invoke|function_call)(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
+	reXMLParam      = regexp.MustCompile(`(?si)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
+	reAMUXTool      = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
+	reToolJSON      = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
+	reBashFence     = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
+	reBareJSONKey   = regexp.MustCompile(`([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:`)
+	reGeminiCall    = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
+	reActionTool    = regexp.MustCompile(`(?im)^Action:\s*([A-Za-z0-9_-]+)\s*\n(?:Action\s+Input|Input|Arguments|Args):\s*(\{[\s\S]*?\}|"[^"\n]*"|[^\n]+)`)
+	reToolCallFence = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
 	reBracketTool      = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
 	reBracketToolAlt   = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+([A-Za-z0-9_-]+)\s*(\{[\s\S]*?\})\]`)
@@ -1666,10 +1666,6 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 		return argsJSON
 	}
 	return string(b)
-}
-
-func repairJSON(s string) string {
-	return jsonrepair.Repair(s)
 }
 
 func parseToolCallJSON(raw string) (name, id, args string, ok bool) {

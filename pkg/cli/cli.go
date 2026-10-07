@@ -15,4 +15,3 @@ func Run(rawArgs []string) {
 	router := NewRouter()
 	router.Dispatch(rawArgs)
 }
-

@@ -49,11 +49,6 @@ func GlobalAffinity() *SessionAffinity {
 	return globalAffinity
 }
 
-// Sanitize scrubs sensitive internal headers before dispatching outbound requests.
-func Sanitize(req *http.Request) {
-	SanitizeOutboundRequest(req)
-}
-
 // Pace coordinates request cadence: for web and API accounts, enforces a minimum
 // spacing only when explicitly enabled (via AMUX_ENABLE_PACER=true or AMUX_PACER_INTERVAL_MS).
 // By default, AMUX operates in zero-latency mode for maximum performance.
@@ -137,23 +132,6 @@ func ResetPacer(accountID string) {
 // IsQuarantined checks whether an account is quarantined from active rotation.
 func IsQuarantined(accountID string) (bool, time.Duration, string) {
 	return globalHealth.IsQuarantined(accountID)
-}
-
-// GetAffinityAccount resolves any sticky account bound to this request or context.
-func GetAffinityAccount(r *http.Request, req *types.ChatRequest) (string, bool) {
-	key := ExtractSessionKey(r, req)
-	if key == "" {
-		return "", false
-	}
-	return globalAffinity.GetPinned(key)
-}
-
-// PinSession binds a session to an account for subsequent conversation turns.
-func PinSession(r *http.Request, req *types.ChatRequest, accountID string) {
-	key := ExtractSessionKey(r, req)
-	if key != "" && accountID != "" {
-		globalAffinity.Pin(key, accountID)
-	}
 }
 
 // CheckSessionAccountSwitch checks if the session was previously on a different account

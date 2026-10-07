@@ -33,15 +33,15 @@ const (
 
 // ProjectConversation holds the state of an active web chat conversation for a specific project.
 type ProjectConversation struct {
-	ID          string    `json:"id"`                     // conversation UUID or ID on the upstream web service
-	ParentID    string    `json:"parent_id,omitempty"`    // parent message ID (used by ChatGPT web)
-	Metadata    []string  `json:"metadata,omitempty"`     // metadata tokens (used by Gemini web)
-	ProjectRoot string    `json:"project_root"`           // project directory or git root
-	SessionID   string    `json:"session_id,omitempty"`   // last session ID that interacted with this thread
-	TurnCount   int       `json:"turn_count"`             // number of message turns sent in this thread
-	TotalTokens int       `json:"total_tokens"`           // accumulated tokens consumed in this thread
-	CreatedAt   time.Time `json:"created_at"`             // when the conversation was initiated
-	LastUsedAt  time.Time `json:"last_used_at"`            // last request timestamp
+	ID          string    `json:"id"`                   // conversation UUID or ID on the upstream web service
+	ParentID    string    `json:"parent_id,omitempty"`  // parent message ID (used by ChatGPT web)
+	Metadata    []string  `json:"metadata,omitempty"`   // metadata tokens (used by Gemini web)
+	ProjectRoot string    `json:"project_root"`         // project directory or git root
+	SessionID   string    `json:"session_id,omitempty"` // last session ID that interacted with this thread
+	TurnCount   int       `json:"turn_count"`           // number of message turns sent in this thread
+	TotalTokens int       `json:"total_tokens"`         // accumulated tokens consumed in this thread
+	CreatedAt   time.Time `json:"created_at"`           // when the conversation was initiated
+	LastUsedAt  time.Time `json:"last_used_at"`         // last request timestamp
 	// Checkpoints record, per answered turn, the client history the thread
 	// was sent and the upstream message that answered it. They let a later
 	// request that branched off an earlier turn be recognised.

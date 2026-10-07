@@ -128,10 +128,6 @@ func RunProxy(addr, upstream string) error {
 		pool.SetDirectory(all)
 	}
 
-	// Wire the /btw queue into the bridge so in-flight user notes get
-	// injected into the next outgoing LLM request automatically.
-	bridge.SetBtwDrainer(GetGlobalBtwQueue().Drain)
-
 	rp, err := newReverseProxy(upstream, rot)
 	if err != nil {
 		return err
@@ -152,7 +148,6 @@ func RunProxy(addr, upstream string) error {
 		if srv != nil {
 			_ = srv.Close()
 		}
-		_ = monitor.GlobalUDSServer().Stop()
 		_ = ClearAuthToken()
 		StopAuthRateLimiter()
 	})
@@ -162,9 +157,6 @@ func RunProxy(addr, upstream string) error {
 
 	sw.Set(handler)
 	srv = &http.Server{Addr: addr, Handler: sw}
-
-	// Start Unix Domain Socket interface for CLI IPC
-	_ = monitor.GlobalUDSServer().Start()
 
 	// Restore caches from disk
 	_ = ctxshrink.GlobalDeduplicator().LoadSnapshot("")
@@ -443,6 +435,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			guard.ResetAll()
 		} else {
 			guard.GlobalHealth().Reset(target)
+			guard.ResetPacer(target)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "target": target})
@@ -510,8 +503,6 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			"tool_pool": toolPool.Status(),
 		})
 	})
-
-	mux.HandleFunc("/_am/btw", HandleBtw)
 
 	mux.HandleFunc("/_am/sync", func(w http.ResponseWriter, r *http.Request) {
 		profile.SyncActiveFromSystem("claude")

@@ -408,15 +408,6 @@ func FetchChatGPTSession(sessionTokenOrCookie string) (*ChatGPTSession, error) {
 	}, nil
 }
 
-// FetchChatGPTSessionAccessToken keeps the old single-token helper.
-func FetchChatGPTSessionAccessToken(sessionToken string) (string, error) {
-	s, err := FetchChatGPTSession(sessionToken)
-	if err != nil {
-		return "", err
-	}
-	return s.AccessToken, nil
-}
-
 // looksLikeNamedCookie reports whether raw appears to be a "name=value" pair
 // rather than a bare cookie value. Only a plausible cookie-name before the
 // first '=' counts; trailing base64 padding ("abc==") does not.

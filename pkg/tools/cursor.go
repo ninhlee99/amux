@@ -17,18 +17,7 @@ func ToCursorToolCalls(calls []types.ToolCall) []OpenAIToolCall {
 	return ToOpenAIToolCalls(calls)
 }
 
-// ToCursorDeltaToolCalls maps canonical calls to Cursor streaming delta tool_calls.
-func ToCursorDeltaToolCalls(calls []types.ToolCall) []OpenAIToolCall {
-	return ToOpenAIDeltaToolCalls(calls)
-}
-
 // FromCursorToolCalls maps Cursor tool_calls to canonical.
 func FromCursorToolCalls(calls []OpenAIToolCall) []types.ToolCall {
 	return FromOpenAIToolCalls(calls)
-}
-
-// MarshalCursorChatRequest encodes req for an OpenAI-compatible upstream
-// when the client dialect is Cursor.
-func MarshalCursorChatRequest(req *types.ChatRequest) ([]byte, error) {
-	return MarshalOpenAIChatRequest(req)
 }

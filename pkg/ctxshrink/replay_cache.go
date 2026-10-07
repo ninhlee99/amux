@@ -198,12 +198,6 @@ func (s *ProjectReplayStore) put(key string, replay *CachedReplay) {
 	s.entries[key] = replay
 }
 
-func (s *ProjectReplayStore) len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.entries)
-}
-
 func (s *ProjectReplayStore) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,27 +399,6 @@ func (c *DeterministicReplayCache) InvalidateProject(project string) {
 	// Also remove project cache directory if exists
 	pDir := types.ProjectCacheDir(project)
 	_ = os.Remove(filepath.Join(pDir, "replay.json"))
-}
-
-// Size returns total active entries across all project stores.
-func (c *DeterministicReplayCache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	total := 0
-	for _, s := range c.projects {
-		total += s.len()
-	}
-	return total
-}
-
-// Clear clears all project stores.
-func (c *DeterministicReplayCache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, s := range c.projects {
-		s.clear()
-	}
-	c.projects = make(map[string]*ProjectReplayStore)
 }
 
 func defaultReplayCachePath() string {

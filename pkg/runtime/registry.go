@@ -86,26 +86,6 @@ func (r *Registry) RegisterManifest(m *RuntimeManifest) {
 	}
 }
 
-// RegisterTool registers an individual tool definition with optional aliases.
-func (r *Registry) RegisterTool(t NativeToolDefinition, aliases ...string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.tools[t.Name] = t
-	r.tools[strings.ToLower(t.Name)] = t
-	r.aliases[strings.ToLower(t.Name)] = t.Name
-	for _, a := range aliases {
-		if a != "" {
-			r.aliases[strings.ToLower(a)] = t.Name
-		}
-	}
-}
-
-// GetTool retrieves a tool definition by name (case-insensitive fallback).
-func (r *Registry) GetTool(name string) (NativeToolDefinition, bool) {
-	return r.Lookup(name)
-}
-
 // Lookup retrieves a tool definition by name, case-insensitive match, or alias.
 func (r *Registry) Lookup(name string) (NativeToolDefinition, bool) {
 	r.mu.RLock()

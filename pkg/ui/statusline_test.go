@@ -290,5 +290,3 @@ func TestRenderStatusline_ClaudeAndCodexMatchAGY(t *testing.T) {
 		}
 	}
 }
-
-

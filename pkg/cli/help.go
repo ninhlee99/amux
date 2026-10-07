@@ -355,4 +355,3 @@ Subcommands:
   list                List all custom environment variables
 `)
 }
-

@@ -7,7 +7,7 @@ import (
 
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
-	"amux-accounts/pkg/monitor"
+	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 )
 
@@ -76,10 +76,7 @@ func CmdInit(args []string) {
 		fmt.Println("OK")
 	}
 
-	// Check UDS socket
-	sockPath := monitor.DefaultSocketPath()
-	client := monitor.NewUDSClient(sockPath)
-	daemonRunning := client.IsDaemonAvailable()
+	daemonRunning := proxy.ProxyUp()
 
 	fmt.Println("----------------------------------------------------------------")
 	fmt.Println("✓ AMUX is ready! Here are recommended first steps:")
@@ -87,10 +84,9 @@ func CmdInit(args []string) {
 	fmt.Println("  1. Add an identity:        amux id add claude (or 'amux login')")
 	fmt.Println("  2. View active accounts:    amux id list")
 	fmt.Println("  3. Start proxy daemon:      amux start")
-	fmt.Println("  4. View live telemetry:     amux top")
-	fmt.Println("  5. Run system diagnostics:  amux doctor")
+	fmt.Println("  4. Run system diagnostics:  amux doctor")
 	if !daemonRunning {
-		fmt.Println("Tip: Run 'amux start' in the background to enable live proxy and socket IPC.")
+		fmt.Println("Tip: Run 'amux start' in the background to enable the live proxy.")
 	}
 	fmt.Println("================================================================")
 }

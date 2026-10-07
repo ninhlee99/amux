@@ -5,18 +5,6 @@ import (
 	"strings"
 )
 
-// hopByHopHeaders list standard hop-by-hop headers that should not be forwarded.
-var hopByHopHeaders = []string{
-	"Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Te",
-	"Trailers",
-	"Transfer-Encoding",
-	"Upgrade",
-}
-
 // proxyInternalHeaders list internal headers used by amux / reverse-proxies
 // that could leak proxy presence or routing decisions to upstream providers.
 var proxyInternalHeaders = []string{
@@ -62,16 +50,4 @@ func SanitizeOutboundRequest(req *http.Request) {
 		return
 	}
 	SanitizeOutboundHeaders(req.Header)
-}
-
-// EnsureSafeUserAgent ensures the User-Agent header looks natural and does not
-// advertise proxy / automated scrapers if empty.
-func EnsureSafeUserAgent(h http.Header, fallbackUA string) {
-	if h == nil {
-		return
-	}
-	ua := strings.TrimSpace(h.Get("User-Agent"))
-	if ua == "" && fallbackUA != "" {
-		h.Set("User-Agent", fallbackUA)
-	}
 }

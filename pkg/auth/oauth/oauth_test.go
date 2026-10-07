@@ -129,7 +129,6 @@ func TestParseCodexClaims(t *testing.T) {
 	}
 }
 
-
 func TestSupportedOAuthProviders(t *testing.T) {
 	providers := SupportedOAuthProviders()
 	if len(providers) < 5 {
@@ -204,15 +203,6 @@ func TestCallbackServer(t *testing.T) {
 	if gotCode != "sample-auth-code" {
 		t.Errorf("gotCode = %q, want sample-auth-code", gotCode)
 	}
-}
-
-func TestOpenBrowser(t *testing.T) {
-	// OpenPrivateBrowser delegates to OpenBrowser
-	ok, _, err := OpenPrivateBrowser("http://127.0.0.1:9999/dummy")
-	if ok {
-		t.Errorf("expected OpenPrivateBrowser to return false for openedIncognito")
-	}
-	_ = err
 }
 
 func TestCallbackServer_Security(t *testing.T) {
@@ -725,9 +715,6 @@ func TestClaudeManualRedirect(t *testing.T) {
 		t.Errorf("expected redirect_uri %q, got %q", ClaudeManualRedirectURI, receivedBody["redirect_uri"])
 	}
 }
-
-
-
 
 func TestAntigravityClientSecretGuard(t *testing.T) {
 	t.Run("missing secret is rejected", func(t *testing.T) {

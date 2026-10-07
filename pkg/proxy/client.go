@@ -7,10 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"amux-accounts/pkg/hook"
@@ -31,160 +28,6 @@ func ProxyUp() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func resolveAMBin() (string, error) {
-	if self, err := os.Executable(); err == nil {
-		return self, nil
-	}
-	if bin, err := exec.LookPath("am"); err == nil {
-		return bin, nil
-	}
-	return "", fmt.Errorf("could not resolve am binary")
-}
-
-func proxyStatusMode() string {
-	resp, err := http.Get(ProxyBase() + "/_am/status")
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	var s struct {
-		Mode string `json:"mode"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return ""
-	}
-	return s.Mode
-}
-
-// UpFlags controls `amux proxy up` / `amux proxy --public` behaviour.
-type UpFlags struct {
-	Threshold float64 // 0 → default / env
-	Public    *bool   // nil keep saved; non-nil persist + restart
-	Port      string  // non-empty → persist port + restart
-	Listen    string  // full host:port override → persist via SaveBindListen + restart
-	Restart   bool    // force respawn even if already up
-}
-
-func CmdProxyUp(threshold ...float64) {
-	f := UpFlags{}
-	if len(threshold) > 0 && threshold[0] > 0 {
-		f.Threshold = threshold[0]
-	}
-	CmdProxyUpFlags(f)
-}
-
-// CmdProxyUpWithAddr starts (or attaches to) the proxy. listenOverride comes
-// from `am proxy up --public` / `--addr` / `--port`; empty keeps saved bind.
-func CmdProxyUpWithAddr(listenOverride string, threshold ...float64) {
-	f := UpFlags{Listen: strings.TrimSpace(listenOverride)}
-	if len(threshold) > 0 && threshold[0] > 0 {
-		f.Threshold = threshold[0]
-	}
-	CmdProxyUpFlags(f)
-}
-
-func CmdProxyUpFlags(f UpFlags) {
-	thresh := DefaultUsedThreshold
-	if f.Threshold > 0 {
-		thresh = ParseUsedThreshold(f.Threshold)
-	} else if env := os.Getenv("AM_ROTATE_THRESHOLD"); env != "" {
-		if v, err := strconv.ParseFloat(env, 64); err == nil {
-			thresh = ParseUsedThreshold(v)
-		}
-	}
-	SetUsedThreshold(thresh)
-
-	if f.Listen != "" {
-		if err := SaveBindListen(f.Listen); err != nil {
-			fmt.Fprintf(os.Stderr, "amux: save bind preference: %v\n", err)
-		}
-		f.Restart = true
-	} else {
-		if f.Public != nil {
-			if err := SaveBindPublic(*f.Public); err != nil {
-				fmt.Fprintf(os.Stderr, "amux: save bind preference: %v\n", err)
-			}
-			f.Restart = true
-		}
-		if f.Port != "" {
-			if err := SaveBindPort(f.Port); err != nil {
-				fmt.Fprintf(os.Stderr, "amux: save bind port: %v\n", err)
-			}
-			f.Restart = true
-		}
-	}
-
-	needSpawn := !ProxyUp() || f.Restart
-	if !needSpawn && proxyStatusMode() == "degraded" {
-		postAndClose(ProxyBase() + "/_am/shutdown")
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) && ProxyUp() {
-			time.Sleep(50 * time.Millisecond)
-		}
-		needSpawn = true
-	}
-	if f.Restart && ProxyUp() {
-		postAndClose(ProxyBase() + "/_am/shutdown")
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) && ProxyUp() {
-			time.Sleep(50 * time.Millisecond)
-		}
-		needSpawn = true
-	}
-
-	listen := ListenAddr()
-	if needSpawn {
-		bin, err := resolveAMBin()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "amux: %v\n", err)
-			return
-		}
-		cmd := exec.Command(bin, "proxy", "--supervise",
-			"--addr", listen,
-			"--threshold", strconv.FormatFloat(thresh*100, 'f', -1, 64),
-		)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "amux: start proxy: %v\n", err)
-			return
-		}
-		deadline := time.Now().Add(4 * time.Second)
-		for time.Now().Before(deadline) {
-			if ProxyUp() {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		if !ProxyUp() {
-			fmt.Fprintf(os.Stderr, "amux: proxy did not come up on %s (clients: %s)\n", listen, ProxyAddr())
-			return
-		}
-	}
-
-	ppid := os.Getppid()
-	if ppid > 1 {
-		postAndClose(fmt.Sprintf("%s/_am/session?pid=%d&event=start&op=start", ProxyBase(), ppid))
-	}
-	postAndClose(ProxyBase() + "/_am/sync")
-	if err := hook.SyncClientSettingsEnv(true, ProxyBase()); err != nil {
-		fmt.Fprintf(os.Stderr, "amux: sync client settings env: %v\n", err)
-	}
-
-
-	if IsPublic() || IsPublicBind(listen) {
-		tok, _ := LoadAuthToken()
-		fmt.Printf("amux proxy up  bind %s  local %s\n", listen, ProxyBase())
-		fmt.Printf("  public   %s\n", FormatPublicHosts())
-		if tok != "" {
-			fmt.Printf("  api-key  %s\n", tok)
-		}
-	} else if f.Restart || needSpawn {
-		fmt.Printf("amux proxy up  bind %s  %s\n", listen, ProxyBase())
-	} else if ProxyUp() {
-		fmt.Printf("amux proxy already running on %s (%s)\n", listen, ProxyBase())
-	}
-}
-
 func Sync() {
 	if ProxyUp() {
 		postAndClose(ProxyBase() + "/_am/sync")
@@ -195,13 +38,6 @@ func postAndClose(url string) {
 	resp, err := http.Post(url, "", nil)
 	if err == nil && resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
-	}
-}
-
-// RegisterSession registers (or deregisters) a client process with the supervisor.
-func RegisterSession(pid int, event string) {
-	if pid > 1 && ProxyUp() {
-		postAndClose(fmt.Sprintf("%s/_am/session?pid=%d&event=%s&op=%s", ProxyBase(), pid, event, event))
 	}
 }
 
@@ -280,33 +116,6 @@ func CmdProxyDownPublic(force, yesIKnow bool) {
 	fmt.Println("amux: public proxy stopped. Bind address reverted to 127.0.0.1 (local only). Public auth token revoked.")
 }
 
-func CmdSwitch(tool, name string) {
-	if tool != "claude" {
-		if err := profile.CmdUse(tool, name); err != nil {
-			fmt.Fprintf(os.Stderr, "amux: %v\n", err)
-		}
-		return
-	}
-	if !ProxyUp() {
-		if err := profile.CmdUse(tool, name); err != nil {
-			fmt.Fprintf(os.Stderr, "amux: %v\n", err)
-		}
-		return
-	}
-	resp, err := http.Post(ProxyBase()+"/_am/switch?to="+url.QueryEscape(name), "", nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "amux: proxy switch: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "amux: proxy switch failed: %s\n", strings.TrimSpace(string(b)))
-		return
-	}
-	fmt.Printf("switched to %s (no restart needed)\n", name)
-}
-
 // SwitchProfile installs a saved login of tool as the active one. For
 // Claude with the gateway running, the switch goes through the gateway so
 // its rotator snapshots the outgoing account and installs the new one in
@@ -345,46 +154,3 @@ func CmdSwitchProvider(name string) {
 	}
 	fmt.Printf("switched active provider to %q (no restart needed)\n", name)
 }
-
-// CmdBtw sends a "by-the-way" message to be injected into the next LLM request
-// while an agent is running. Usage: amux gateway btw <message text>
-func CmdBtw(text string) {
-	if !ProxyUp() {
-		fmt.Fprintln(os.Stderr, "amux: proxy not running — start a Claude Code session first (amux proxy up)")
-		return
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		fmt.Fprintln(os.Stderr, "amux: usage: amux btw <message>")
-		return
-	}
-
-	payload := `{"text":` + jsonQuote(text) + `}`
-	resp, err := http.Post(ProxyBase()+"/_am/btw", "application/json", strings.NewReader(payload))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "amux: btw: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "amux: btw failed: %s\n", strings.TrimSpace(string(b)))
-		return
-	}
-	var res struct {
-		Pending int    `json:"pending"`
-		Queued  string `json:"queued"`
-	}
-	if json.Unmarshal(b, &res) == nil {
-		fmt.Printf("✓ queued (%d pending): %s\n", res.Pending, res.Queued)
-	} else {
-		fmt.Println("✓ message queued")
-	}
-}
-
-// jsonQuote returns a JSON-encoded double-quoted string for simple text.
-func jsonQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-

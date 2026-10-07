@@ -98,22 +98,6 @@ func FromToolDefs(runtimeName string, defs []types.ToolDef) *RuntimeManifest {
 	return m
 }
 
-// ToToolDefs converts the manifest tools back to standard types.ToolDef slice.
-func (m *RuntimeManifest) ToToolDefs() []types.ToolDef {
-	if m == nil {
-		return nil
-	}
-	defs := make([]types.ToolDef, 0, len(m.Tools))
-	for _, t := range m.Tools {
-		defs = append(defs, types.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
-	}
-	return defs
-}
-
 type rawJSONSchema struct {
 	Type       string                     `json:"type"`
 	Required   []string                   `json:"required"`

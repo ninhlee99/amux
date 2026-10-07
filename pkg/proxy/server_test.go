@@ -823,7 +823,6 @@ func TestHandler_PathAndQueryProviderRouting(t *testing.T) {
 	}
 }
 
-
 type failingAdapter struct{ id string }
 
 func (f *failingAdapter) ID() string    { return f.id }

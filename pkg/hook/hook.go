@@ -26,23 +26,6 @@ import (
 
 const HookTag = "am proxy" // how we recognise our own entries
 
-// CanonicalTool normalizes user input into one of: claude, agy, codex, cursor.
-// Returns empty string if unknown.
-func CanonicalTool(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "claude", "claudecode", "cc":
-		return "claude"
-	case "agy", "antigravity", "gemini":
-		return "agy"
-	case "codex":
-		return "codex"
-	case "cursor":
-		return "cursor"
-	default:
-		return ""
-	}
-}
-
 func ClaudeAvailable() bool {
 	home, _ := os.UserHomeDir()
 	if _, err := os.Stat(filepath.Join(home, ".claude")); err == nil {
@@ -203,23 +186,6 @@ func HookEntryIsOurs(e any) bool {
 	return false
 }
 
-// HookInstall wires SessionStart/SessionEnd/Stop hooks to the currently
-// running `am` binary's resolved absolute path (quoted, so it survives
-// paths with spaces) — this way the hook keeps working even if `am` isn't
-// on PATH in whatever minimal environment Claude Code invokes hooks in.
-func HookInstall() error {
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate self: %w", err)
-	}
-	m := LoadClaudeSettings()
-	AddHook(m, "SessionStart", fmt.Sprintf("%q hook claude start", self))
-	AddHook(m, "SessionEnd", fmt.Sprintf("%q hook claude stop", self))
-	AddHook(m, "Stop", fmt.Sprintf("%q hook claude stop", self))
-	InstallStatusLine(m, fmt.Sprintf("%q statusline", self))
-	return SaveClaudeSettings(m)
-}
-
 func HookUninstall() (int, error) {
 	m := LoadClaudeSettings()
 	hooks, _ := m["hooks"].(map[string]any)
@@ -299,21 +265,6 @@ func isLocalGatewayURL(u string) bool {
 	return false
 }
 
-func HookInstalled() bool {
-	m := LoadClaudeSettings()
-	hooks, _ := m["hooks"].(map[string]any)
-	if hooks == nil {
-		return false
-	}
-	start, _ := hooks["SessionStart"].([]any)
-	for _, e := range start {
-		if HookEntryIsOurs(e) {
-			return true
-		}
-	}
-	return false
-}
-
 // InstallStatusLine writes Claude Code / AGY statusLine command.
 // Overwrites our prior install and caveman-only badges (am statusline
 // re-embeds the caveman badge). Leaves other custom statuslines alone.
@@ -352,24 +303,6 @@ func statusLineCommandIsCaveman(cmd string) bool {
 	return strings.Contains(low, "caveman-statusline")
 }
 
-// InstalledEvents returns the hook events we currently own an entry in,
-// e.g. ["SessionStart", "SessionEnd", "Stop"].
-func InstalledEvents() []string {
-	m := LoadClaudeSettings()
-	hooks, _ := m["hooks"].(map[string]any)
-	var events []string
-	for event, v := range hooks {
-		list, _ := v.([]any)
-		for _, e := range list {
-			if HookEntryIsOurs(e) {
-				events = append(events, event)
-				break
-			}
-		}
-	}
-	return events
-}
-
 // claudeSettingsEnvKeys are the vars we own inside settings["env"] — never
 // touch anything else a user put there themselves.
 var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"}
@@ -383,7 +316,9 @@ var claudeSettingsEnvKeys = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN
 // from that point on will, without the user needing to `eval` anything.
 //
 // proxyUp true  -> set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN to proxyBase
-//                  and default ANTHROPIC_MODEL to the current Sonnet (claude-sonnet-5-5).
+//
+//	and default ANTHROPIC_MODEL to the current Sonnet (claude-sonnet-5-5).
+//
 // proxyUp false -> remove keys so a new session falls through to the
 // real Anthropic API on whatever ANTHROPIC_API_KEY / subscription login it
 // already has.
@@ -516,32 +451,6 @@ func ClientSettingsPointToProxy() bool {
 	}
 	return false
 }
-
-func resolveAMExecutable() string {
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, ".local", "bin", "amux"),
-		filepath.Join(home, ".local", "bin", "am"),
-		"/usr/local/bin/amux",
-		"/usr/local/bin/am",
-	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			return c
-		}
-	}
-	if p, err := exec.LookPath("amux"); err == nil {
-		return p
-	}
-	if p, err := exec.LookPath("am"); err == nil {
-		return p
-	}
-	if exe, err := os.Executable(); err == nil {
-		return exe
-	}
-	return ""
-}
-
 
 // ShellRC returns the user's shell rc file for zsh/bash, or "" if the shell
 // isn't one we know how to wire automatically.
@@ -1016,4 +925,3 @@ func UninstallAllHooks() error {
 	_, _ = CursorHookUninstall()
 	return nil
 }
-

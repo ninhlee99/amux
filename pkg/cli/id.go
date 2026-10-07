@@ -645,4 +645,3 @@ func cmdIDOn(args []string) {
 	proxy.Sync()
 	fmt.Printf("✓ %s is back in rotation.\n", label)
 }
-
