@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -107,6 +108,65 @@ func poolSendStreaming(w http.ResponseWriter, r *http.Request, pool *router.Acco
 			return nil, r.Context().Err()
 		}
 	}
+}
+
+// sseStartGrace is how long a streaming request may wait for routing before
+// poolSendStreamingLazy opens the client stream.
+var sseStartGrace = 5 * time.Second
+
+// poolSendStreamingLazy routes req like poolSendStreaming but leaves the
+// response uncommitted until routing outlasts sseStartGrace: open() is
+// called then (and before every keepalive), so a fast failure can still be
+// answered with an HTTP error status the client retries.
+func poolSendStreamingLazy(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRequest, open, keepalive func()) (<-chan types.StreamChunk, error) {
+	type result struct {
+		stream <-chan types.StreamChunk
+		err    error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		stream, err := poolSend(r, pool, req)
+		resultCh <- result{stream: stream, err: err}
+	}()
+
+	grace := time.NewTimer(sseStartGrace)
+	defer grace.Stop()
+	ticker := time.NewTicker(streamKeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case res := <-resultCh:
+			return res.stream, res.err
+		case <-grace.C:
+			open()
+		case <-ticker.C:
+			open()
+			keepalive()
+		case <-r.Context().Done():
+			res := <-resultCh
+			drainStream(res.stream)
+			if res.err != nil {
+				return nil, res.err
+			}
+			return nil, r.Context().Err()
+		}
+	}
+}
+
+// gatewayFailureStatus maps a routing failure to the HTTP status the client
+// sees. An unreachable upstream (network down, Cloudflare challenge) or its
+// cooldown is 503 with Retry-After matching the router's back-off, which
+// Claude Code and the SDKs retry, so the session recovers by itself once
+// the network is back.
+func gatewayFailureStatus(err error) (status, retryAfterSec int) {
+	msg := err.Error()
+	if strings.Contains(msg, "Cloudflare challenge") {
+		return http.StatusServiceUnavailable, 30
+	}
+	if errors.Is(err, types.ErrUpstreamUnreachable) || strings.Contains(msg, "network unreachable") {
+		return http.StatusServiceUnavailable, 10
+	}
+	return http.StatusBadGateway, 0
 }
 
 // btwDrainer is a pluggable func so tests and the real proxy can provide

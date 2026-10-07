@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -422,5 +423,50 @@ func TestAccountPoolRouter_DegradedAccountTriedLast(t *testing.T) {
 		if text != "solid" {
 			t.Fatalf("turn %d served by %q, want the healthy account", turn, text)
 		}
+	}
+}
+
+// With the network down the only web account must not be locked out for
+// minutes: a short cooldown whose message says why, and no quarantine.
+// A Cloudflare challenge backs off a little longer than a dead network.
+func TestAccountPoolRouter_NetworkUnreachableShortCooldown(t *testing.T) {
+	cases := []struct {
+		name, reason string
+		err          error
+		max          time.Duration
+	}{
+		{"dead network", "network unreachable, retry in",
+			fmt.Errorf("web-net: dial tcp: no such host: %w", types.ErrUpstreamUnreachable), 10 * time.Second},
+		{"cloudflare", "Cloudflare challenge, retry in",
+			fmt.Errorf("web-net: sentinel: HTTP 403 Cloudflare challenge: %w", types.ErrUpstreamUnreachable), 30 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			guard.ResetAll()
+			t.Cleanup(guard.ResetAll)
+			a := &mockAdapter{id: "web-net", priority: 1, err: c.err}
+			r := router.NewAccountPoolRouter([]types.ProviderAdapter{a})
+			req := &types.ChatRequest{Messages: []types.ChatMessage{{Role: "user", Content: "ping"}}}
+
+			if _, err := r.Send(context.Background(), req); err == nil {
+				t.Fatal("expected failure")
+			}
+			_, err := r.Send(context.Background(), req)
+			if err == nil || !strings.Contains(err.Error(), c.reason) {
+				t.Fatalf("cooldown message should say %q: %v", c.reason, err)
+			}
+			if q, _, reason := guard.IsQuarantined(a.id); q {
+				t.Fatalf("network failure quarantined the account: %s", reason)
+			}
+			for _, s := range r.Status() {
+				if s["id"] == a.id {
+					raw, _ := s["cooldown_until"].(string)
+					until, perr := time.Parse(time.RFC3339, raw)
+					if perr != nil || time.Until(until) > c.max+time.Second {
+						t.Fatalf("cooldown missing or longer than %v: %q", c.max, raw)
+					}
+				}
+			}
+		})
 	}
 }

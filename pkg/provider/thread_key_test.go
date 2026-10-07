@@ -64,3 +64,20 @@ func TestProjectConversationManager_SessionThreadsPersistAndResetByProject(t *te
 		}
 	}
 }
+
+// Claude Code also sends system turns mid-conversation (<total_tokens>,
+// environment notes) that change every turn; only the leading system prompt
+// identifies the thread, or every turn opened a new ChatGPT conversation.
+func TestThreadKey_IgnoresMidConversationSystemTurns(t *testing.T) {
+	first := threadReq("s1", "You are Claude Code.")
+	first.Messages = append(first.Messages, types.ChatMessage{Role: "system", Content: "<total_tokens>900 tokens left</total_tokens>"})
+	next := threadReq("s1", "You are Claude Code.")
+	next.Messages = append(next.Messages,
+		types.ChatMessage{Role: "assistant", Content: "ok"},
+		types.ChatMessage{Role: "system", Content: "<total_tokens>800 tokens left</total_tokens>"},
+		types.ChatMessage{Role: "user", Content: "go on"},
+	)
+	if a, b := ThreadKey(first), ThreadKey(next); a != b {
+		t.Fatalf("per-turn system notes split the thread: %q vs %q", a, b)
+	}
+}

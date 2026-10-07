@@ -20,6 +20,12 @@ var (
 	// request as unauthenticated/forbidden (bad API key, expired session
 	// token, or an anti-bot challenge the adapter didn't try to solve).
 	ErrAuthentication = errors.New("authentication failed")
+	// ErrUpstreamUnreachable is returned when the provider could not be
+	// reached: the network is down (dial/DNS/reset/timeout) or a Cloudflare
+	// challenge page answered instead of the API, which happens right after
+	// the network drops or the public IP changes. It says nothing about the
+	// account, so the router backs off briefly and never quarantines on it.
+	ErrUpstreamUnreachable = errors.New("upstream unreachable (network down or blocked by Cloudflare)")
 )
 
 // RateLimitError wraps ErrRateLimitReached with an optional Retry-After hint

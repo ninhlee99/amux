@@ -71,6 +71,14 @@ const (
 	rateLimitCooldown   = 2 * time.Minute
 	minAdaptiveCooldown = 5 * time.Second
 	maxAdaptiveCooldown = 30 * time.Minute
+	// networkCooldown is the brief back-off after an unreachable upstream
+	// (no network, Cloudflare challenge): long enough not to hammer a
+	// challenge page, short enough to serve again soon after the network
+	// returns.
+	networkCooldown = 10 * time.Second
+	// cloudflareCooldown backs off longer from a Cloudflare challenge page:
+	// it persists for a while and hammering it can extend the block.
+	cloudflareCooldown = 30 * time.Second
 )
 
 // AccountPoolRouter dispatches a ChatRequest to the highest-priority
@@ -95,6 +103,7 @@ type AccountPoolRouter struct {
 	lastUsed         string
 	mu               sync.RWMutex
 	cooldownMap      map[string]time.Time
+	cooldownReason   map[string]string
 	tierIndices      map[types.AccountType]int
 	autoRotateFilter func(id string) bool
 	subPoolFilter    func(id string) bool
@@ -111,10 +120,11 @@ func NewAccountPoolRouter(adapters []types.ProviderAdapter) *AccountPoolRouter {
 		dir[a.ID()] = a
 	}
 	return &AccountPoolRouter{
-		adapters:    sorted,
-		directory:   dir,
-		cooldownMap: make(map[string]time.Time),
-		tierIndices: make(map[types.AccountType]int),
+		adapters:       sorted,
+		directory:      dir,
+		cooldownMap:    make(map[string]time.Time),
+		cooldownReason: make(map[string]string),
+		tierIndices:    make(map[types.AccountType]int),
 	}
 }
 
@@ -575,7 +585,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 			}
 			if r.cooling(a.ID()) {
 				skippedPreferred = true
-				errs = append(errs, fmt.Errorf("%s: cooling down", a.ID()))
+				errs = append(errs, fmt.Errorf("%s: %s", a.ID(), r.coolingStatus(a.ID())))
 				break
 			}
 			isWeb := AdapterAccountType(a) == types.AccountTypeWeb
@@ -598,7 +608,10 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 			if sessionKey != "" {
 				guard.GlobalAffinity().Unpin(sessionKey)
 			}
-			if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
+			if errors.Is(err, types.ErrUpstreamUnreachable) {
+				d, reason := unreachableCooldown(err)
+				r.setCooldownFor(a.ID(), d, reason)
+			} else if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
 				r.setCooldown(a.ID())
 				skippedPreferred = true
 				term.LogFailover("preferred %s rate-limited — failing over", a.ID())
@@ -704,7 +717,10 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 			}
 			failedInReq[a.ID()] = true
 			guard.RecordError(a.ID(), err)
-			if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
+			if errors.Is(err, types.ErrUpstreamUnreachable) {
+				d, reason := unreachableCooldown(err)
+				r.setCooldownFor(a.ID(), d, reason)
+			} else if errors.Is(err, types.ErrRateLimitReached) || isRateLimitError(err) {
 				// Use upstream Retry-After hint when available (RateLimitError carries it).
 				r.setCooldownAdaptive(a.ID(), types.ExtractRetryAfter(err))
 			}
@@ -724,7 +740,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 				continue
 			}
 			if r.cooling(a.ID()) {
-				coolingOrQuarantined = append(coolingOrQuarantined, a.ID()+" (cooling down)")
+				coolingOrQuarantined = append(coolingOrQuarantined, a.ID()+" ("+r.coolingStatus(a.ID())+")")
 				continue
 			}
 			if !r.canAutoRotate(a) && AdapterAccountType(a) == types.AccountTypeSubscription {
@@ -797,9 +813,40 @@ func (r *AccountPoolRouter) setCooldownAdaptive(id string, retryAfter time.Durat
 }
 
 func (r *AccountPoolRouter) setCooldownDuration(id string, d time.Duration) {
+	r.setCooldownFor(id, d, "rate limited")
+}
+
+// unreachableCooldown picks the back-off and reason for an unreachable
+// upstream: longer for a Cloudflare challenge than for a dead network.
+func unreachableCooldown(err error) (time.Duration, string) {
+	if strings.Contains(err.Error(), "Cloudflare challenge") {
+		return cloudflareCooldown, "Cloudflare challenge"
+	}
+	return networkCooldown, "network unreachable"
+}
+
+// setCooldownFor cools id down for d, remembering why for error messages.
+func (r *AccountPoolRouter) setCooldownFor(id string, d time.Duration, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cooldownMap[id] = time.Now().Add(d)
+	r.cooldownReason[id] = reason
+}
+
+// coolingStatus says why id is cooling down and for how long, e.g.
+// "cooling down (network unreachable, retry in 8s)".
+func (r *AccountPoolRouter) coolingStatus(id string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	until, ok := r.cooldownMap[id]
+	if !ok || !time.Now().Before(until) {
+		return "cooling down"
+	}
+	reason := r.cooldownReason[id]
+	if reason == "" {
+		reason = "rate limited"
+	}
+	return fmt.Sprintf("cooling down (%s, retry in %s)", reason, time.Until(until).Round(time.Second))
 }
 
 // markUsed records lastUsed; when promote is true also updates preferred

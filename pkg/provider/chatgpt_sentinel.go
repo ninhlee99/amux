@@ -69,12 +69,12 @@ func fetchChatGPTSentinel(ctx context.Context, client *http.Client, accessToken,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapNetworkError(err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sentinel status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return nil, upstreamHTTPError("sentinel", resp, raw)
 	}
 
 	var out struct {

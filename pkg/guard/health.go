@@ -47,6 +47,7 @@ const (
 	classRateLimit
 	classAuth
 	classServer
+	classNetwork
 )
 
 var (
@@ -54,6 +55,24 @@ var (
 	reHTTP401 = regexp.MustCompile(`(?i)\b401\b`)
 	reHTTP403 = regexp.MustCompile(`(?i)\b403\b`)
 )
+
+// networkErrorMarkers mean the machine has no route to the provider (or a
+// Cloudflare challenge answered), as seen in adapter errors that are not
+// typed ErrUpstreamUnreachable. Timeouts stay server errors: a slow
+// provider should still drop in the ranking.
+var networkErrorMarkers = []string{
+	"cloudflare", "challenge-platform", "cf_chl", "turnstile",
+	"no such host", "network is unreachable", "no route to host",
+}
+
+func isNetworkErrorText(low string) bool {
+	for _, m := range networkErrorMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
+}
 
 func classifyError(err error) errorClass {
 	if err == nil {
@@ -78,9 +97,11 @@ func classifyError(err error) errorClass {
 		strings.Contains(errStr, "not supported when using codex") {
 		return classIgnore
 	}
-	if strings.Contains(errStr, "cloudflare") || strings.Contains(errStr, "challenge-platform") ||
-		strings.Contains(errStr, "cf_chl") || strings.Contains(errStr, "turnstile") {
-		return classRateLimit
+	// No network or a Cloudflare challenge (IP just changed) says nothing
+	// about the account: checked before 401/403 so a challenge page is never
+	// read as revoked credentials.
+	if errors.Is(err, types.ErrUpstreamUnreachable) || isNetworkErrorText(errStr) {
+		return classNetwork
 	}
 	if reHTTP429.MatchString(errStr) || strings.Contains(errStr, "rate limit") {
 		return classRateLimit
@@ -226,6 +247,18 @@ func (h *HealthTracker) RecordAuthError(id string, reason string) {
 	}
 }
 
+// RecordNetworkError notes an unreachable upstream (no network, Cloudflare
+// challenge). The account did nothing wrong: its score, auth streak and
+// quarantine are left alone so it serves again as soon as the network does.
+func (h *HealthTracker) RecordNetworkError(id string, msg string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	e := h.getOrCreateLocked(id)
+	e.lastError = time.Now()
+	e.lastErrorMessage = "network: " + msg
+}
+
 // RecordServerError registers 5xx or connection drops.
 func (h *HealthTracker) RecordServerError(id string, code int, msg string) {
 	h.mu.Lock()
@@ -251,15 +284,9 @@ func (h *HealthTracker) RecordError(id string, err error) {
 	case classIgnore:
 		return
 	case classRateLimit:
-		retryAfter := time.Duration(0)
-		if err != nil {
-			low := strings.ToLower(err.Error())
-			if strings.Contains(low, "cloudflare") || strings.Contains(low, "turnstile") ||
-				strings.Contains(low, "challenge-platform") || strings.Contains(low, "cf_chl") {
-				retryAfter = 5 * time.Minute
-			}
-		}
-		h.RecordRateLimit(id, retryAfter)
+		h.RecordRateLimit(id, 0)
+	case classNetwork:
+		h.RecordNetworkError(id, err.Error())
 	case classAuth:
 		h.RecordAuthError(id, err.Error())
 	default:

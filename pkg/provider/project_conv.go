@@ -97,11 +97,15 @@ func ThreadKey(req *types.ChatRequest) string {
 	h := sha256.New()
 	h.Write([]byte(strings.TrimSpace(req.SessionID)))
 	h.Write([]byte{0})
+	// Only the leading system turns are the session's system prompt; Claude
+	// Code also sends per-turn system notes (<total_tokens>, environment)
+	// mid-conversation, which must not split the thread.
 	for _, m := range req.Messages {
-		if strings.EqualFold(m.Role, "system") {
-			h.Write([]byte(stripBillingHeader(m.Content)))
-			h.Write([]byte{0})
+		if !strings.EqualFold(m.Role, "system") {
+			break
 		}
+		h.Write([]byte(stripBillingHeader(m.Content)))
+		h.Write([]byte{0})
 	}
 	return project + threadSep + hex.EncodeToString(h.Sum(nil))[:16]
 }

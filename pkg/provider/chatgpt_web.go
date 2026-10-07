@@ -237,7 +237,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	deviceID := newUUIDv4()
 	sentinel, err := fetchChatGPTSentinel(ctx, a.client(), a.SessionToken, accountID, deviceID)
 	if err != nil {
-		return nil, fmt.Errorf("%s: sentinel: %w", a.AdapterID, err)
+		return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 	}
 
 	project := ThreadKey(req)
@@ -314,7 +314,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 
 		resp, err := a.client().Do(httpReq)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
+			return nil, fmt.Errorf("%s: %w", a.AdapterID, wrapNetworkError(err))
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized {
@@ -340,8 +340,11 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
+			if isCloudflareChallenge(resp, body) {
+				return nil, fmt.Errorf("%s: %w", a.AdapterID, upstreamHTTPError("conversation", resp, body))
+			}
 			msg := string(bytes.TrimSpace(body))
 			if isChatGPTRateLimit(resp.StatusCode, msg) {
 				if !rotatedConv {
@@ -368,7 +371,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 					continue
 				}
 			}
-			return nil, fmt.Errorf("%s: upstream status %d: %s", a.AdapterID, resp.StatusCode, msg)
+			return nil, fmt.Errorf("%s: %w", a.AdapterID, upstreamHTTPError("upstream", resp, body))
 		}
 
 		out := make(chan types.StreamChunk)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -399,34 +400,52 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	rec := ctxshrink.NewRecordingWriter(w)
 	w = rec
 
-	// Stream: flush message_start before the upstream call so Claude Code
-	// does not sit on "Waiting for API response / check your network" during
-	// ChatGPT sentinel + PoW + TTFB (often 30–90s).
+	// Stream: open the SSE stream (message_start) once routing has taken
+	// longer than sseStartGrace, so Claude Code does not sit on "Waiting for
+	// API response / check your network" during ChatGPT sentinel + PoW + TTFB
+	// (often 30–90s). A failure inside the grace period (cooldown, network
+	// down, Cloudflare challenge) still gets a real HTTP status, which Claude
+	// Code retries with backoff instead of "Part of the response never
+	// arrived".
 	var flusher http.Flusher
-	if req.Stream {
-		var ferr error
-		flusher, ferr = beginAnthropicSSE(w, req, msgID)
-		if ferr != nil {
-			return ferr
+	var sseErr error
+	sseOpen := false
+	openSSE := func() {
+		if !sseOpen {
+			sseOpen = true
+			flusher, sseErr = beginAnthropicSSE(w, req, msgID)
 		}
 	}
 
 	var stream <-chan types.StreamChunk
 	if req.Stream {
-		stream, err = poolSendStreaming(w, r, pool, req, flusher, func() {
-			writeAnthropicSSEPing(w, flusher)
+		stream, err = poolSendStreamingLazy(r, pool, req, openSSE, func() {
+			if flusher != nil {
+				writeAnthropicSSEPing(w, flusher)
+			}
 		})
 	} else {
 		stream, err = poolSend(r, pool, req)
 	}
 	if err != nil {
 		logChatRequest(r, pool, req, "", "", err.Error(), 0, 0, started, nil)
-		if req.Stream && flusher != nil {
+		if sseOpen && flusher != nil {
 			writeAnthropicSSEError(w, flusher, err)
 			return err
 		}
-		writeAnthropicJSONError(w, http.StatusBadGateway, "api_error", fmt.Sprintf("amux gateway: all providers failed: %v", err))
+		status, retryAfter := gatewayFailureStatus(err)
+		if retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		}
+		writeAnthropicJSONError(w, status, "api_error", fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return err
+	}
+	if req.Stream {
+		openSSE()
+		if sseErr != nil {
+			drainStream(stream)
+			return sseErr
+		}
 	}
 
 	if req.Stream {
