@@ -69,6 +69,8 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		if historyHasToolTurns(msgs) {
 			closer = midTaskCue(msgs) + closer
 		}
+	} else if historyHasToolTurns(msgs) && endsWithUserRequest(msgs) {
+		closer = newRequestCue + closer
 	}
 	var preamble string
 	if continuingThread {
@@ -104,7 +106,7 @@ func enforceWebPromptLimit(s string, maxRunes int) string {
 // asking for the next turn keeps it working.
 func midTaskCue(msgs []types.ChatMessage) string {
 	cue := "\n[next] You are the Assistant above, mid-task."
-	if task := firstUserTask(msgs); task != "" {
+	if task := currentUserTask(msgs); task != "" {
 		cue += " Task: " + truncateRunes(task, 500)
 	}
 	return cue + "\nWrite your next turn now: the next <tool_call>, or the final answer if the [Tool result]s suffice. Do not wait for a new task.\n"
@@ -118,19 +120,6 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// firstUserTask is the first non-empty user turn: the task the client started.
-func firstUserTask(messages []types.ChatMessage) string {
-	for _, m := range messages {
-		if strings.EqualFold(m.Role, "user") {
-			c := strings.TrimSpace(m.Content)
-			if c != "" && !strings.EqualFold(c, "(no content)") {
-				return c
-			}
-		}
-	}
-	return ""
-}
-
 // historyHasToolTurns is true when the client already ran tools this session.
 func historyHasToolTurns(msgs []types.ChatMessage) bool {
 	for _, m := range msgs {
@@ -141,18 +130,18 @@ func historyHasToolTurns(msgs []types.ChatMessage) bool {
 	return false
 }
 
-// BuildDeltaWebPrompt sends only the latest user turn plus recent tool
-// results/assistant tool calls — for live web threads that already hold prior context.
+// BuildDeltaWebPrompt sends only what the live web thread has not seen: the
+// turns after the last assistant reply. A text-only assistant reply is
+// already in the thread, so it is not replayed when a new user request
+// follows it — replaying it reads to ChatGPT like a pasted transcript, and it
+// answers "I have no access to the repo" instead of acting.
 func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	// Extract the original user task so multi-turn tool continuing threads never lose context
-	firstUser := firstUserTask(messages)
 
-	// In a multi-turn tool conversation, locate the last assistant turn.
-	// The delta turns since the last assistant response are all subsequent tool
-	// results and/or new user messages.
+	// The delta turns since the last assistant response are all subsequent
+	// tool results and/or new user messages.
 	lastAssistant := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if strings.EqualFold(messages[i].Role, "assistant") {
@@ -162,27 +151,69 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 	}
 
 	var slice []types.ChatMessage
-	if lastAssistant >= 0 {
-		slice = messages[lastAssistant:]
-	} else {
+	switch {
+	case lastAssistant < 0:
 		slice = messages
+	case len(messages[lastAssistant].ToolCalls) == 0 && hasUserTurn(messages[lastAssistant+1:]):
+		slice = messages[lastAssistant+1:]
+	default:
+		slice = messages[lastAssistant:]
 	}
 
-	// Guarantee original task is preserved in continuing prompt so model never drifts
-	if firstUser != "" {
-		hasOriginalUser := false
-		for _, m := range slice {
-			if strings.EqualFold(m.Role, "user") && strings.Contains(m.Content, firstUser) {
-				hasOriginalUser = true
-				break
-			}
-		}
-		if !hasOriginalUser {
-			slice = append([]types.ChatMessage{{Role: "user", Content: "[Task Goal]: " + firstUser}}, slice...)
+	// Mid tool loop the delta holds only tool results: restate the request
+	// that started this loop (not the session's first one) so the model
+	// keeps working on the current task.
+	if !hasUserTurn(slice) {
+		if task := currentUserTask(messages); task != "" {
+			slice = append([]types.ChatMessage{{Role: "user", Content: "[Task Goal]: " + task}}, slice...)
 		}
 	}
 
 	return BuildConcatenatedPrompt(slice)
+}
+
+// hasUserTurn reports whether msgs holds a non-empty user turn.
+func hasUserTurn(msgs []types.ChatMessage) bool {
+	for _, m := range msgs {
+		if strings.EqualFold(m.Role, "user") {
+			c := strings.TrimSpace(m.Content)
+			if c != "" && !strings.EqualFold(c, "(no content)") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// currentUserTask is the latest non-empty user turn: the request the client
+// is working on now. Later requests in a session supersede the first one.
+func currentUserTask(messages []types.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if strings.EqualFold(m.Role, "user") {
+			c := strings.TrimSpace(m.Content)
+			if c != "" && !strings.EqualFold(c, "(no content)") {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
+// newRequestCue follows a new user request on a live thread whose session
+// already ran tools. After a long text answer ChatGPT tends to treat a
+// follow-up like "now implement it" as chat and claims it cannot reach the
+// repo; this points it back at <tool_call>.
+const newRequestCue = "\n[next] New request from the user above. If it needs the repo (read, edit, run, implement), start with <tool_call> now — do not just describe a plan or say you lack access.\n"
+
+// endsWithUserRequest is true when the last turn is a user message, not a tool result.
+func endsWithUserRequest(msgs []types.ChatMessage) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	last := msgs[len(msgs)-1]
+	c := strings.TrimSpace(last.Content)
+	return strings.EqualFold(last.Role, "user") && c != "" && !strings.EqualFold(c, "(no content)")
 }
 
 // slimWebMessages drops client harness system turns. User/tool/assistant stay.

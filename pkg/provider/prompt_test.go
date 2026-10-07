@@ -225,3 +225,56 @@ func TestWebBackendPrompt_FreshThreadWithToolHistoryAsksForNextTurn(t *testing.T
 		t.Fatalf("cue only belongs after tool turns: %q", noTools)
 	}
 }
+
+// After a finished tool session, a follow-up request on the live thread must
+// not replay the assistant's own answer or restate the session's first task:
+// ChatGPT then read the prompt as a pasted transcript and replied that it had
+// no access to the repo instead of acting on "now implement it".
+func TestWebBackendPrompt_ContinuingFollowUpRequestAfterToolSession(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "review amux"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Bash", Arguments: `{"command":"amux status"}`}}},
+			{Role: "tool", ToolCallID: "t1", Content: "Gateway running"},
+			{Role: "assistant", Content: "REVIEW ANSWER"},
+			{Role: "user", Content: "improve what you found"},
+			{Role: "assistant", Content: "PLAN TEXT"},
+			{Role: "user", Content: "ok, implement the plan"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	for _, stale := range []string{"PLAN TEXT", "REVIEW ANSWER", "[Task Goal]", "review amux"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("follow-up prompt replays %q:\n%s", stale, got)
+		}
+	}
+	if !strings.Contains(got, "ok, implement the plan") {
+		t.Fatalf("missing new request:\n%s", got)
+	}
+	if !strings.Contains(got, "New request from the user above") {
+		t.Fatalf("missing new-request cue:\n%s", got)
+	}
+}
+
+// Mid tool loop the delta holds only tool results; the restated goal is the
+// request that started this loop, not the first request of the session.
+func TestWebBackendPrompt_ContinuingTaskGoalIsCurrentRequest(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "review amux"},
+			{Role: "assistant", Content: "REVIEW ANSWER"},
+			{Role: "user", Content: "add gateway auth"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Bash", Arguments: `{"command":"ls pkg"}`}}},
+			{Role: "tool", ToolCallID: "t1", Content: "proxy"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	if !strings.Contains(got, "[Task Goal]: add gateway auth") {
+		t.Fatalf("task goal should be the current request:\n%s", got)
+	}
+	if strings.Contains(got, "review amux") || strings.Contains(got, "New request from the user above") {
+		t.Fatalf("stale task or new-request cue on a tool-result turn:\n%s", got)
+	}
+}
