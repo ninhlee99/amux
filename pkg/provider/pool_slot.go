@@ -169,44 +169,6 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 		}
 	}
 
-	// Cross-type matching for same canonical provider + same email:
-	// Rule: 1 account per email per provider.
-	// If existing account is web and incoming is subscription -> upgrade (RenameFrom existing web ID).
-	// If existing account is subscription and incoming is web -> reuse subscription slot (block web duplicate).
-	if email != "" && f != nil {
-		incomingCanon := CanonicalProvider(providerType)
-		incomingSub := IsSubscriptionType(providerType)
-
-		for _, p := range f.Providers {
-			if strings.EqualFold(p.Account, email) && CanonicalProvider(p.Type) == incomingCanon {
-				existingSub := IsSubscriptionType(p.Type) || types.IsSubscriptionTier(p.Plan)
-				if !existingSub && incomingSub {
-					// Upgrade existing web entry to subscription entry
-					targetID := wanted
-					if targetID == "" {
-						targetID = p.ID
-					}
-					return PoolSlot{
-						ID:         targetID,
-						Priority:   p.Priority,
-						Relogin:    true,
-						RenameFrom: p.ID,
-						Enabled:    p.Enabled,
-					}
-				}
-				if existingSub && !incomingSub {
-					// Existing is already subscription — keep subscription, do not create web duplicate
-					return PoolSlot{
-						ID:       p.ID,
-						Priority: p.Priority,
-						Relogin:  true,
-						Enabled:  p.Enabled,
-					}
-				}
-			}
-		}
-	}
-
 	// ID match only when the row has no account yet (legacy/anonymous).
 	for _, p := range sameType {
 		if wanted == "" || p.ID != wanted {
@@ -262,6 +224,22 @@ func ResolvePoolSlot(path, providerType, email string) PoolSlot {
 		prio = maxPriority + 1
 	}
 	return PoolSlot{ID: id, Priority: prio, Relogin: false}
+}
+
+// SetProviderAccount records the account email of an existing row (used to
+// backfill rows saved before their identity was known).
+func SetProviderAccount(path, id, email string) error {
+	f, err := LoadConfigFile(path)
+	if err != nil || f == nil {
+		return err
+	}
+	for i := range f.Providers {
+		if f.Providers[i].ID == id {
+			f.Providers[i].Account = email
+			return SaveConfigFile(path, f)
+		}
+	}
+	return nil
 }
 
 // chooseNamedPoolID picks short local-part ID, or local-domain when another

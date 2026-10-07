@@ -126,10 +126,10 @@ func InteractiveOAuthWithOptions(target string, opts OAuthOptions) error {
 	switch target {
 	case "claude", "codex", "antigravity":
 		fmt.Println("It is now the active login of", target+"; the previous login was saved.")
-		fmt.Println("Switch between saved logins: amux switch <id>   (ids: amux account list)")
-		fmt.Println("Subscriptions are not added to the rotation pool; to allow automatic switching: amux pool add <id>")
+		fmt.Println("Switch between saved logins (no re-login): amux switch <email|#>   (list: amux accounts)")
+		fmt.Println("Subscriptions are not added to the rotation pool; to allow automatic switching: amux pool add <email|#>")
 	default:
-		fmt.Println("Saved. See it with: amux account list")
+		fmt.Println("Saved. See it with: amux accounts")
 	}
 	return nil
 }

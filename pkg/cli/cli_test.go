@@ -203,6 +203,7 @@ func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
 				ID:           "claude-1",
 				Provider:     "anthropic",
 				Tier:         identity.TierSubscription,
+				Credentials:  map[string]string{"account": "one@x.com"},
 				UsagePercent: 30.0,
 				Active:       true,
 			},
@@ -210,6 +211,7 @@ func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
 				ID:           "claude-vip",
 				Provider:     "anthropic",
 				Tier:         identity.TierSubscription,
+				Credentials:  map[string]string{"account": "vip@x.com"},
 				UsagePercent: 10.0,
 				Active:       false,
 				AutoRotate:   &fFalse,
@@ -227,22 +229,32 @@ func TestCmdIDList_ActiveAndAutoSwitchFormatting(t *testing.T) {
 	if !strings.Contains(out, "ACTIVE") || !strings.Contains(out, "POOL") {
 		t.Errorf("expected header with ACTIVE and POOL, got:\n%s", out)
 	}
-	rowOf := func(id string) []string {
+	// columns: # PROVIDER ACCOUNT TYPE ACTIVE POOL ... — rows keyed by email,
+	// internal IDs are not shown.
+	if strings.Contains(out, "claude-1") || strings.Contains(out, "claude-vip") {
+		t.Errorf("internal IDs should not be shown:\n%s", out)
+	}
+	rowOf := func(email string) []string {
 		for _, l := range strings.Split(out, "\n") {
-			if f := strings.Fields(l); len(f) > 0 && f[0] == id {
-				return f
+			f := strings.Fields(l)
+			for i := range f {
+				if f[i] == email && i+3 < len(f) {
+					return f[i+1:]
+				}
 			}
 		}
-		t.Fatalf("no row for %s in:\n%s", id, out)
+		t.Fatalf("no row for %s in:\n%s", email, out)
 		return nil
 	}
-	// columns: ID EMAIL TYPE ACTIVE POOL ...
-	// claude-1: active, and — being a subscription — not in the pool by default.
-	if r := rowOf("claude-1"); r[2] != "sub" || r[3] != "yes" || r[4] != "no" {
-		t.Errorf("claude-1 row = %v, want sub/yes/no", r)
+	if !strings.Contains(out, "Claude Code") {
+		t.Errorf("expected provider name Claude Code, got:\n%s", out)
 	}
-	if r := rowOf("claude-vip"); r[3] != "-" || r[4] != "no" {
-		t.Errorf("claude-vip row = %v, want -/no", r)
+	// one@x.com: active, and — being a subscription — not in the pool by default.
+	if r := rowOf("one@x.com"); r[0] != "sub" || r[1] != "yes" || r[2] != "no" {
+		t.Errorf("one@x.com row = %v, want sub/yes/no", r)
+	}
+	if r := rowOf("vip@x.com"); r[1] != "-" || r[2] != "no" {
+		t.Errorf("vip@x.com row = %v, want -/no", r)
 	}
 	if !strings.Contains(out, "THRESHOLD") {
 		t.Errorf("expected THRESHOLD in header, got:\n%s", out)

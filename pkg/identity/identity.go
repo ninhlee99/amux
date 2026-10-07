@@ -180,3 +180,71 @@ func Pooled() *bool {
 	v := true
 	return &v
 }
+
+// DisplayProvider is the product name shown to users ("Codex", "ChatGPT Web",
+// "Claude Code", …) instead of the internal ID.
+func (id Identity) DisplayProvider() string {
+	low := strings.ToLower(id.ID)
+	switch {
+	case strings.HasPrefix(low, "claude:web"), strings.HasPrefix(low, "claudeweb"):
+		return "Claude Web"
+	case strings.HasPrefix(low, "claude"):
+		return "Claude Code"
+	case strings.HasPrefix(low, "codex"):
+		return "Codex"
+	case strings.HasPrefix(low, "chatgpt"):
+		return "ChatGPT Web"
+	case strings.HasPrefix(low, "agy"), strings.HasPrefix(low, "antigravity"):
+		return "Antigravity"
+	case strings.HasPrefix(low, "gemini:web"), strings.HasPrefix(low, "geminiweb"):
+		return "Gemini Web"
+	case strings.HasPrefix(low, "gemini"):
+		return "Gemini API"
+	case strings.HasPrefix(low, "cursor"):
+		return "Cursor"
+	}
+	name := strings.Split(id.ID, ":")[0]
+	if name == "" {
+		name = id.Provider
+	}
+	if name != "" {
+		name = strings.ToUpper(name[:1]) + name[1:]
+	}
+	if id.Tier == TierAPIKey {
+		return name + " API"
+	}
+	return name
+}
+
+// Label names the account for messages: "Codex (me@x.com)", or just the
+// provider when the email is unknown.
+func (id Identity) Label() string {
+	if em := id.Email(); em != "" && em != "-" {
+		return id.DisplayProvider() + " (" + em + ")"
+	}
+	return id.DisplayProvider()
+}
+
+// ProductOfType maps an accounts.json provider type (or a profile tool name)
+// to the product it logs in to — the same names DisplayProvider shows. One
+// email may hold one account per product: ChatGPT Web and Codex are separate
+// products even though both are OpenAI.
+func ProductOfType(providerType string) string {
+	switch strings.ToLower(strings.TrimSpace(providerType)) {
+	case "chatgpt_web", "chatgpt":
+		return "ChatGPT Web"
+	case "codex_cli", "codex":
+		return "Codex"
+	case "claude_web":
+		return "Claude Web"
+	case "claude", "claude_code", "claude_cli", "claude_oauth":
+		return "Claude Code"
+	case "antigravity", "agy":
+		return "Antigravity"
+	case "gemini_web":
+		return "Gemini Web"
+	case "gemini":
+		return "Gemini API"
+	}
+	return strings.ToLower(strings.TrimSpace(providerType))
+}

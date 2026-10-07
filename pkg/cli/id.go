@@ -190,6 +190,9 @@ func syncAddressableAdaptersToIdentities() {
 	}
 }
 
+// Login commands in pkg/ui print this same table when they finish.
+func init() { ui.AccountsTable = cmdIDList }
+
 func cmdIDList() {
 	syncAddressableAdaptersToIdentities()
 	cfg, err := identity.LoadConfig("")
@@ -199,7 +202,7 @@ func cmdIDList() {
 	}
 
 	printIdentityTable(cfg)
-	fmt.Println("\nSwitch: amux switch <id>    Pool: amux pool add|remove <id>")
+	fmt.Println("\nSwitch: amux switch <email|#>    Pool: amux pool add|remove <email|#>")
 }
 
 func cmdIDAutoRotate(args []string) {
@@ -208,8 +211,11 @@ func cmdIDAutoRotate(args []string) {
 	}
 	targetID := args[0]
 	target, err := identity.Get("", targetID)
-	if err != nil || target == nil {
-		die("identity %q not found", targetID)
+	if err != nil {
+		die("%v", err)
+	}
+	if target == nil {
+		die("account %q not found (see: amux accounts)", targetID)
 	}
 
 	enabled := !target.CanAutoRotate() // default toggle if no argument
@@ -250,11 +256,25 @@ func cmdIDAdd(args []string) {
 	_, _ = identity.MigrateLegacyAccounts("", "")
 }
 
+// resolveAccountRef turns what the user typed (email, provider:email, row #
+// or internal ID) into the internal ID plus a label for messages. An
+// ambiguous email dies with the choices; an unknown ref is returned as-is.
+func resolveAccountRef(ref string) (id, label string) {
+	target, err := identity.Get("", ref)
+	if err != nil {
+		die("%v", err)
+	}
+	if target == nil {
+		return ref, ref
+	}
+	return target.ID, target.Label()
+}
+
 func cmdIDRemove(args []string) {
 	if len(args) == 0 {
-		die("usage: amux account remove <id>")
+		die("usage: amux account remove <email|#>")
 	}
-	id := args[0]
+	id, label := resolveAccountRef(args[0])
 	target, _ := identity.Get("", id)
 	profDeleted, _ := profile.DeleteProfileAnyTool(id)
 	if target != nil && target.Metadata != nil {
@@ -271,11 +291,11 @@ func cmdIDRemove(args []string) {
 		die("failed to remove identity %s: %v", id, err)
 	}
 	if !removed && !profDeleted && !provDeleted {
-		fmt.Printf("Account %q not found (see: amux account list).\n", id)
+		fmt.Printf("Account %q not found (see: amux accounts).\n", args[0])
 		return
 	}
 	proxy.Sync()
-	fmt.Printf("✓ %s removed (its saved login was deleted; the tool's current login is untouched).\n", id)
+	fmt.Printf("✓ %s removed (its saved login was deleted; the tool's current login is untouched).\n", label)
 }
 
 func cmdIDHealth() {
@@ -323,11 +343,7 @@ func cmdIDSelect(args []string) {
 			case item.Active:
 				activeTag = " (current active)"
 			}
-			emailTag := ""
-			if em := item.Email(); em != "-" && em != "" {
-				emailTag = fmt.Sprintf(" <%s>", em)
-			}
-			fmt.Printf("  [%d] %s%s (%s, %s)%s\n", i+1, item.ID, emailTag, item.Provider, item.Tier, activeTag)
+			fmt.Printf("  [%d] %s — %s (%s)%s\n", i+1, item.DisplayProvider(), accountName(item), tierLabel(item), activeTag)
 		}
 		fmt.Print("Enter choice: ")
 		reader := bufio.NewReader(os.Stdin)
@@ -342,12 +358,15 @@ func cmdIDSelect(args []string) {
 	}
 
 	target, err := identity.Get("", targetID)
-	if err != nil || target == nil {
+	if err != nil {
+		die("%v", err)
+	}
+	if target == nil {
 		var available []string
 		for _, id := range cfg.Identities {
-			available = append(available, id.ID)
+			available = append(available, accountRef(cfg, id))
 		}
-		die("account %q not found. Available: %s", targetID, strings.Join(available, ", "))
+		die("account %q not found. Use an email or row number from `amux accounts`: %s", targetID, strings.Join(available, ", "))
 	}
 
 	tool := ""
@@ -363,9 +382,9 @@ func cmdIDSelect(args []string) {
 	}
 
 	if !identity.IsEnabled(*target) {
-		fmt.Printf("Account %s was turned off. Re-enabling...\n", target.ID)
+		fmt.Printf("Account %s was turned off. Re-enabling...\n", target.Label())
 		if err := identity.SetEnabled("", target.ID, true); err != nil {
-			die("failed to enable %s: %v", target.ID, err)
+			die("failed to enable %s: %v", target.Label(), err)
 		}
 		if strings.HasPrefix(target.ID, "claude:code") {
 			pName := ""
@@ -400,14 +419,14 @@ func cmdIDSelect(args []string) {
 		if pName != "" {
 			if _, err := os.Stat(profile.BundlePath(tool, pName)); err == nil {
 				if err := proxy.SwitchProfile(tool, pName); err != nil {
-					die("could not switch to %s: %v\n  If its login expired, sign in once more: amux login %s", target.ID, err, loginNameForTool(tool))
+					die("could not switch to %s: %v\n  If its login expired, sign in once more: amux login %s", target.Label(), err, loginNameForTool(tool))
 				}
 				break
 			}
 		}
 		// Older identities without a saved bundle: write what we have.
 		if err := identity.SyncIdentityToNativeKeychain(target); err != nil {
-			die("no saved login for %s: %v\n  Sign in once with: amux login %s", target.ID, err, loginNameForTool(tool))
+			die("no saved login for %s: %v\n  Sign in once with: amux login %s", target.Label(), err, loginNameForTool(tool))
 		}
 		fmt.Printf("✓ Native credentials updated for %s.\n", target.Provider)
 	case proxy.ProxyUp():
@@ -420,7 +439,7 @@ func cmdIDSelect(args []string) {
 	}
 	proxy.Sync()
 
-	fmt.Printf("✓ %s is now active.\n", target.ID)
+	fmt.Printf("✓ %s is now active.\n", target.Label())
 	if tool != "" && target.IsSubscription() {
 		fmt.Println("  Running sessions keep the old account until restarted (e.g. `claude --continue`).")
 	}
@@ -476,8 +495,11 @@ func cmdIDThreshold(args []string) {
 		// Otherwise inspect identity threshold
 		targetID := args[0]
 		target, err := identity.Get("", targetID)
-		if err != nil || target == nil {
-			die("identity %q not found (or invalid threshold number 0-100)", targetID)
+		if err != nil {
+			die("%v", err)
+		}
+		if target == nil {
+			die("account %q not found (or invalid threshold number 0-100)", targetID)
 		}
 		thresh := identity.GetAccountThreshold(*target, cfg.Identities, cfg.ThresholdPct)
 		customStr := "(effective default)"
@@ -509,8 +531,11 @@ func cmdIDThreshold(args []string) {
 
 	targetID := first
 	target, err := identity.Get("", targetID)
-	if err != nil || target == nil {
-		die("identity %q not found", targetID)
+	if err != nil {
+		die("%v", err)
+	}
+	if target == nil {
+		die("account %q not found (see: amux accounts)", targetID)
 	}
 
 	if strings.EqualFold(second, "reset") || strings.EqualFold(second, "default") || strings.EqualFold(second, "clear") || second == "0" {
@@ -538,9 +563,9 @@ func cmdIDThreshold(args []string) {
 // (rotator + pool) until explicitly re-enabled with `amux on <id>`.
 func cmdIDOff(args []string) {
 	if len(args) == 0 {
-		die("usage: amux off <id>")
+		die("usage: amux off <email|#>")
 	}
-	targetID := args[0]
+	targetID, label := resolveAccountRef(args[0])
 	found := false
 
 	// 1. Check identity store
@@ -571,19 +596,19 @@ func cmdIDOff(args []string) {
 	}
 
 	if !found {
-		die("account or provider %q not found", targetID)
+		die("account %q not found (see: amux accounts)", args[0])
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ %s is off — out of rotation (amux on %s)\n", targetID, targetID)
+	fmt.Printf("✓ %s is off — out of rotation (amux on %s)\n", label, args[0])
 }
 
 // cmdIDOn re-enables a disabled identity or provider.
 func cmdIDOn(args []string) {
 	if len(args) == 0 {
-		die("usage: amux on <id>")
+		die("usage: amux on <email|#>")
 	}
-	targetID := args[0]
+	targetID, label := resolveAccountRef(args[0])
 	found := false
 
 	// 1. Check identity store
@@ -614,10 +639,10 @@ func cmdIDOn(args []string) {
 	}
 
 	if !found {
-		die("account or provider %q not found", targetID)
+		die("account %q not found (see: amux accounts)", args[0])
 	}
 
 	proxy.Sync()
-	fmt.Printf("✓ %s is back in rotation.\n", targetID)
+	fmt.Printf("✓ %s is back in rotation.\n", label)
 }
 

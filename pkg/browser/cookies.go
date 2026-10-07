@@ -81,12 +81,15 @@ func KnownBrowsers() []BrowserInfo {
 	return out
 }
 
-// ExtractCookie finds cookieName for domainFilter. Prefers Firefox
-// (no keychain). Chromium decrypt is attempted next and may fail if the
-// user hasn't granted Safe Storage keychain access.
+// ExtractCookie finds cookieName for domainFilter across every known browser
+// profile. When several profiles hold a session (e.g. two ChatGPT accounts in
+// Edge "Default" and "Profile 1"), the most recently used, unexpired one wins —
+// that is the account the user is actively on. Only the chosen Chromium
+// profile is decrypted, so at most one Safe Storage keychain read per browser.
 func ExtractCookie(domainFilter, cookieName string) (string, string, error) {
 	var lastErr error
 	keychainFree := auth.UsesFileSecretStore()
+	var cands []cookieCandidate
 	for _, b := range KnownBrowsers() {
 		if _, err := os.Stat(b.CookiePath); err != nil {
 			continue
@@ -96,19 +99,23 @@ func ExtractCookie(domainFilter, cookieName string) (string, string, error) {
 			// keychain ("<Browser> Safe Storage"); keychain-free mode skips them.
 			continue
 		}
-		var val string
-		var err error
-		if b.KeychainService == "" {
-			val, err = readFirefoxCookie(b.CookiePath, domainFilter, cookieName)
-		} else {
-			val, err = readChromiumCookie(b, domainFilter, cookieName)
+		got, err := listCookieCandidates(b, domainFilter, cookieName)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		cands = append(cands, got...)
+	}
+	sortCookieCandidates(cands)
+	keys := map[string][]byte{}
+	for _, c := range cands {
+		val, err := c.value(cookieName, keys)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		if val != "" {
-			return val, b.Name, nil
+			return val, c.browser.Name, nil
 		}
 	}
 	// amux's own login profile (opened by `amux login <web>`) is read over
@@ -163,129 +170,146 @@ func ParseCookieHeader(raw, cookieName string) string {
 	return ""
 }
 
-func readFirefoxCookie(dbPath, domainFilter, cookieName string) (string, error) {
-	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("am_ff_cookie_%d.db", time.Now().UnixNano()))
-	defer os.Remove(tmp)
-	data, err := os.ReadFile(dbPath)
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return "", err
-	}
-	query := fmt.Sprintf(
-		`SELECT name, value FROM moz_cookies WHERE host LIKE '%%%s%%' AND name LIKE '%s%%' ORDER BY lastAccessed DESC;`,
-		escapeSQLLike(domainFilter), escapeSQLLike(cookieName),
-	)
-	sqlOut, err := exec.Command("/usr/bin/sqlite3", tmp, query).Output()
-	if err != nil {
-		return "", fmt.Errorf("firefox sqlite3: %w", err)
-	}
-	var combined strings.Builder
-	for _, line := range strings.Split(strings.TrimSpace(string(sqlOut)), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) != 2 || parts[1] == "" {
-			continue
-		}
-		if parts[0] == cookieName {
-			return parts[1], nil
-		}
-		if strings.HasPrefix(parts[0], cookieName) {
-			combined.WriteString(parts[1])
-		}
-	}
-	if combined.Len() > 0 {
-		return combined.String(), nil
-	}
-	return "", fmt.Errorf("firefox: cookie %s not found", cookieName)
+// chromiumEpochOffsetMicros converts Chromium timestamps (µs since 1601) to
+// Unix µs.
+const chromiumEpochOffsetMicros = 11644473600000000
+
+// cookieCandidate is one browser profile's copy of a cookie for one host,
+// possibly split into next-auth chunks (name.0, name.1, …). Chromium values
+// stay encrypted (hex) until the candidate is chosen.
+type cookieCandidate struct {
+	browser    BrowserInfo
+	host       string
+	lastAccess int64 // Unix µs
+	rows       []cookieRow
 }
 
-func readChromiumCookie(b BrowserInfo, domainFilter, cookieName string) (string, error) {
-	cmd := exec.Command("security", "find-generic-password", "-s", b.KeychainService, "-w")
-	out, err := cmd.Output()
-	if err != nil || strings.TrimSpace(string(out)) == "" {
-		return "", fmt.Errorf("%s Safe Storage unavailable (grant keychain access or paste cookie instead)", b.Name)
-	}
-	pass := strings.TrimSpace(string(out))
-	key := pbkdf2.Key([]byte(pass), []byte("saltysalt"), 1003, 16, sha1.New)
+type cookieRow struct {
+	name  string
+	value string
+}
 
+// sortCookieCandidates orders candidates most recently used first.
+func sortCookieCandidates(cands []cookieCandidate) {
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].lastAccess > cands[j].lastAccess })
+}
+
+// listCookieCandidates reads unexpired rows for cookieName (and its chunks)
+// without decrypting anything, grouped by host.
+func listCookieCandidates(b BrowserInfo, domainFilter, cookieName string) ([]cookieCandidate, error) {
 	tmp := filepath.Join(os.TempDir(), fmt.Sprintf("am_cookie_%d.db", time.Now().UnixNano()))
 	defer os.Remove(tmp)
 	data, err := os.ReadFile(b.CookiePath)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return "", err
+		return nil, err
 	}
-
-	query := fmt.Sprintf(
-		`SELECT name, hex(encrypted_value) FROM cookies WHERE host_key LIKE '%%%s%%' AND name LIKE '%s%%' ORDER BY name ASC;`,
-		escapeSQLLike(domainFilter), escapeSQLLike(cookieName),
-	)
+	now := time.Now()
+	var query string
+	if b.KeychainService == "" {
+		// Firefox: plaintext value, lastAccessed in Unix µs; expiry in s (or ms
+		// on newer builds — both compare correctly against now in seconds).
+		query = fmt.Sprintf(
+			`SELECT host, name, lastAccessed, value FROM moz_cookies WHERE host LIKE '%%%s%%' AND name LIKE '%s%%' AND (expiry = 0 OR expiry > %d);`,
+			escapeSQLLike(domainFilter), escapeSQLLike(cookieName), now.Unix(),
+		)
+	} else {
+		query = fmt.Sprintf(
+			`SELECT host_key, name, last_access_utc - %d, hex(encrypted_value) FROM cookies WHERE host_key LIKE '%%%s%%' AND name LIKE '%s%%' AND (expires_utc = 0 OR expires_utc > %d);`,
+			chromiumEpochOffsetMicros, escapeSQLLike(domainFilter), escapeSQLLike(cookieName), now.UnixMicro()+chromiumEpochOffsetMicros,
+		)
+	}
 	sqlOut, err := exec.Command("/usr/bin/sqlite3", tmp, query).Output()
 	if err != nil {
-		return "", fmt.Errorf("sqlite3 query: %w", err)
+		return nil, fmt.Errorf("%s sqlite3: %w", b.Name, err)
 	}
+	return parseCookieCandidates(b, cookieName, string(sqlOut)), nil
+}
 
-	var chunks []struct {
+// parseCookieCandidates groups sqlite3 "host|name|lastAccess|value" lines by
+// host, keeping only cookieName itself and its numbered chunks.
+func parseCookieCandidates(b BrowserInfo, cookieName, sqlOut string) []cookieCandidate {
+	byHost := map[string]*cookieCandidate{}
+	var order []string
+	for _, line := range strings.Split(strings.TrimSpace(sqlOut), "\n") {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 || parts[3] == "" {
+			continue
+		}
+		host, name, value := parts[0], parts[1], parts[3]
+		if name != cookieName && !strings.HasPrefix(name, cookieName+".") {
+			continue
+		}
+		var access int64
+		fmt.Sscanf(parts[2], "%d", &access)
+		c, ok := byHost[host]
+		if !ok {
+			c = &cookieCandidate{browser: b, host: host}
+			byHost[host] = c
+			order = append(order, host)
+		}
+		if access > c.lastAccess {
+			c.lastAccess = access
+		}
+		c.rows = append(c.rows, cookieRow{name: name, value: value})
+	}
+	out := make([]cookieCandidate, 0, len(order))
+	for _, h := range order {
+		out = append(out, *byHost[h])
+	}
+	return out
+}
+
+// value decrypts (Chromium) and reassembles the candidate's cookie. keys
+// caches Safe Storage keys per keychain service.
+func (c cookieCandidate) value(cookieName string, keys map[string][]byte) (string, error) {
+	decode := func(v string) string { return v }
+	if c.browser.KeychainService != "" {
+		key, ok := keys[c.browser.KeychainService]
+		if !ok {
+			out, err := exec.Command("security", "find-generic-password", "-s", c.browser.KeychainService, "-w").Output()
+			if err != nil || strings.TrimSpace(string(out)) == "" {
+				return "", fmt.Errorf("%s Safe Storage unavailable (grant keychain access or paste cookie instead)", c.browser.Name)
+			}
+			key = pbkdf2.Key([]byte(strings.TrimSpace(string(out))), []byte("saltysalt"), 1003, 16, sha1.New)
+			keys[c.browser.KeychainService] = key
+		}
+		decode = func(h string) string {
+			enc, err := hex.DecodeString(h)
+			if err != nil {
+				return ""
+			}
+			return decryptCookie(key, enc)
+		}
+	}
+	type chunk struct {
 		idx int
 		val string
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(sqlOut)), "\n") {
-		if line == "" {
+	var chunks []chunk
+	for _, r := range c.rows {
+		v := decode(r.value)
+		if v == "" {
 			continue
 		}
-		parts := strings.Split(line, "|")
-		if len(parts) != 2 {
-			continue
+		if r.name == cookieName {
+			return v, nil
 		}
-		encBytes, err := hex.DecodeString(parts[1])
-		if err != nil {
-			continue
-		}
-		dec := decryptCookie(key, encBytes)
-		if dec == "" {
-			continue
-		}
-		if parts[0] == cookieName {
-			return dec, nil
-		}
-		if strings.HasPrefix(parts[0], cookieName+".") {
-			idxStr := strings.TrimPrefix(parts[0], cookieName+".")
-			var idx int
-			if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil {
-				chunks = append(chunks, struct {
-					idx int
-					val string
-				}{idx: idx, val: dec})
-			} else {
-				chunks = append(chunks, struct {
-					idx int
-					val string
-				}{idx: len(chunks), val: dec})
-			}
-		} else if strings.HasPrefix(parts[0], cookieName) {
-			chunks = append(chunks, struct {
-				idx int
-				val string
-			}{idx: len(chunks), val: dec})
-		}
+		idx := len(c.rows) + len(chunks)
+		fmt.Sscanf(strings.TrimPrefix(r.name, cookieName+"."), "%d", &idx)
+		chunks = append(chunks, chunk{idx: idx, val: v})
 	}
-	if len(chunks) > 0 {
-		sort.SliceStable(chunks, func(i, j int) bool {
-			return chunks[i].idx < chunks[j].idx
-		})
-		var combined strings.Builder
-		for _, c := range chunks {
-			combined.WriteString(c.val)
-		}
-		return combined.String(), nil
+	if len(chunks) == 0 {
+		return "", fmt.Errorf("%s: cookie %s not found", c.browser.Name, cookieName)
 	}
-	return "", fmt.Errorf("cookie %s not found", cookieName)
+	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].idx < chunks[j].idx })
+	var combined strings.Builder
+	for _, ch := range chunks {
+		combined.WriteString(ch.val)
+	}
+	return combined.String(), nil
 }
 
 func escapeSQLLike(s string) string {

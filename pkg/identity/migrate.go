@@ -81,7 +81,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 	changed := false
 
 	for _, id := range cfg.Identities {
-		p := CanonicalProvider(id.Provider)
+		p := id.DisplayProvider()
 		em := strings.ToLower(strings.TrimSpace(id.Email()))
 		if em == "" || em == "-" {
 			if _, exists := seenIDs[id.ID]; !exists {
@@ -163,7 +163,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 		if json.Unmarshal(data, &doc) == nil {
 			for _, p := range doc.Providers {
 				pEmail := strings.ToLower(strings.TrimSpace(p.Account))
-				pProvider := CanonicalProvider(p.Type)
+				pProvider := ProductOfType(p.Type)
 				key := accountKey{provider: pProvider, email: pEmail}
 
 				tier := TierAPIKey
@@ -284,7 +284,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 		profiles := profile.ListProfiles(tool)
 		for _, pm := range profiles {
 			pmEmail := strings.ToLower(strings.TrimSpace(pm.Account))
-			pProvider := CanonicalProvider(tool)
+			pProvider := ProductOfType(tool)
 			key := accountKey{provider: pProvider, email: pmEmail}
 
 			targetIdx := -1
@@ -297,7 +297,7 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 			}
 			if targetIdx == -1 && pm.Name != "" {
 				for i, id := range cfg.Identities {
-					if CanonicalProvider(id.Provider) == pProvider && id.Metadata != nil {
+					if id.DisplayProvider() == pProvider && id.Metadata != nil {
 						if prof, ok := id.Metadata["profile_name"].(string); ok && strings.EqualFold(prof, pm.Name) {
 							targetIdx = i
 							break

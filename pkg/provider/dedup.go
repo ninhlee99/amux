@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"amux-accounts/pkg/identity"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -229,8 +230,8 @@ func areDuplicates(p1, p2 ProviderConfig) bool {
 		}
 	}
 
-	// 2. Same canonical provider + same account identity (explicit or decoded from JWT)
-	if CanonicalProvider(p1.Type) == CanonicalProvider(p2.Type) {
+	// 2. Same product + same account identity (explicit or decoded from JWT)
+	if identity.ProductOfType(p1.Type) == identity.ProductOfType(p2.Type) {
 		acct1 := effectiveAccount(p1)
 		acct2 := effectiveAccount(p2)
 		if acct1 != "" && acct2 != "" && strings.EqualFold(acct1, acct2) {

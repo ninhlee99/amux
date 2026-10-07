@@ -14,6 +14,7 @@ import (
 
 	"amux-accounts/pkg/auth/oauth"
 	"amux-accounts/pkg/browser"
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
@@ -425,7 +426,9 @@ func loginChatGPT(f loginFlags) {
 			}
 		}
 	}
-	if refresh == "" && f.token == "" && f.cookie == "" && !wantBrowser {
+	// The refresh token is only worth asking for when the user pasted a bare
+	// access token; a session cookie already refreshes itself.
+	if refresh == "" && accountEmail == "" && f.token == "" && f.cookie == "" && !wantBrowser {
 		if r := readLinePrompt("  refresh token (optional, Enter to skip): "); r != "" {
 			refresh = r
 		}
@@ -436,6 +439,9 @@ func loginChatGPT(f loginFlags) {
 		return
 	}
 
+	if accountEmail != "" {
+		backfillChatGPTAccounts()
+	}
 	savePoolLogin("chatgpt_web", accountEmail, func(slot provider.PoolSlot) provider.ProviderConfig {
 		return provider.ProviderConfig{
 			ID:           slot.ID,
@@ -553,6 +559,38 @@ func loginClaude(f loginFlags) {
 	})
 }
 
+// backfillChatGPTAccounts learns the email of chatgpt_web rows saved without
+// one (an earlier login whose session exchange failed), so logging in to the
+// same account again updates that row instead of adding a second one.
+func backfillChatGPTAccounts() {
+	path := provider.DefaultAccountsPath()
+	f, err := provider.LoadConfigFile(path)
+	if err != nil || f == nil {
+		return
+	}
+	for _, p := range f.Providers {
+		if p.Type != "chatgpt_web" || strings.TrimSpace(p.Account) != "" || p.SessionToken == "" {
+			continue
+		}
+		if email := chatgptTokenEmail(p.SessionToken); email != "" {
+			_ = provider.SetProviderAccount(path, p.ID, email)
+		}
+	}
+}
+
+// chatgptTokenEmail returns the account email behind a stored ChatGPT
+// credential: an access-token JWT is read offline, a session cookie is
+// exchanged at chatgpt.com. "" when unknown (expired, offline).
+func chatgptTokenEmail(tok string) string {
+	if email, _, _ := oauth.ParseCodexClaims(tok); strings.Contains(email, "@") {
+		return email
+	}
+	if sess, err := browser.FetchChatGPTSession(tok); err == nil {
+		return sess.Email
+	}
+	return ""
+}
+
 func coalesceModel(v, fallback string) string {
 	if strings.TrimSpace(v) == "" {
 		return fallback
@@ -571,16 +609,19 @@ func savePoolLogin(providerType, accountEmail string, build func(provider.PoolSl
 		return
 	}
 	proxy.Sync()
-	switch {
-	case slot.Relogin && slot.RenameFrom != "" && slot.RenameFrom != slot.ID:
-		fmt.Printf("Re-logged in %s (was %s).\n", slot.ID, slot.RenameFrom)
-	case slot.Relogin:
-		fmt.Printf("Re-logged in %s.\n", slot.ID)
-	default:
-		fmt.Printf("Saved as %s.\n", slot.ID)
+	label := identity.ProductOfType(providerType)
+	ref := slot.ID
+	if accountEmail != "" {
+		label += " (" + accountEmail + ")"
+		ref = accountEmail
 	}
-	if slot.Enabled == nil || !*slot.Enabled {
-		fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", slot.ID, slot.ID)
+	if slot.Relogin {
+		fmt.Printf("✓ Re-logged in %s — existing entry updated.\n", label)
+	} else {
+		fmt.Printf("✓ Saved %s.\n", label)
+	}
+	if slot.Enabled != nil && !*slot.Enabled {
+		fmt.Printf("Tip: it is not in the auto-failover pool; add it with: amux pool add %s\n", ref)
 	}
 	CmdAccounts()
 }
@@ -1015,8 +1056,16 @@ func loadProviderRows() []provider.ProviderConfig {
 	return rows
 }
 
-// CmdAccounts lists every saved account: Claude profiles + web/API providers.
+// AccountsTable prints the account table shown by `amux accounts`; the CLI
+// sets it so login output matches that command.
+var AccountsTable func()
+
+// CmdAccounts lists every saved account (after a login).
 func CmdAccounts() {
+	if AccountsTable != nil {
+		AccountsTable()
+		return
+	}
 	CmdAccountsFilter("")
 }
 

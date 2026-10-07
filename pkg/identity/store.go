@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -134,10 +135,45 @@ func Get(path string, id string) (*Identity, error) {
 			return &item, nil
 		}
 	}
+	// 1-based row number, as listed by `amux accounts`.
+	if n, err := strconv.Atoi(id); err == nil && n >= 1 && n <= len(cfg.Identities) {
+		item := cfg.Identities[n-1]
+		return &item, nil
+	}
+	// "<provider>:<email>" (e.g. "codex:me@x.com") picks one account when the
+	// same email is signed in to several providers.
+	if at := strings.Index(id, "@"); at > 0 {
+		if colon := strings.LastIndex(id[:at], ":"); colon > 0 {
+			want := strings.ToLower(strings.ReplaceAll(id[:colon], " ", ""))
+			email := id[colon+1:]
+			for _, item := range cfg.Identities {
+				if !strings.EqualFold(item.Email(), email) {
+					continue
+				}
+				display := strings.ToLower(strings.ReplaceAll(item.DisplayProvider(), " ", ""))
+				if strings.HasPrefix(strings.ToLower(item.ID), want) || strings.HasPrefix(display, want) {
+					return &item, nil
+				}
+			}
+		}
+	}
+	var byEmail []Identity
 	for _, item := range cfg.Identities {
 		if strings.EqualFold(item.Email(), id) {
-			return &item, nil
+			byEmail = append(byEmail, item)
 		}
+	}
+	if len(byEmail) == 1 {
+		return &byEmail[0], nil
+	}
+	if len(byEmail) > 1 {
+		var opts []string
+		for _, item := range byEmail {
+			opts = append(opts, strings.ToLower(strings.Split(item.ID, ":")[0])+":"+item.Email())
+		}
+		return nil, fmt.Errorf("%s is signed in to several providers — pick one: %s (or its # from `amux accounts`)", id, strings.Join(opts, ", "))
+	}
+	for _, item := range cfg.Identities {
 		if item.Metadata != nil {
 			if prof, ok := item.Metadata["profile_name"].(string); ok && strings.EqualFold(prof, id) {
 				return &item, nil
@@ -147,9 +183,8 @@ func Get(path string, id string) (*Identity, error) {
 	return nil, nil
 }
 
-// Upsert adds or updates an identity by ID, strictly enforcing that each email
-// has at most 1 account per canonical provider, where Subscription strictly
-// supersedes and replaces Web accounts.
+// Upsert adds or updates an identity by ID, enforcing that each email has at
+// most 1 account per product (ChatGPT Web, Codex, Claude Web, Claude Code, …).
 func Upsert(path string, id Identity) error {
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -170,7 +205,7 @@ func Upsert(path string, id Identity) error {
 	email := id.Email()
 	if !found && email != "" && email != "-" {
 		for i, existing := range cfg.Identities {
-			if CanonicalProvider(existing.Provider) == CanonicalProvider(id.Provider) && strings.EqualFold(existing.Email(), email) {
+			if existing.DisplayProvider() == id.DisplayProvider() && strings.EqualFold(existing.Email(), email) {
 				// Subscription strictly supersedes Web
 				if id.IsSubscription() && !existing.IsSubscription() {
 					cfg.Identities[i] = id
@@ -232,7 +267,7 @@ func DeduplicateIdentities(list []Identity) []Identity {
 	for _, item := range nonGhosts {
 		em := strings.ToLower(item.Email())
 		k := groupKey{
-			provider: CanonicalProvider(item.Provider),
+			provider: item.DisplayProvider(),
 		}
 		if em != "" && em != "-" {
 			k.email = em
@@ -401,7 +436,7 @@ func SetActive(path string, id string) error {
 }
 
 func isSameIdentityGroup(target, item Identity) bool {
-	if CanonicalProvider(target.Provider) != CanonicalProvider(item.Provider) {
+	if target.DisplayProvider() != item.DisplayProvider() {
 		return false
 	}
 	// Antigravity and Gemini Web are distinct tools under the Google/Gemini ecosystem

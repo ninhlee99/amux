@@ -1372,16 +1372,19 @@ func AddOrUpdateProvider(path string, p ProviderConfig) error {
 	// 1. Match by exact ID
 	for i, existing := range f.Providers {
 		if existing.ID == p.ID {
+			if existing.Type != p.Type && IsSubscriptionType(existing.Type) && !IsSubscriptionType(p.Type) {
+				return fmt.Errorf("%s is a %s subscription; refusing to overwrite it with a %s login", p.ID, existing.Type, p.Type)
+			}
 			f.Providers[i] = p
 			updated = true
 			break
 		}
 	}
 
-	// 2. Match by Account identity (same canonical provider + same account email)
+	// 2. Match by Account identity (same product + same account email)
 	if !updated && strings.TrimSpace(p.Account) != "" {
 		for i, existing := range f.Providers {
-			if CanonicalProvider(existing.Type) == CanonicalProvider(p.Type) && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
+			if identity.ProductOfType(existing.Type) == identity.ProductOfType(p.Type) && strings.EqualFold(strings.TrimSpace(existing.Account), strings.TrimSpace(p.Account)) {
 				pIsSub := IsSubscriptionType(p.Type)
 				existIsSub := IsSubscriptionType(existing.Type)
 				// Subscription strictly supersedes Web

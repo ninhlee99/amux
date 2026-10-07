@@ -215,68 +215,48 @@ func TestIdentity_PerAccountThreshold(t *testing.T) {
 	}
 }
 
-func TestIdentity_SubBeatsWebForSameEmail(t *testing.T) {
+// One account per product per email: Claude Web and Claude Code are separate
+// products, so the same email keeps one row of each; re-adding the same
+// product updates its row instead of duplicating it.
+func TestIdentity_OneRowPerProductPerEmail(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "identities.json")
 
-	// 1. Add Claude Web identity
-	err := identity.Upsert(cfgPath, identity.Identity{
-		ID:          "claude:web:01",
-		Provider:    "anthropic",
-		Tier:        identity.TierWeb,
+	upsert := func(id identity.Identity) {
+		t.Helper()
+		if err := identity.Upsert(cfgPath, id); err != nil {
+			t.Fatalf("upsert %s: %v", id.ID, err)
+		}
+	}
+	upsert(identity.Identity{
+		ID: "claude:web:01", Provider: "anthropic", Tier: identity.TierWeb,
 		AuthType:    string(identity.AuthSessionCookie),
 		Credentials: map[string]string{"account": "user@example.com", "cookie": "cookie123"},
-		Active:      true,
 	})
-	if err != nil {
-		t.Fatalf("upsert web: %v", err)
-	}
-
-	// 2. Add Claude Subscription with same email -> upgrades existing
-	err = identity.Upsert(cfgPath, identity.Identity{
-		ID:          "claude:code:01",
-		Provider:    "anthropic",
-		Tier:        identity.TierSubscription,
+	upsert(identity.Identity{
+		ID: "claude:code:01", Provider: "anthropic", Tier: identity.TierSubscription,
 		AuthType:    string(identity.AuthOAuth),
 		Credentials: map[string]string{"account": "user@example.com", "access_token": "oauth456"},
-		Active:      true,
 	})
-	if err != nil {
-		t.Fatalf("upsert sub: %v", err)
+	list, _ := identity.List(cfgPath)
+	if len(list) != 2 {
+		t.Fatalf("expected Claude Web + Claude Code rows, got %d: %+v", len(list), list)
 	}
 
-	list, err := identity.List(cfgPath)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("expected exactly 1 identity remaining, got %d: %+v", len(list), list)
-	}
-	if list[0].ID != "claude:code:01" || list[0].Tier != identity.TierSubscription {
-		t.Errorf("expected subscription claude:code:01 to win, got %+v", list[0])
-	}
-
-	// 3. Attempting to add Claude Web again with same email -> does not downgrade or duplicate
-	err = identity.Upsert(cfgPath, identity.Identity{
-		ID:          "claude:web:02",
-		Provider:    "anthropic",
-		Tier:        identity.TierWeb,
+	// Same product again (relogin under another ID) → still one Claude Web row.
+	upsert(identity.Identity{
+		ID: "claude:web:02", Provider: "anthropic", Tier: identity.TierWeb,
 		AuthType:    string(identity.AuthSessionCookie),
 		Credentials: map[string]string{"account": "user@example.com", "cookie": "cookie789"},
 	})
-	if err != nil {
-		t.Fatalf("upsert web attempt: %v", err)
+	list, _ = identity.List(cfgPath)
+	if len(list) != 2 {
+		t.Fatalf("expected still 2 identities, got %d: %+v", len(list), list)
 	}
-
-	list, err = identity.List(cfgPath)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(list) != 1 {
-		t.Fatalf("expected still 1 identity, got %d: %+v", len(list), list)
-	}
-	if list[0].ID != "claude:code:01" || list[0].Tier != identity.TierSubscription {
-		t.Errorf("expected subscription to be preserved, got %+v", list[0])
+	for _, it := range list {
+		if it.DisplayProvider() == "Claude Web" && it.Credentials["cookie"] != "cookie789" {
+			t.Errorf("Claude Web row not updated: %+v", it)
+		}
 	}
 }
 

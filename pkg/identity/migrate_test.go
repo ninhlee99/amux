@@ -104,69 +104,47 @@ func TestMigrateLegacyAccounts_NoDuplicatesBetweenAccountsAndProfiles(t *testing
 	}
 }
 
-func TestMigrateLegacyAccounts_SubBeatsWebForSameEmail(t *testing.T) {
+// ChatGPT Web and Codex are separate products: the same email migrates to one
+// identity for each, never merged into the Codex subscription.
+func TestMigrateLegacyAccounts_ChatGPTWebAndCodexStaySeparate(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("AMUX_HOME", tmpDir)
 
 	accountsPath := filepath.Join(tmpDir, "accounts.json")
 	identitiesPath := filepath.Join(tmpDir, "identities.json")
 
-	// In accounts.json: web account comes first, subscription comes second for same email
 	doc := identity.LegacyAccountDoc{
 		Providers: []identity.LegacyProvider{
-			{
-				ID:      "chatgpt:ninhle21199",
-				Type:    "chatgpt_web",
-				Account: "ninhle21199@gmail.com",
-				Plan:    "free",
-			},
-			{
-				ID:           "codex:ninhle21199",
-				Type:         "codex_cli",
-				Account:      "ninhle21199@gmail.com",
-				Plan:         "pro",
-				RefreshToken: "refresh-codex-123",
-			},
+			{ID: "chatgpt:ninhle21199", Type: "chatgpt_web", Account: "ninhle21199@gmail.com", Plan: "free"},
+			{ID: "codex:ninhle21199", Type: "codex_cli", Account: "ninhle21199@gmail.com", Plan: "pro", RefreshToken: "refresh-codex-123"},
 		},
 	}
 	docBytes, _ := json.Marshal(doc)
 	_ = os.WriteFile(accountsPath, docBytes, 0o600)
 
-	migrated, err := identity.MigrateLegacyAccounts(accountsPath, identitiesPath)
-	if err != nil {
+	if _, err := identity.MigrateLegacyAccounts(accountsPath, identitiesPath); err != nil {
 		t.Fatalf("MigrateLegacyAccounts failed: %v", err)
 	}
-	if migrated != 1 {
-		t.Fatalf("expected 1 migrated account, got %d", migrated)
-	}
-
 	cfg, err := identity.LoadConfig(identitiesPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	if len(cfg.Identities) != 1 {
-		var ids []string
-		for _, id := range cfg.Identities {
-			ids = append(ids, id.ID)
-		}
-		t.Fatalf("expected exactly 1 identity (subscription), got %d: %v", len(cfg.Identities), ids)
+	got := map[string]identity.Identity{}
+	for _, id := range cfg.Identities {
+		got[id.DisplayProvider()] = id
 	}
-
-	winner := cfg.Identities[0]
-	if winner.ID != "codex:ninhle21199" {
-		t.Errorf("expected subscription 'codex:ninhle21199' to supersede web, got %q", winner.ID)
+	if len(cfg.Identities) != 2 || got["ChatGPT Web"].ID != "chatgpt:ninhle21199" || got["Codex"].ID != "codex:ninhle21199" {
+		t.Fatalf("expected separate ChatGPT Web + Codex identities, got %+v", cfg.Identities)
 	}
-	if winner.Tier != identity.TierSubscription {
-		t.Errorf("expected subscription tier, got %q", winner.Tier)
-	}
-	if winner.Active {
-		t.Errorf("expected subscription account to have Active=false, got true")
+	codex := got["Codex"]
+	if codex.Tier != identity.TierSubscription || codex.Active {
+		t.Errorf("codex identity = %+v, want inactive subscription", codex)
 	}
 	// Out of the rotation pool by default, but not turned off.
-	if winner.CanAutoRotate() {
+	if codex.CanAutoRotate() {
 		t.Errorf("subscription must not join the rotation pool automatically")
 	}
-	if !identity.IsEnabled(winner) {
-		t.Errorf("subscription must not be disabled by migration, got %v", winner.Metadata)
+	if !identity.IsEnabled(codex) {
+		t.Errorf("subscription must not be disabled by migration, got %v", codex.Metadata)
 	}
 }
