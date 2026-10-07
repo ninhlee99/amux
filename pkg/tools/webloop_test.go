@@ -731,6 +731,38 @@ func TestParseWebTools_PreservesServerNameCasing(t *testing.T) {
 	if serverName != "StitchMCP" {
 		t.Errorf("expected ServerName='StitchMCP', got %q", serverName)
 	}
+
+	// Test 2: Double-underscore format mapping to call_mcp_tool
+	text2 := `<tool_call>
+{"name": "mcp__StitchMCP__list_projects", "arguments": {"query": "test"}}
+</tool_call>`
+	calls2 := ParseWebTools(text2, defs)
+	if len(calls2) != 1 || calls2[0].Name != "call_mcp_tool" {
+		t.Fatalf("expected 1 call_mcp_tool, got %+v", calls2)
+	}
+	var args2 map[string]any
+	if err := json.Unmarshal([]byte(calls2[0].Arguments), &args2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if args2["ServerName"] != "StitchMCP" || args2["ToolName"] != "list_projects" {
+		t.Errorf("expected StitchMCP/list_projects, got %v / %v", args2["ServerName"], args2["ToolName"])
+	}
+
+	// Test 3: Without mcp__ prefix: StitchMCP__list_projects mapping to call_mcp_tool
+	text3 := `<tool_call>
+{"name": "StitchMCP__list_projects", "arguments": {"query": "test"}}
+</tool_call>`
+	calls3 := ParseWebTools(text3, defs)
+	if len(calls3) != 1 || calls3[0].Name != "call_mcp_tool" {
+		t.Fatalf("expected 1 call_mcp_tool, got %+v", calls3)
+	}
+	var args3 map[string]any
+	if err := json.Unmarshal([]byte(calls3[0].Arguments), &args3); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if args3["ServerName"] != "StitchMCP" || args3["ToolName"] != "list_projects" {
+		t.Errorf("expected StitchMCP/list_projects, got %v / %v", args3["ServerName"], args3["ToolName"])
+	}
 }
 
 func TestParseWebTools_FunctionCallAndReActFormats(t *testing.T) {

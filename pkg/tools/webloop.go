@@ -108,7 +108,7 @@ func ExtractThoughts(text string) string {
 	return sb.String()
 }
 
-// DiscoverKnownMCPServers scans known MCP server locations (AGY, Cursor, Claude)
+// DiscoverKnownMCPServers scans known MCP server locations (AGY, Cursor, Claude, Windsurf, VS Code)
 // to return known server names sorted by length descending so longer prefixes match first.
 func DiscoverKnownMCPServers() []string {
 	seen := map[string]bool{}
@@ -121,8 +121,36 @@ func DiscoverKnownMCPServers() []string {
 		}
 	}
 
+	parseJSONFile := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) == 0 {
+			return
+		}
+		var root struct {
+			MCPServers map[string]any `json:"mcpServers"`
+			Servers    map[string]any `json:"servers"`
+			Projects   map[string]struct {
+				MCPServers map[string]any `json:"mcpServers"`
+			} `json:"projects"`
+		}
+		if json.Unmarshal(data, &root) == nil {
+			for k := range root.MCPServers {
+				add(k)
+			}
+			for k := range root.Servers {
+				add(k)
+			}
+			for _, p := range root.Projects {
+				for k := range p.MCPServers {
+					add(k)
+				}
+			}
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" {
+		// Antigravity MCP directory
 		mcpDir := filepath.Join(home, ".gemini", "antigravity-cli", "mcp")
 		if entries, err := os.ReadDir(mcpDir); err == nil {
 			for _, e := range entries {
@@ -131,7 +159,22 @@ func DiscoverKnownMCPServers() []string {
 				}
 			}
 		}
+
+		// IDE configuration files
+		parseJSONFile(filepath.Join(home, ".cursor", "mcp.json"))
+		parseJSONFile(filepath.Join(home, ".config", "cursor", "mcp.json"))
+		parseJSONFile(filepath.Join(home, ".claude.json"))
+		parseJSONFile(filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"))
+		parseJSONFile(filepath.Join(home, ".config", "claude", "claude_desktop_config.json"))
+		parseJSONFile(filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"))
+		parseJSONFile(filepath.Join(home, "Library", "Application Support", "Code", "User", "mcp.json"))
+		parseJSONFile(filepath.Join(home, ".config", "Code", "User", "mcp.json"))
+		parseJSONFile(filepath.Join(home, ".gemini", "settings.json"))
+		parseJSONFile(filepath.Join(home, ".gemini", "config", "mcp_config.json"))
+		parseJSONFile(filepath.Join(home, ".amux", "mcp.json"))
+		parseJSONFile(filepath.Join(home, ".amux", "config.json"))
 	}
+	add("amux")
 
 	sort.Slice(list, func(i, j int) bool {
 		return len(list[i]) > len(list[j])
@@ -151,11 +194,16 @@ func SplitMCPServerTool(raw string) (string, string) {
 	} else if strings.HasPrefix(lower, "mcp.") {
 		clean = clean[4:]
 	}
+	known := DiscoverKnownMCPServers()
 	if parts := strings.SplitN(clean, "__", 2); len(parts) == 2 {
+		for _, s := range known {
+			if strings.EqualFold(s, parts[0]) {
+				return s, parts[1]
+			}
+		}
 		return parts[0], parts[1]
 	}
 
-	known := DiscoverKnownMCPServers()
 	lowerClean := strings.ToLower(clean)
 	for _, s := range known {
 		sNorm := strings.ToLower(strings.ReplaceAll(s, "-", "_"))
@@ -732,7 +780,7 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		}
 
 		// AGY call_mcp_tool fallback: if client has call_mcp_tool and incoming is an MCP tool
-		if strings.HasPrefix(lower, "mcp__") || strings.HasPrefix(lower, "mcp_") {
+		if strings.HasPrefix(lower, "mcp__") || strings.HasPrefix(lower, "mcp_") || strings.Contains(lower, "__") {
 			if d, ok := findToolDef(by, "call_mcp_tool"); ok {
 				return d.Name, true
 			}
@@ -787,8 +835,8 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			}
 		}
 
-		// If client expects call_mcp_tool and incoming is an mcp__server__tool name:
-		if strings.EqualFold(canon, "call_mcp_tool") && (strings.HasPrefix(strings.ToLower(name), "mcp__") || strings.HasPrefix(strings.ToLower(name), "mcp_")) {
+		// If client expects call_mcp_tool and incoming is an MCP tool name (e.g. mcp__server__tool or server__tool):
+		if strings.EqualFold(canon, "call_mcp_tool") && !strings.EqualFold(name, "call_mcp_tool") {
 			server, tool := SplitMCPServerTool(name)
 			if server != "" && tool != "" {
 				var innerArgs any

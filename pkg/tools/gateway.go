@@ -94,7 +94,7 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 
 	// Check MCP conversion: mcp__server__tool / mcp_server_tool -> call_mcp_tool
 	lowerCallName := strings.ToLower(call.Name)
-	if strings.HasPrefix(lowerCallName, "mcp__") || strings.HasPrefix(lowerCallName, "mcp_") {
+	if strings.HasPrefix(lowerCallName, "mcp__") || strings.HasPrefix(lowerCallName, "mcp_") || strings.Contains(lowerCallName, "__") {
 		var hasCallMCP bool
 		var callMCPDef types.ToolDef
 		for _, d := range defs {
@@ -105,7 +105,7 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 			}
 		}
 		if hasCallMCP {
-			server, tool := SplitMCPServerTool(lowerCallName)
+			server, tool := SplitMCPServerTool(call.Name)
 			if server != "" && tool != "" {
 				var origArgs map[string]any
 				_ = json.Unmarshal([]byte(call.Arguments), &origArgs)
