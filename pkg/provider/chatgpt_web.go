@@ -372,7 +372,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		out := make(chan types.StreamChunk)
-		go streamChatGPTWeb(ctx, a, project, req.SessionID, resp, out)
+		go streamChatGPTWeb(ctx, a, project, req.SessionID, len(req.Tools) > 0, resp, out)
 		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 	}
 }
@@ -387,7 +387,7 @@ func (a *ChatGPTWebAdapter) ResetConversationForScope(scopeKey string) {
 	a.convs().ResetProject(scopeKey)
 }
 
-func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessionID string, resp *http.Response, out chan<- types.StreamChunk) {
+func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessionID string, clientTools bool, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
 
@@ -424,9 +424,11 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 				Author struct {
 					Role string `json:"role"`
 				} `json:"author"`
-				Content struct {
+				Recipient string `json:"recipient"`
+				Content   struct {
 					ContentType string   `json:"content_type"`
 					Parts       []string `json:"parts"`
+					Text        string   `json:"text"`
 				} `json:"content"`
 				Status string `json:"status"`
 			} `json:"message"`
@@ -454,6 +456,20 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 			continue
 		}
 		ctype := chunk.Message.Content.ContentType
+		// ChatGPT's own sandbox (container.exec) cannot see the user's repo:
+		// it fails and the model then claims it has no tools. Hand the
+		// command to the client's shell tool instead, and drop this thread —
+		// it now holds the sandbox error; the next turn rebuilds full context.
+		if clientTools && strings.HasPrefix(chunk.Message.Recipient, "container.") &&
+			chunk.Message.Status == "finished_successfully" {
+			if cmd := chatgptContainerCommand(chunk.Message.Content.Text); cmd != "" {
+				log.Printf("%s: redirected ChatGPT sandbox %s to client shell tool", id, chunk.Message.Recipient)
+				a.convs().ResetProject(project)
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Content: chatgptShellToolCall(cmd)})
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
+				return
+			}
+		}
 		if ctype == "thought" {
 			if len(chunk.Message.Content.Parts) > 0 {
 				fullThought := chunk.Message.Content.Parts[0]
@@ -518,4 +534,57 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 	if !doneSent && ctx.Err() == nil {
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 	}
+}
+
+// chatgptContainerCommand extracts the shell command from a container.exec
+// message: either JSON {"cmd":["bash","-lc","..."]} or plain "bash -lc ...".
+func chatgptContainerCommand(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	var call struct {
+		Cmd json.RawMessage `json:"cmd"`
+	}
+	if strings.HasPrefix(code, "{") && json.Unmarshal([]byte(code), &call) == nil && len(call.Cmd) > 0 {
+		var argv []string
+		if json.Unmarshal(call.Cmd, &argv) == nil {
+			if len(argv) == 3 && isShellBinary(argv[0]) && strings.HasPrefix(argv[1], "-") && strings.Contains(argv[1], "c") {
+				return strings.TrimSpace(argv[2])
+			}
+			return strings.TrimSpace(strings.Join(argv, " "))
+		}
+		var single string
+		if json.Unmarshal(call.Cmd, &single) == nil {
+			return strings.TrimSpace(single)
+		}
+		return ""
+	}
+	fields := strings.Fields(code)
+	if len(fields) >= 3 && isShellBinary(fields[0]) && strings.HasPrefix(fields[1], "-") && strings.Contains(fields[1], "c") {
+		rest := strings.TrimSpace(code[strings.Index(code, fields[1])+len(fields[1]):])
+		if len(rest) >= 2 && (rest[0] == '\'' || rest[0] == '"') && rest[len(rest)-1] == rest[0] {
+			rest = rest[1 : len(rest)-1]
+		}
+		return strings.TrimSpace(rest)
+	}
+	return code
+}
+
+func isShellBinary(s string) bool {
+	switch strings.TrimPrefix(strings.TrimPrefix(s, "/usr"), "/bin/") {
+	case "bash", "sh", "zsh":
+		return true
+	}
+	return false
+}
+
+// chatgptShellToolCall renders cmd in the webloop <tool_call> dialect; the
+// web tool parser maps "Bash" onto whatever shell tool the client declared.
+func chatgptShellToolCall(cmd string) string {
+	b, _ := json.Marshal(map[string]any{
+		"name":      "Bash",
+		"arguments": map[string]string{"command": cmd},
+	})
+	return "<tool_call>\n" + string(b) + "\n</tool_call>"
 }

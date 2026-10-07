@@ -806,3 +806,14 @@ func TestBidirectionalMCPMatching(t *testing.T) {
 		t.Fatalf("expected list_tables call, got: %+v", calls)
 	}
 }
+
+// ChatGPT web otherwise reaches for its own sandbox, finds no repo and
+// answers "I have no tools"; both preambles must steer it to <tool_call>.
+func TestWebPreambles_SteerAwayFromBuiltinSandbox(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Bash"}}
+	for name, p := range map[string]string{"preamble": WebPreamble(defs), "reminder": WebCatalogOnly(defs)} {
+		if !strings.Contains(p, "python/container") || !strings.Contains(p, "[Tool result]") {
+			t.Errorf("%s does not warn off built-in sandbox / explain turn-taking:\n%s", name, p)
+		}
+	}
+}

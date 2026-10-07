@@ -20,6 +20,8 @@ import (
 // Keep preamble short — every tools turn pays this cost on cold-start threads.
 const webToolPreamble = `Coding-agent backend. Client runs tools on the real repo. [Tool result] = verified CLI output.
 Rules: need file/cmd → emit <tool_call> now; never claim lack of tools / ask to paste / fake edits.
+Your built-in python/container/browser tools cannot see this repo — never use them; only <tool_call> reaches it.
+Turns: emit <tool_call> blocks then stop; the client runs them and replies with [Tool result]; continue from there.
 Format:
 <thought>
 Reasoning / thinking step (optional)
@@ -39,7 +41,7 @@ Multiple blocks OK. CATALOG
 // webToolReminder heads continuing-thread prompts. Web threads only see the
 // full preamble on their first turn; without restating that tools exist and
 // how to call them, ChatGPT drifts into "I have no tool access" a few turns in.
-const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools.
+const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools. Built-in python/container cannot see the repo — use <tool_call>, then stop for [Tool result].
 `
 
 const webToolCloser = `
