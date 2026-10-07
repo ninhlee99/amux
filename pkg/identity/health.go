@@ -46,16 +46,40 @@ func CheckHealth(id Identity) HealthReport {
 	}
 
 	// Check token expiration if available
-	if accessTok := id.Credentials["access_token"]; accessTok != "" {
-		if id.ResetAt > 0 && time.Now().Unix() > id.ResetAt {
+	var expTime time.Time
+	var hasExp bool
+	for _, k := range []string{"access_token", "id_token", "token"} {
+		if tok := id.Credentials[k]; tok != "" {
+			if t, ok := auth.ParseJWTExpiry(tok); ok {
+				expTime = t
+				hasExp = true
+				break
+			}
+		}
+	}
+	if !hasExp && id.ResetAt > 0 {
+		expTime = time.Unix(id.ResetAt, 0)
+		hasExp = true
+	}
+
+	if hasExp {
+		now := time.Now()
+		if now.After(expTime) {
 			if id.Credentials["refresh_token"] != "" {
 				report.Status = "needs_refresh"
 				report.Message = "Access token expired, refresh token available"
 			} else {
 				report.Status = "expired"
-				report.Message = fmt.Sprintf("Token expired (run 'amux login %s')", id.Provider)
+				report.Message = fmt.Sprintf("Token expired on %s (run 'amux login %s')", expTime.Format("2006-01-02"), id.Provider)
 			}
 			return report
+		}
+		remaining := expTime.Sub(now)
+		if remaining < 24*time.Hour {
+			report.Status = "expiring_soon"
+			report.Message = fmt.Sprintf("Expires soon in %s (at %s)", remaining.Round(time.Minute), expTime.Format("15:04 02/01"))
+		} else {
+			report.Message = fmt.Sprintf("Valid (expires in %d days)", int(remaining.Hours()/24))
 		}
 	}
 

@@ -304,12 +304,14 @@ Options:
   --live [--provider <id>]    Send real turns through the gateway (Anthropic,
                               OpenAI streaming, tool call) and name the layer
                               that fails; spends a few tokens
+  auth                        Inspect credential health, remaining lifetimes & sessions
   providers                   Probe each account directly, bypassing the gateway
   --security                  Run the security audit
   -h, --help                  Show this help message
 
 Examples:
   amux doctor                 # Run complete system diagnostics
+  amux doctor auth            # Check token expiration & session health
   amux doctor --live          # End-to-end check of the running gateway
   amux doctor --live --provider chatgpt:01
 `)

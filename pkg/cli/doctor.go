@@ -33,6 +33,10 @@ func CmdDoctor(args []string) {
 		CmdAudit(args[1:])
 		return
 	}
+	if len(args) > 0 && (args[0] == "auth" || args[0] == "--auth") {
+		CmdDoctorAuth(args[1:])
+		return
+	}
 
 	autoFix := false
 	for _, a := range args {
@@ -317,4 +321,26 @@ func cleanGlobalEnvAndShellRC() {
 	}
 
 	hook.SyncLaunchctlEnv(false, "")
+}
+
+// CmdDoctorAuth inspects credential health, remaining lifetimes and session validity.
+func CmdDoctorAuth(args []string) {
+	fmt.Println("== AMUX Credential Health & Expiry ==")
+	_, _ = identity.MigrateLegacyAccounts("", "")
+	reports, err := identity.CheckAllHealth("")
+	if err != nil || len(reports) == 0 {
+		fmt.Println("No accounts configured. Run 'amux login [provider]' to add credentials.")
+		return
+	}
+
+	for _, r := range reports {
+		icon := "✓"
+		switch r.Status {
+		case "expired", "missing_credentials":
+			icon = "✗"
+		case "needs_refresh", "expiring_soon":
+			icon = "⚠"
+		}
+		fmt.Printf(" %s [%s] %s (%s): %s\n", icon, r.Provider, r.ID, r.Tier, r.Message)
+	}
 }

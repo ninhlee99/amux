@@ -1,9 +1,11 @@
 package oauth
 
 import (
+	"amux-accounts/pkg/auth"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // ParseJWTEmail extracts the email claim from an unverified JWT ID token.
@@ -83,5 +85,10 @@ func ParseCodexClaims(jwtToken string) (email, accountID, plan string) {
 		plan = "free"
 	}
 	return email, accountID, plan
+}
+
+// ParseJWTExpiry extracts the exp (expiration) timestamp from an unverified JWT token.
+func ParseJWTExpiry(jwtToken string) (time.Time, bool) {
+	return auth.ParseJWTExpiry(jwtToken)
 }
 

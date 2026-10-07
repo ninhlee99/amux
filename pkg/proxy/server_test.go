@@ -850,3 +850,27 @@ func TestHandler_ErrorMessageNamesRequestID(t *testing.T) {
 		t.Fatalf("error body lacks request id: %s", rec.Body.String())
 	}
 }
+
+func TestHandler_MetricsEndpoints(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 1. Check /_am/metrics
+	req := httptest.NewRequest(http.MethodGet, "/_am/metrics", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "amux_active_sessions") {
+		t.Fatalf("metrics body missing amux_active_sessions: %s", body)
+	}
+
+	// 2. Check /metrics alias
+	req2 := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /metrics, got %d", rec2.Code)
+	}
+}

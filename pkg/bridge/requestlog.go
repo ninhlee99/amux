@@ -6,8 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"amux-accounts/pkg/metrics"
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/telemetry"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
@@ -139,6 +141,34 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 		Messages:   msgs,
 		Output:     output,
 		ToolCalls:  toolCalls,
+	})
+
+	// Record gateway metrics
+	statusLabel := "ok"
+	if errStr != "" {
+		statusLabel = "err"
+	}
+	metrics.Default().IncRequest(dialect, account, statusLabel)
+	metrics.Default().ObserveDuration(dialect, account, ms)
+	if inTok > 0 {
+		metrics.Default().AddTokens(account, "in", inTok)
+	}
+	if outTok > 0 {
+		metrics.Default().AddTokens(account, "out", outTok)
+	}
+
+	// Record privacy-safe audit trail
+	_ = telemetry.AppendAuditEntry(telemetry.AuditEntry{
+		Timestamp:  now,
+		RequestID:  reqID,
+		Dialect:    dialect,
+		Account:    account,
+		Model:      displayModel,
+		InTokens:   inTok,
+		OutTokens:  outTok,
+		DurationMs: ms,
+		Status:     statusLabel,
+		Error:      errStr,
 	})
 }
 

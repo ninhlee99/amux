@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -213,4 +215,28 @@ func RefreshLiveClaudeToken() (string, error) {
 		return "", err
 	}
 	return rr.AccessToken, nil
+}
+
+// ParseJWTExpiry extracts the exp (expiration) timestamp from an unverified JWT token.
+func ParseJWTExpiry(jwtToken string) (time.Time, bool) {
+	parts := strings.Split(jwtToken, ".")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+	payload := parts[1]
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		decoded, err = base64.URLEncoding.DecodeString(payload)
+		if err != nil {
+			return time.Time{}, false
+		}
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return time.Time{}, false
+	}
+	if expNum, ok := claims["exp"].(float64); ok && expNum > 0 {
+		return time.Unix(int64(expNum), 0), true
+	}
+	return time.Time{}, false
 }

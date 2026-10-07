@@ -23,6 +23,7 @@ import (
 	"amux-accounts/pkg/ctxshrink"
 	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/identity"
+	"amux-accounts/pkg/metrics"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
@@ -409,6 +410,28 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		_ = json.NewEncoder(w).Encode(s)
 	})
 
+	metricsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		reports := guard.GlobalHealth().GetAllReports()
+		var summaries []metrics.AccountHealthSummary
+		for acc, rep := range reports {
+			summaries = append(summaries, metrics.AccountHealthSummary{
+				Account:  acc,
+				Provider: acc,
+				Score:    float64(rep.Score),
+			})
+		}
+		var sessions int
+		if life != nil {
+			sessions = life.Sessions()
+		}
+		out := metrics.Default().RenderPrometheus(sessions, summaries)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(out))
+	}
+	mux.HandleFunc("/_am/metrics", metricsHandler)
+	mux.HandleFunc("/metrics", metricsHandler)
+
 	mux.HandleFunc("/_am/guard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(guard.Status())
@@ -570,7 +593,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			}
 		}
 
-		if strings.HasPrefix(path, "/_am/") {
+		if strings.HasPrefix(path, "/_am/") || path == "/metrics" {
 			withGzip(mux).ServeHTTP(w, r)
 			return
 		}
