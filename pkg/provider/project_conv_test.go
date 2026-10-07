@@ -3,6 +3,8 @@ package provider
 import (
 	"testing"
 	"time"
+
+	"amux-accounts/pkg/types"
 )
 
 func TestProjectConversationManager_Isolation(t *testing.T) {
@@ -188,5 +190,66 @@ func TestProjectConversationManager_Reset(t *testing.T) {
 	mgr.ResetAll()
 	if _, ok := mgr.GetActive(proj2); ok {
 		t.Errorf("expected proj2 to be cleared after ResetAll")
+	}
+}
+
+// The 16:15 recap side request in Claude Code reuses the main session and
+// system prompt. Its reply lands on the live thread but never enters the
+// client transcript, so the next real request must continue from the turn
+// before the recap, not from the recap reply.
+func TestProjectConversation_ForkPointAfterSideRequest(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
+	mgr := NewProjectConversationManager("chatgpt:test", 25, time.Hour)
+	proj := "/work/analyze-spec#abc"
+
+	sys := types.ChatMessage{Role: "system", Content: "You are Claude Code"}
+	review := []types.ChatMessage{sys, {Role: "user", Content: "review the skill"}}
+	mgr.RegisterTurn(proj, "s1", "conv", "msg-review", nil, HistoryMarkOf(review))
+
+	reviewReply := types.ChatMessage{Role: "assistant", Content: "Here is the review."}
+	recap := append(append([]types.ChatMessage{}, review...), reviewReply,
+		types.ChatMessage{Role: "user", Content: "The user stepped away and is coming back. Recap in under 40 words."})
+	c, _ := mgr.GetActive(proj)
+	if _, forked := c.ForkPoint(recap); forked {
+		t.Fatal("recap continues the latest turn; it is not a fork")
+	}
+	mgr.RegisterTurn(proj, "s1", "conv", "msg-recap", nil, HistoryMarkOf(recap))
+
+	commit := append(append([]types.ChatMessage{}, review...), reviewReply,
+		types.ChatMessage{Role: "user", Content: "commit what you changed"})
+	c, _ = mgr.GetActive(proj)
+	parent, forked := c.ForkPoint(commit)
+	if !forked || parent != "msg-review" {
+		t.Fatalf("ForkPoint = %q, %v; want msg-review, true", parent, forked)
+	}
+	mgr.RegisterTurn(proj, "s1", "conv", "msg-commit", nil, HistoryMarkOf(commit))
+
+	// The recap branch is dropped; the next turn continues the main line.
+	commitReply := types.ChatMessage{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Bash", Arguments: `{"command":"git status"}`}}}
+	next := append(append([]types.ChatMessage{}, commit...), commitReply,
+		types.ChatMessage{Role: "tool", ToolCallID: "t1", Content: "clean"})
+	c, _ = mgr.GetActive(proj)
+	if _, forked := c.ForkPoint(next); forked {
+		t.Fatal("tool result after the latest turn is not a fork")
+	}
+	if n := len(c.Checkpoints); n != 2 {
+		t.Fatalf("checkpoints = %d, want 2 (recap branch dropped)", n)
+	}
+}
+
+func TestProjectConversation_ForkPointUnknownHistory(t *testing.T) {
+	t.Setenv("AM_DIR", t.TempDir())
+	mgr := NewProjectConversationManager("chatgpt:test", 25, time.Hour)
+	proj := "/work/p"
+	a := []types.ChatMessage{{Role: "user", Content: "a"}}
+	mgr.RegisterTurn(proj, "s1", "conv", "m1", nil, HistoryMarkOf(a))
+	b := []types.ChatMessage{{Role: "user", Content: "a"}, {Role: "assistant", Content: "x"}, {Role: "user", Content: "b"}}
+	mgr.RegisterTurn(proj, "s1", "conv", "m2", nil, HistoryMarkOf(b))
+
+	// A compacted transcript matches no checkpoint: keep the live thread.
+	compacted := []types.ChatMessage{{Role: "user", Content: "summary"}, {Role: "assistant", Content: "ok"}, {Role: "user", Content: "go"}}
+	c, _ := mgr.GetActive(proj)
+	if _, forked := c.ForkPoint(compacted); forked {
+		t.Fatal("unmatched history must not be treated as a fork")
 	}
 }

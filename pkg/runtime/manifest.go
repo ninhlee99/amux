@@ -199,3 +199,39 @@ func parseSchemaParameters(raw json.RawMessage) []ToolParameter {
 
 	return params
 }
+
+// StandardToolDefs returns the canonical suite of native coding agent tools for AMUX.
+func StandardToolDefs() []types.ToolDef {
+	return []types.ToolDef{
+		{
+			Name:        "Bash",
+			Description: "Execute a shell command in the workspace terminal.",
+			InputSchema: []byte(`{"type":"object","required":["command"],"properties":{"command":{"type":"string","description":"The exact command string to execute in shell."},"cwd":{"type":"string","description":"Optional working directory for the command."}}}`),
+		},
+		{
+			Name:        "Read",
+			Description: "Inspect file contents from disk.",
+			InputSchema: []byte(`{"type":"object","required":["file_path"],"properties":{"file_path":{"type":"string","description":"Path to the file to read."},"start_line":{"type":"integer","description":"1-indexed start line."},"end_line":{"type":"integer","description":"1-indexed end line."}}}`),
+		},
+		{
+			Name:        "Write",
+			Description: "Write full contents to a file on disk.",
+			InputSchema: []byte(`{"type":"object","required":["file_path","content"],"properties":{"file_path":{"type":"string","description":"Path to the file to create or write."},"content":{"type":"string","description":"Content to write to the file."},"append":{"type":"boolean","description":"Whether to append to the file instead of overwriting."}}}`),
+		},
+		{
+			Name:        "Edit",
+			Description: "Replace an exact chunk of text in an existing file.",
+			InputSchema: []byte(`{"type":"object","required":["file_path","old_string","new_string"],"properties":{"file_path":{"type":"string","description":"Path to the file to edit."},"old_string":{"type":"string","description":"The exact text chunk to replace."},"new_string":{"type":"string","description":"The replacement text chunk."},"allow_multiple":{"type":"boolean","description":"Allow replacing multiple occurrences."}}}`),
+		},
+		{
+			Name:        "Workflow",
+			Description: "Execute a predefined or workspace workflow pipeline.",
+			InputSchema: []byte(`{"type":"object","required":["name"],"properties":{"name":{"type":"string","description":"Name of the workflow to run (e.g. test, build, lint, status, diff)."},"inputs":{"type":"string","description":"Optional arguments or step parameters for the workflow."}}}`),
+		},
+		{
+			Name:        "call_mcp_tool",
+			Description: "Invoke a Model Context Protocol tool.",
+			InputSchema: []byte(`{"type":"object","required":["ServerName","ToolName","Arguments"],"properties":{"ServerName":{"type":"string","description":"MCP server name."},"ToolName":{"type":"string","description":"Tool name on the server."},"Arguments":{"type":"object","description":"Arguments to pass to the tool."}}}`),
+		},
+	}
+}

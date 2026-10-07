@@ -708,6 +708,10 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			if d, ok := findToolDef(by, "skill", "load_skill", "run_skill", "use_skill"); ok {
 				return d.Name, true
 			}
+		case lower == "workflow" || lower == "run_workflow" || lower == "execute_workflow" || lower == "apply_workflow":
+			if d, ok := findToolDef(by, "workflow", "run_workflow", "execute_workflow", "apply_workflow"); ok {
+				return d.Name, true
+			}
 		}
 
 		// MCP tool matching: e.g. "mcp__server__tool" <-> "server_tool" or "mcp_server_tool"
@@ -1129,6 +1133,12 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 
 	wantSkill := toolArgKey(def, "skill", "skill_name", "name")
 	remap(wantSkill, "skill", "skill_name", "name", "skillName")
+
+	wantWorkflow := toolArgKey(def, "name", "workflow_name", "workflow", "id")
+	remap(wantWorkflow, "name", "workflow_name", "workflow", "id", "title")
+
+	wantInputs := toolArgKey(def, "inputs", "arguments", "args", "params", "parameters")
+	remap(wantInputs, "inputs", "arguments", "args", "params", "parameters")
 
 	// Ensure required schema parameters for AGY / strict client tools if missing
 	schemaKeysList := schemaKeys(def.InputSchema, 20)

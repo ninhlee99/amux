@@ -12,6 +12,7 @@ import (
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/runtime"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
@@ -150,18 +151,97 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 	}
 	text := strings.TrimSpace(sb.String())
 	clean := strings.TrimSpace(tools.StripInternalThoughtAndToolTags(text))
+
+	// If model requested tool calls, execute them and resume conversation up to 5 turns
 	if len(recordedToolCalls) > 0 {
-		var parts []string
-		for _, tc := range recordedToolCalls {
-			parts = append(parts, fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments))
+		engine := runtime.NewExecutionEngine(nil)
+		maxTurns := 5
+		for currentTurn := 0; currentTurn < maxTurns && len(recordedToolCalls) > 0; currentTurn++ {
+			if onDelta != nil {
+				onDelta("⚙️ Executing tools...")
+			}
+
+			msgs = append(msgs, types.ChatMessage{
+				Role:      "assistant",
+				Content:   text,
+				ToolCalls: recordedToolCalls,
+			})
+
+			for _, tc := range recordedToolCalls {
+				execRes, execErr := engine.Execute(ctx, tc)
+				output := ""
+				if execRes != nil && execRes.Output != "" {
+					output = execRes.Output
+				} else if execErr != nil {
+					output = fmt.Sprintf("Error: %v", execErr)
+				} else {
+					output = "(tool completed with no output)"
+				}
+
+				toolID := tc.ID
+				if toolID == "" {
+					toolID = fmt.Sprintf("call_%d_%s", currentTurn, tc.Name)
+				}
+
+				msgs = append(msgs, types.ChatMessage{
+					Role:       "tool",
+					ToolCallID: toolID,
+					Content:    output,
+				})
+			}
+
+			req.Messages = msgs
+			var nextCh <-chan types.StreamChunk
+			var nextErr error
+			if p := strings.TrimSpace(a.Provider); p != "" {
+				if id, merr := provider.MatchID(b.path(), p); merr == nil && strings.EqualFold(id, p) {
+					nextCh, nextErr = pool.SendNamed(ctx, id, req)
+				} else {
+					nextCh, nextErr = pool.SendProvider(ctx, p, req)
+				}
+			} else {
+				nextCh, nextErr = pool.Send(ctx, req)
+			}
+			if nextErr != nil {
+				break
+			}
+
+			sb.Reset()
+			thinking.Reset()
+			recordedToolCalls = nil
+			for c := range nextCh {
+				if c.Error != nil {
+					break
+				}
+				if c.ID != "" && served == "" {
+					served = c.ID
+				}
+				if c.Thinking != "" {
+					thinking.WriteString(c.Thinking)
+				}
+				if c.Content != "" {
+					sb.WriteString(c.Content)
+					if onDelta != nil {
+						onDelta(sb.String())
+					}
+				}
+				for _, tc := range c.ToolCalls {
+					recordedToolCalls = append(recordedToolCalls, tc)
+				}
+			}
+
+			text = strings.TrimSpace(sb.String())
+			clean = strings.TrimSpace(tools.StripInternalThoughtAndToolTags(text))
+			if len(recordedToolCalls) == 0 {
+				parsed := tools.ParseWebTools(text, runtime.GlobalRegistry.ToolDefs())
+				if len(parsed) > 0 {
+					recordedToolCalls = parsed
+				}
+			}
 		}
-		toolSummary := "Provider requested tool execution: " + strings.Join(parts, "; ")
-		if clean != "" {
-			text = clean + "\n\n" + toolSummary
-		} else {
-			text = toolSummary
-		}
-	} else if clean != "" {
+	}
+
+	if clean != "" {
 		text = clean
 	} else if text != "" {
 		// If clean was stripped leaving empty text (e.g. only thought tags returned),

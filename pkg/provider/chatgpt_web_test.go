@@ -70,7 +70,7 @@ func TestStreamChatGPTWeb_ContainerExecBecomesClientToolCall(t *testing.T) {
 		Tools:    []types.ToolDef{{Name: "Bash", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`)}},
 	}
 	raw := make(chan types.StreamChunk)
-	go streamChatGPTWeb(context.Background(), a, "/proj", "s1", true, resp, raw)
+	go streamChatGPTWeb(context.Background(), a, "/proj", "s1", HistoryMark{}, true, resp, raw)
 
 	var text strings.Builder
 	var calls []types.ToolCall
@@ -114,7 +114,7 @@ func TestStreamChatGPTWeb_ContainerExecIgnoredWithoutClientTools(t *testing.T) {
 	)
 	a := &ChatGPTWebAdapter{AdapterID: "chatgpt:test"}
 	out := make(chan types.StreamChunk)
-	go streamChatGPTWeb(context.Background(), a, "/proj", "s1", false, resp, out)
+	go streamChatGPTWeb(context.Background(), a, "/proj", "s1", HistoryMark{}, false, resp, out)
 	var text strings.Builder
 	for c := range out {
 		text.WriteString(c.Content)

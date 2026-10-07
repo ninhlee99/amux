@@ -42,12 +42,24 @@ func BuildRuntimeContract(m *RuntimeManifest) string {
 		dynamicGuidance = append(dynamicGuidance, "Edit files via 'replace_file_content' (do NOT use Claude 'FileEdit').")
 	} else if toolSet["FileEdit"] {
 		dynamicGuidance = append(dynamicGuidance, "Edit files via 'FileEdit' (do NOT use Antigravity 'replace_file_content').")
+	} else if toolSet["Edit"] {
+		dynamicGuidance = append(dynamicGuidance, "Edit files via 'Edit'.")
 	}
 
 	if toolSet["view_file"] {
 		dynamicGuidance = append(dynamicGuidance, "Inspect files via 'view_file' (do NOT use Claude 'FileRead' / 'View').")
 	} else if toolSet["FileRead"] {
 		dynamicGuidance = append(dynamicGuidance, "Inspect files via 'FileRead' (do NOT use Antigravity 'view_file').")
+	} else if toolSet["Read"] {
+		dynamicGuidance = append(dynamicGuidance, "Inspect files via 'Read'.")
+	}
+
+	if toolSet["Write"] {
+		dynamicGuidance = append(dynamicGuidance, "Write files via 'Write'.")
+	}
+
+	if toolSet["Workflow"] || toolSet["workflow"] {
+		dynamicGuidance = append(dynamicGuidance, "Execute workflows and pipelines via 'Workflow'.")
 	}
 
 	var sb strings.Builder

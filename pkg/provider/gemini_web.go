@@ -100,6 +100,14 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			canReuse := hasActive && activeConv != nil && !rotated &&
 				(activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
 			if canReuse {
+				// Gemini threads cannot branch: a request off an earlier
+				// turn (e.g. after a side request) needs a fresh thread.
+				if _, forked := activeConv.ForkPoint(req.Messages); forked {
+					log.Printf("%s: request branches off an earlier turn of %s — starting a new Gemini chat", a.AdapterID, project)
+					canReuse = false
+				}
+			}
+			if canReuse {
 				meta = activeConv.Metadata
 			}
 			if rotated {
@@ -149,7 +157,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				return
 			}
 			if len(newMeta) > 0 && newMeta[0] != "" {
-				cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
+				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, HistoryMarkOf(req.Messages))
 			}
 			if !streamedDelta && text != "" {
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: text})

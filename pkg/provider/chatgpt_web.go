@@ -252,6 +252,10 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		if canReuse {
 			convID = activeConv.ID
 			parentID = activeConv.ParentID
+			if forkParent, forked := activeConv.ForkPoint(req.Messages); forked && forkParent != "" {
+				log.Printf("%s: request branches off an earlier turn of %s — continuing from that turn", a.AdapterID, project)
+				parentID = forkParent
+			}
 		}
 
 		if rotatedConv {
@@ -375,7 +379,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		out := make(chan types.StreamChunk)
-		go streamChatGPTWeb(ctx, a, project, req.SessionID, len(req.Tools) > 0, resp, out)
+		go streamChatGPTWeb(ctx, a, project, req.SessionID, HistoryMarkOf(req.Messages), len(req.Tools) > 0, resp, out)
 		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 	}
 }
@@ -390,7 +394,7 @@ func (a *ChatGPTWebAdapter) ResetConversationForScope(scopeKey string) {
 	a.convs().ResetProject(scopeKey)
 }
 
-func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessionID string, clientTools bool, resp *http.Response, out chan<- types.StreamChunk) {
+func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessionID string, mark HistoryMark, clientTools bool, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
 
@@ -413,7 +417,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		}
 		if payload == "[DONE]" {
 			if convID != "" && msgID != "" {
-				a.convs().Register(project, sessionID, convID, msgID, nil)
+				a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -520,7 +524,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 
 		if chunk.Message.Status == "finished_successfully" && lastText != "" {
 			if convID != "" && msgID != "" {
-				a.convs().Register(project, sessionID, convID, msgID, nil)
+				a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -532,7 +536,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		return
 	}
 	if convID != "" && msgID != "" {
-		a.convs().Register(project, sessionID, convID, msgID, nil)
+		a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
 	}
 	if !doneSent && ctx.Err() == nil {
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})

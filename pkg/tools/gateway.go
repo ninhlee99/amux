@@ -225,6 +225,12 @@ func (g *ToolGateway) findMatchingToolDef(incomingName string, defs []types.Tool
 			return d, true
 		}
 
+	// Workflows
+	case lowerIncoming == "workflow" || lowerIncoming == "run_workflow" || lowerIncoming == "execute_workflow" || lowerIncoming == "apply_workflow":
+		if d, ok := findToolDef(by, "workflow", "run_workflow", "execute_workflow", "apply_workflow"); ok {
+			return d, true
+		}
+
 	// MCP calling
 	case strings.HasPrefix(lowerIncoming, "mcp__") || strings.HasPrefix(lowerIncoming, "mcp_") || lowerIncoming == "call_mcp_tool":
 		if d, ok := findToolDef(by, "call_mcp_tool"); ok {

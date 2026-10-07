@@ -42,6 +42,99 @@ type ProjectConversation struct {
 	TotalTokens int       `json:"total_tokens"`           // accumulated tokens consumed in this thread
 	CreatedAt   time.Time `json:"created_at"`             // when the conversation was initiated
 	LastUsedAt  time.Time `json:"last_used_at"`            // last request timestamp
+	// Checkpoints record, per answered turn, the client history the thread
+	// was sent and the upstream message that answered it. They let a later
+	// request that branched off an earlier turn be recognised.
+	Checkpoints []ThreadCheckpoint `json:"checkpoints,omitempty"`
+}
+
+// maxThreadCheckpoints bounds how far back a branched request can rejoin.
+const maxThreadCheckpoints = 8
+
+// HistoryMark fingerprints the client history a turn was answered from.
+type HistoryMark struct {
+	Len  int    `json:"len"`
+	Hash string `json:"hash"`
+}
+
+// ThreadCheckpoint is the thread head (ParentID) after answering the
+// client history described by Mark.
+type ThreadCheckpoint struct {
+	Mark     HistoryMark `json:"mark"`
+	ParentID string      `json:"parent_id,omitempty"`
+}
+
+// HistoryMarkOf fingerprints msgs. The zero mark means "nothing to record".
+func HistoryMarkOf(msgs []types.ChatMessage) HistoryMark {
+	if len(msgs) == 0 {
+		return HistoryMark{}
+	}
+	return HistoryMark{Len: len(msgs), Hash: historyHash(msgs)}
+}
+
+func historyHash(msgs []types.ChatMessage) string {
+	h := sha256.New()
+	for _, m := range msgs {
+		h.Write([]byte(strings.ToLower(m.Role)))
+		h.Write([]byte{0})
+		h.Write([]byte(stripBillingHeader(m.Content)))
+		h.Write([]byte{0})
+		h.Write([]byte(m.ToolCallID))
+		h.Write([]byte{0})
+		for _, tc := range m.ToolCalls {
+			h.Write([]byte(tc.ID))
+			h.Write([]byte{0})
+			h.Write([]byte(tc.Name))
+			h.Write([]byte{0})
+			h.Write([]byte(tc.Arguments))
+			h.Write([]byte{0})
+		}
+		h.Write([]byte{1})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ForkPoint reports whether msgs continue an earlier turn of c rather than
+// its latest one, and if so the thread head right after that turn.
+//
+// Claude Code sends side requests (the "user stepped away" recap) on the
+// main session with the main system prompt. They land on the live thread
+// and leave a reply there that the client's own transcript never holds; the
+// next real request then sits on the wrong branch, and ChatGPT answers that
+// it has no repo access. The request's last assistant turn is the reply the
+// thread gave to the checkpoint whose history is exactly what precedes it.
+func (c *ProjectConversation) ForkPoint(msgs []types.ChatMessage) (parentID string, forked bool) {
+	if c == nil || len(c.Checkpoints) < 2 {
+		return "", false
+	}
+	last := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if strings.EqualFold(msgs[i].Role, "assistant") {
+			last = i
+			break
+		}
+	}
+	if last <= 0 {
+		return "", false
+	}
+	var hash string
+	for i := len(c.Checkpoints) - 1; i >= 0; i-- {
+		cp := c.Checkpoints[i]
+		if cp.Mark.Len != last {
+			continue
+		}
+		if hash == "" {
+			hash = historyHash(msgs[:last])
+		}
+		if cp.Mark.Hash != hash {
+			continue
+		}
+		if i == len(c.Checkpoints)-1 {
+			return "", false
+		}
+		return cp.ParentID, true
+	}
+	return "", false
 }
 
 // ProjectConversationManager tracks and rotates server-side conversation threads per project.
@@ -250,6 +343,12 @@ func (m *ProjectConversationManager) GetActive(project string) (*ProjectConversa
 
 // Register stores or updates an active conversation for a project.
 func (m *ProjectConversationManager) Register(project, sessionID, convID, parentID string, meta []string) {
+	m.RegisterTurn(project, sessionID, convID, parentID, meta, HistoryMark{})
+}
+
+// RegisterTurn is Register that also checkpoints the client history the
+// turn answered (see ProjectConversation.ForkPoint).
+func (m *ProjectConversationManager) RegisterTurn(project, sessionID, convID, parentID string, meta []string, mark HistoryMark) {
 	key := NormalizeProjectKey(project)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -291,6 +390,22 @@ func (m *ProjectConversationManager) Register(project, sessionID, convID, parent
 		}
 		c.TurnCount++
 		c.LastUsedAt = time.Now()
+	}
+	if mark.Len > 0 {
+		c := m.convs[key]
+		// Checkpoints at or past this history belong to a branch this turn
+		// replaces (a side request, or the turn before a rewind).
+		kept := make([]ThreadCheckpoint, 0, len(c.Checkpoints)+1)
+		for _, cp := range c.Checkpoints {
+			if cp.Mark.Len < mark.Len {
+				kept = append(kept, cp)
+			}
+		}
+		kept = append(kept, ThreadCheckpoint{Mark: mark, ParentID: parentID})
+		if len(kept) > maxThreadCheckpoints {
+			kept = kept[len(kept)-maxThreadCheckpoints:]
+		}
+		c.Checkpoints = kept
 	}
 	m.saveProjectSnapshotLocked(key)
 }

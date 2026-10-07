@@ -212,6 +212,14 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		activeConv, hasActive := cm.GetActive(project)
 		hasValidThread := hasActive && activeConv != nil && activeConv.ID != "" &&
 			!rotatedConv && (activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
+		if hasValidThread {
+			// Claude.ai threads are not branched here: a request off an
+			// earlier turn (e.g. after a side request) needs a fresh thread.
+			if _, forked := activeConv.ForkPoint(req.Messages); forked {
+				log.Printf("%s: request branches off an earlier turn of %s — starting a new Claude conversation", a.AdapterID, project)
+				hasValidThread = false
+			}
+		}
 
 		promptReq := req
 		if hasValidThread && historyHasToolTurns(req.Messages) {
@@ -234,7 +242,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
 		}
 
-		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, !hasValidThread)
+		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, HistoryMarkOf(req.Messages), !hasValidThread)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +332,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 }
 
 // ensureConversation reuses the server-side Claude conversation for the specific project if within turn limits.
-func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, isNewThread bool) (orgID, convUUID string, err error) {
+func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, mark HistoryMark, isNewThread bool) (orgID, convUUID string, err error) {
 	a.mu.Lock()
 	if a.orgID == "" {
 		a.mu.Unlock()
@@ -342,7 +350,7 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	cm := a.convs()
 	if !isNewThread {
 		if c, ok := cm.GetActive(project); ok && c.ID != "" {
-			cm.Register(project, sessionID, c.ID, "", nil)
+			cm.RegisterTurn(project, sessionID, c.ID, "", nil, mark)
 			return orgID, c.ID, nil
 		}
 	}
@@ -351,7 +359,7 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	if e != nil {
 		return "", "", e
 	}
-	cm.Register(project, sessionID, id, "", nil)
+	cm.RegisterTurn(project, sessionID, id, "", nil, mark)
 	return orgID, id, nil
 }
 
