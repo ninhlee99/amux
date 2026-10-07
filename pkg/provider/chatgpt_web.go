@@ -48,6 +48,18 @@ const (
 	chatgptDefaultModel    = "gpt-6-luna"
 )
 
+func isNonChatGPTModel(m string) bool {
+	lower := strings.ToLower(strings.TrimSpace(m))
+	return strings.HasPrefix(lower, "claude-") ||
+		strings.HasPrefix(lower, "gemini-") ||
+		strings.HasPrefix(lower, "grok-") ||
+		strings.HasPrefix(lower, "llama-") ||
+		strings.HasPrefix(lower, "mistral-") ||
+		strings.HasPrefix(lower, "deepseek-") ||
+		strings.HasPrefix(lower, "qwen-") ||
+		strings.HasPrefix(lower, "anthropic.")
+}
+
 func (a *ChatGPTWebAdapter) ID() string    { return a.AdapterID }
 func (a *ChatGPTWebAdapter) Priority() int { return a.PriorityLvl }
 func (a *ChatGPTWebAdapter) Plan() string  { return a.PlanTier }
@@ -234,9 +246,9 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	}
 
 	model := chatgptDefaultModel
-	if a.TargetModel != "" && a.TargetModel != "auto" {
+	if a.TargetModel != "" && a.TargetModel != "auto" && !isNonChatGPTModel(a.TargetModel) {
 		model = a.TargetModel
-	} else if req.Model != "" && req.Model != "default" && req.Model != "auto" {
+	} else if req.Model != "" && req.Model != "default" && req.Model != "auto" && !isNonChatGPTModel(req.Model) {
 		model = req.Model
 	}
 

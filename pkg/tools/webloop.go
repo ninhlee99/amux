@@ -70,7 +70,7 @@ var (
 	reToolJSON      = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence     = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
 	reBareJSONKey   = regexp.MustCompile(`([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:`)
-	reGeminiCall    = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
+	reGeminiCall    = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\}|\([^\n)]*\))`)
 	reActionTool    = regexp.MustCompile(`(?im)^Action:\s*([A-Za-z0-9_-]+)\s*\n(?:Action\s+Input|Input|Arguments|Args):\s*(\{[\s\S]*?\}|"[^"\n]*"|[^\n]+)`)
 	reToolCallFence = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
@@ -390,19 +390,21 @@ func (e *streamThoughtExtractor) Feed(chunk string) (string, string) {
 			lowerRest := strings.ToLower(rest)
 			idxThought := strings.Index(lowerRest, "<thought>")
 			idxThinking := strings.Index(lowerRest, "<thinking>")
+			idxReflection := strings.Index(lowerRest, "<reflection>")
 
 			openIdx := -1
 			openTag := ""
 			closeTag := ""
-			if idxThought != -1 && (idxThinking == -1 || idxThought < idxThinking) {
-				openIdx = idxThought
-				openTag = "<thought>"
-				closeTag = "</thought>"
-			} else if idxThinking != -1 {
-				openIdx = idxThinking
-				openTag = "<thinking>"
-				closeTag = "</thinking>"
+			pickEarlier := func(idx int, o, c string) {
+				if idx != -1 && (openIdx == -1 || idx < openIdx) {
+					openIdx = idx
+					openTag = o
+					closeTag = c
+				}
 			}
+			pickEarlier(idxThought, "<thought>", "</thought>")
+			pickEarlier(idxThinking, "<thinking>", "</thinking>")
+			pickEarlier(idxReflection, "<reflection>", "</reflection>")
 
 			if openIdx != -1 {
 				if openIdx > 0 {
@@ -416,7 +418,7 @@ func (e *streamThoughtExtractor) Feed(chunk string) (string, string) {
 			}
 
 			safeLen := len(rest)
-			for _, prefix := range []string{"<thinking", "<thought", "<think", "<thou", "<tho", "<th", "<t", "<"} {
+			for _, prefix := range []string{"<reflection", "<reflect", "<refle", "<refl", "<ref", "<thinking", "<thought", "<think", "<thou", "<tho", "<th", "<t", "<"} {
 				if strings.HasSuffix(strings.ToLower(rest), prefix) {
 					safeLen -= len(prefix)
 					break
@@ -443,7 +445,7 @@ func (e *streamThoughtExtractor) Feed(chunk string) (string, string) {
 				continue
 			}
 			safeLen := len(rest)
-			for _, prefix := range []string{"</thinking", "</thought", "</think", "</thou", "</tho", "</th", "</t", "</", "<"} {
+			for _, prefix := range []string{"</reflection", "</reflect", "</refle", "</refl", "</ref", "</thinking", "</thought", "</think", "</thou", "</tho", "</th", "</t", "</", "<"} {
 				if strings.HasSuffix(strings.ToLower(rest), prefix) {
 					safeLen -= len(prefix)
 					break
@@ -507,6 +509,8 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				if hasExplicitWebToolMarkup(currAll) || (allowBashFence && strings.Contains(currAll, "```bash")) || IsToolRefusal(currAll) {
 					toolMarkupDetected = true
 					pendingContent.Reset()
+				} else if containsSuspiciousRefusalPrefix(currAll) {
+					// Suspected refusal, defer streaming chunk until complete to prevent refusal leaks
 				} else if co != "" {
 					pendingContent.WriteString(co)
 					if pendingContent.Len() >= 120 {
@@ -635,9 +639,65 @@ func IsToolRefusal(text string) bool {
 		"do not have direct access to modify",
 		"cannot directly modify",
 		"cannot directly write",
+		"tôi không thể chạy lệnh",
+		"tôi không thể thực hiện lệnh",
+		"mình không thể chạy lệnh",
+		"mình không thể thực hiện lệnh",
+		"không thể thực thi lệnh",
+		"không có khả năng thực thi lệnh",
+		"không thể trực tiếp chỉnh sửa",
+		"không thể chỉnh sửa trực tiếp",
+		"không có quyền truy cập vào hệ thống",
+		"không có quyền truy cập hệ thống",
+		"không có quyền truy cập filesystem",
+		"không có quyền truy cập file",
+		"tôi là một mô hình ngôn ngữ",
+		"là một mô hình ai",
+		"as an ai language model, i cannot",
+		"as an ai, i cannot",
+		"as an ai, i do not have access",
+		"i am unable to execute commands",
+		"i cannot execute commands",
+		"cannot execute terminal commands",
+		"unable to execute terminal commands",
+		"i cannot run commands",
+		"unable to run commands",
+		"i don't have access to your local machine",
+		"i cannot access your local files",
+		"no access to local files",
+		"cannot run terminal commands",
+		"please run the following command",
+		"hãy chạy lệnh sau trên terminal của bạn",
+		"bạn hãy tự chạy lệnh",
+		"vui lòng chạy lệnh",
+		"i cannot make changes directly",
+		"cannot make changes directly",
 	}
 	for _, kw := range refusalKeywords {
 		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSuspiciousRefusalPrefix(text string) bool {
+	lower := strings.ToLower(text)
+	prefixes := []string{
+		"không có quyền",
+		"không thể",
+		"chưa thể",
+		"chưa có",
+		"thiếu công cụ",
+		"cannot",
+		"unable to",
+		"don't have access",
+		"do not have access",
+		"i lack",
+		"as an ai",
+	}
+	for _, p := range prefixes {
+		if strings.Contains(lower, p) {
 			return true
 		}
 	}
@@ -1125,6 +1185,8 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		} else if quoted := reBareJSONKey.ReplaceAllString(raw, `$1"$2":`); json.Valid([]byte(quoted)) {
 			// Gemini's native syntax: call:default_api:view_file{AbsolutePath: "/a.go"}
 			add(name, "", quoted)
+		} else if parsed, ok := pyKwargsToJSON(raw); ok {
+			add(name, "", parsed)
 		} else {
 			add(name, "", raw)
 		}
@@ -1157,6 +1219,164 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		}
 	}
 	return out
+}
+
+// pyKwargsToJSON converts Python-style keyword arguments inside parentheses,
+// e.g. (AbsolutePath="/path/to/file", StartLine=1, is_dir=False), into valid JSON object string.
+func pyKwargsToJSON(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
+		return "", false
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return "{}", true
+	}
+
+	result := make(map[string]any)
+	n := len(inner)
+	i := 0
+
+	for i < n {
+		for i < n && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\r' || inner[i] == '\n' || inner[i] == ',') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+
+		keyStart := i
+		for i < n && inner[i] != '=' && inner[i] != ' ' && inner[i] != '\t' && inner[i] != ',' && inner[i] != ':' {
+			i++
+		}
+		key := strings.TrimSpace(inner[keyStart:i])
+		if key == "" {
+			break
+		}
+
+		for i < n && (inner[i] == ' ' || inner[i] == '\t') {
+			i++
+		}
+		if i < n && (inner[i] == '=' || inner[i] == ':') {
+			i++
+		}
+		for i < n && (inner[i] == ' ' || inner[i] == '\t') {
+			i++
+		}
+		if i >= n {
+			result[key] = ""
+			break
+		}
+
+		if inner[i] == '"' || inner[i] == '\'' {
+			quote := inner[i]
+			i++
+			var valSb strings.Builder
+			for i < n {
+				if inner[i] == '\\' && i+1 < n {
+					next := inner[i+1]
+					if next == quote || next == '\\' {
+						valSb.WriteByte(next)
+						i += 2
+						continue
+					} else if next == 'n' {
+						valSb.WriteByte('\n')
+						i += 2
+						continue
+					} else if next == 't' {
+						valSb.WriteByte('\t')
+						i += 2
+						continue
+					}
+					valSb.WriteByte(next)
+					i += 2
+					continue
+				}
+				if inner[i] == quote {
+					i++
+					break
+				}
+				valSb.WriteByte(inner[i])
+				i++
+			}
+			result[key] = valSb.String()
+		} else if inner[i] == '{' || inner[i] == '[' {
+			openCh := inner[i]
+			closeCh := byte('}')
+			if openCh == '[' {
+				closeCh = ']'
+			}
+			depth := 0
+			valStart := i
+			inStr := false
+			var strQuote byte
+			for i < n {
+				ch := inner[i]
+				if inStr {
+					if ch == '\\' && i+1 < n {
+						i += 2
+						continue
+					}
+					if ch == strQuote {
+						inStr = false
+					}
+				} else {
+					if ch == '"' || ch == '\'' {
+						inStr = true
+						strQuote = ch
+					} else if ch == openCh {
+						depth++
+					} else if ch == closeCh {
+						depth--
+						if depth == 0 {
+							i++
+							break
+						}
+					}
+				}
+				i++
+			}
+			rawNested := inner[valStart:i]
+			var parsedNested any
+			if json.Unmarshal([]byte(rawNested), &parsedNested) == nil {
+				result[key] = parsedNested
+			} else {
+				result[key] = rawNested
+			}
+		} else {
+			valStart := i
+			for i < n && inner[i] != ',' {
+				i++
+			}
+			rawVal := strings.TrimSpace(inner[valStart:i])
+			switch strings.ToLower(rawVal) {
+			case "true":
+				result[key] = true
+			case "false":
+				result[key] = false
+			case "none", "null":
+				result[key] = nil
+			default:
+				if intVal, err := strconv.ParseInt(rawVal, 10, 64); err == nil {
+					result[key] = intVal
+				} else if floatVal, err := strconv.ParseFloat(rawVal, 64); err == nil {
+					result[key] = floatVal
+				} else {
+					result[key] = rawVal
+				}
+			}
+		}
+
+		for i < n && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == ',') {
+			i++
+		}
+	}
+
+	b, err := json.Marshal(result)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef, projectRoot ...string) []types.ToolCall {

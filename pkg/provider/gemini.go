@@ -117,8 +117,9 @@ func NewGeminiAdapter(id string, priority int, apiKey, model string) *GeminiAdap
 	}
 }
 
-func (a *GeminiAdapter) ID() string    { return a.AdapterID }
-func (a *GeminiAdapter) Priority() int { return a.PriorityLvl }
+func (a *GeminiAdapter) ID() string          { return a.AdapterID }
+func (a *GeminiAdapter) Priority() int       { return a.PriorityLvl }
+func (a *GeminiAdapter) SupportsTools() bool { return true }
 
 func (a *GeminiAdapter) getNextAPIKey() (string, int) {
 	keys := a.APIKeys

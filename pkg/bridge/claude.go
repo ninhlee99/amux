@@ -577,7 +577,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	}
 	if len(toolCalls) > 0 {
 		cleanProse := tools.StripWebToolMarkup(fullContent.String())
-		if strings.TrimSpace(cleanProse) != "" {
+		if !tools.IsToolRefusal(fullContent.String()) && strings.TrimSpace(cleanProse) != "" {
 			content = append(content, map[string]string{"type": "text", "text": cleanProse})
 		}
 	} else if fullContent.Len() > 0 {
@@ -888,7 +888,7 @@ loop:
 			fullContent.WriteString(chunk.Content)
 			if hasTools {
 				currentAll := fullContent.String()
-				if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") {
+				if containsToolMarkup(currentAll) || strings.Contains(currentAll, "<thought") || strings.Contains(currentAll, "<thinking") || strings.Contains(currentAll, "<reflection") || strings.Contains(currentAll, "call:") || tools.IsToolRefusal(currentAll) {
 					bufferedContent.WriteString(chunk.Content)
 				} else {
 					ensureTextBlock()
@@ -937,7 +937,7 @@ loop:
 	if len(toolCalls) > 0 {
 		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectClaude)
 		cleanProse := tools.StripWebToolMarkup(fullContent.String())
-		if len(cleanProse) > flushedContentLen {
+		if !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
 			remaining := cleanProse[flushedContentLen:]
 			if strings.TrimSpace(remaining) != "" {
 				ensureTextBlock()

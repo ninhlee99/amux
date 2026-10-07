@@ -214,7 +214,6 @@ func TestStripWebToolMarkup(t *testing.T) {
 	}
 }
 
-
 // TestParseWebTools_DynamicSchemaArbitraryNestedParams verifies the web
 // tool-call emulator does not hardcode tool names or argument shapes: an
 // arbitrary, never-before-seen tool ("merchant_lookup") with deeply nested
@@ -880,5 +879,117 @@ func TestFinalizeWebToolCalls_IDsUniqueAcrossTurns(t *testing.T) {
 	third, _ := FinalizeWebToolCalls(copied, defs, hist)
 	if len(third) != 1 || third[0].ID == first[0].ID {
 		t.Fatalf("copied history id kept: %+v", third)
+	}
+}
+
+func TestIsToolRefusal_VietnameseAndEnglishPhrases(t *testing.T) {
+	refusals := []string{
+		"Tôi không có quyền truy cập repo của bạn.",
+		"Tôi không thể chạy lệnh trực tiếp trên terminal.",
+		"mình không thể thực hiện lệnh này được.",
+		"Hiện tại không thể thực thi lệnh trong môi trường này.",
+		"As an AI, I cannot execute terminal commands.",
+		"I am unable to run commands directly on your local machine.",
+		"Please run the following command in your terminal:\ngit status",
+		"Vui lòng chạy lệnh sau trên terminal của bạn:\ngo test ./...",
+	}
+	for _, r := range refusals {
+		if !IsToolRefusal(r) {
+			t.Errorf("expected IsToolRefusal(%q) to be true, got false", r)
+		}
+	}
+
+	nonRefusals := []string{
+		"I will check the git status for you now.",
+		"<tool_call>{\"name\":\"Bash\",\"arguments\":{\"command\":\"git status\"}}</tool_call>",
+		"Đang kiểm tra trạng thái của kho lưu trữ.",
+	}
+	for _, nr := range nonRefusals {
+		if IsToolRefusal(nr) {
+			t.Errorf("expected IsToolRefusal(%q) to be false, got true", nr)
+		}
+	}
+}
+
+func TestPyKwargsToJSON(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected map[string]any
+	}{
+		{
+			input: `(command="git status", timeout=30)`,
+			expected: map[string]any{
+				"command": "git status",
+				"timeout": int64(30),
+			},
+		},
+		{
+			input: `(AbsolutePath="/Users/foo/bar.go", StartLine=1, EndLine=50, Force=True)`,
+			expected: map[string]any{
+				"AbsolutePath": "/Users/foo/bar.go",
+				"StartLine":    int64(1),
+				"EndLine":      int64(50),
+				"Force":        true,
+			},
+		},
+		{
+			input:    `()`,
+			expected: map[string]any{},
+		},
+	}
+
+	for _, c := range cases {
+		jsonStr, ok := pyKwargsToJSON(c.input)
+		if !ok {
+			t.Fatalf("pyKwargsToJSON(%q) failed", c.input)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result %s: %v", jsonStr, err)
+		}
+		for k, v := range c.expected {
+			if parsed[k] != v {
+				// Special check for number representations
+				if intV, isInt := v.(int64); isInt {
+					if floatV, isFloat := parsed[k].(float64); isFloat && int64(floatV) == intV {
+						continue
+					}
+				}
+				t.Errorf("key %q: expected %v (%T), got %v (%T)", k, v, v, parsed[k], parsed[k])
+			}
+		}
+	}
+}
+
+func TestParseWebTools_GeminiCallKwargs(t *testing.T) {
+	defs := []types.ToolDef{
+		{
+			Name:        "view_file",
+			InputSchema: []byte(`{"properties":{"AbsolutePath":{"type":"string"}},"required":["AbsolutePath"]}`),
+		},
+	}
+	text := `Let me inspect the file:
+call:default_api:view_file(AbsolutePath="/Users/test/main.go")
+`
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "view_file" {
+		t.Errorf("expected view_file, got %s", calls[0].Name)
+	}
+	if !strings.Contains(calls[0].Arguments, "/Users/test/main.go") {
+		t.Errorf("arguments missing path: %s", calls[0].Arguments)
+	}
+}
+
+func TestStreamThoughtExtractor_ReflectionTag(t *testing.T) {
+	e := &streamThoughtExtractor{}
+	th, co := e.Feed("<reflection>\nAnalyzing user request...\n</reflection>\nHere is the answer.")
+	if !strings.Contains(th, "Analyzing user request") {
+		t.Errorf("expected thought to contain 'Analyzing user request', got: %q", th)
+	}
+	if !strings.Contains(co, "Here is the answer.") {
+		t.Errorf("expected content to contain 'Here is the answer.', got: %q", co)
 	}
 }

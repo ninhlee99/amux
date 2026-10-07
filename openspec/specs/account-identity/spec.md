@@ -64,6 +64,10 @@ amux SHALL keep at most one account row per product and email, where products ar
 - **WHEN** a ChatGPT Web row was saved without an email and the same account logs in again
 - **THEN** that row learns its email and is updated in place; no second row is added
 
+#### Scenario: Gemini Web relogin with detected email
+- **WHEN** a Gemini Web login is performed for `me@gmail.com`
+- **THEN** it is saved under `gemini:web:me` and relogging in with the same email updates the existing row in place
+
 ### Requirement: Active browser session is used
 When auto-extracting a web session cookie, amux SHALL choose the most recently used unexpired session across all supported browsers and profiles.
 
@@ -88,5 +92,4 @@ The CLI command `amux doctor auth` SHALL inspect all configured identities and a
 #### Scenario: Expired token inspected
 - **WHEN** an identity's JWT expiration time has passed
 - **THEN** `amux doctor auth` reports the credential as expired and suggests re-authenticating with `amux login <provider>`
-
 

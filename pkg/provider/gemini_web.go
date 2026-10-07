@@ -156,7 +156,10 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w", a.AdapterID, err)})
 				return
 			}
-			if len(newMeta) > 0 && newMeta[0] != "" {
+			if tools.IsToolRefusal(text) {
+				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", a.AdapterID, project)
+				cm.ResetProject(project)
+			} else if len(newMeta) > 0 && newMeta[0] != "" {
 				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, HistoryMarkOf(req.Messages))
 			}
 			if !streamedDelta && text != "" {
@@ -506,15 +509,27 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 				}
 				if len(cand) > 1 {
 					if parts, ok := cand[1].([]any); ok && len(parts) > 0 {
-						if s, ok := parts[0].(string); ok {
-							text = html.UnescapeString(s)
+						var sb strings.Builder
+						for _, p := range parts {
+							if s, ok := p.(string); ok {
+								sb.WriteString(s)
+							}
+						}
+						if sb.Len() > 0 {
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}
 				if (text == "" || strings.HasPrefix(text, "http://googleusercontent.com/")) && len(cand) > 22 {
 					if parts, ok := cand[22].([]any); ok && len(parts) > 0 {
-						if s, ok := parts[0].(string); ok {
-							text = html.UnescapeString(s)
+						var sb strings.Builder
+						for _, p := range parts {
+							if s, ok := p.(string); ok {
+								sb.WriteString(s)
+							}
+						}
+						if sb.Len() > 0 {
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}

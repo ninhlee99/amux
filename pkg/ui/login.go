@@ -577,6 +577,29 @@ func backfillChatGPTAccounts() {
 	}
 }
 
+// backfillGeminiAccounts learns the email of gemini_web rows saved without
+// one (an earlier login whose account was not yet captured), so logging in to
+// the same account again updates that row instead of adding a second one.
+func backfillGeminiAccounts() {
+	path := provider.DefaultAccountsPath()
+	f, err := provider.LoadConfigFile(path)
+	if err != nil || f == nil {
+		return
+	}
+	for _, p := range f.Providers {
+		if p.Type != "gemini_web" || strings.TrimSpace(p.Account) != "" {
+			continue
+		}
+		cookie := p.Cookies
+		if cookie == "" && p.SessionKey != "" {
+			cookie = "__Secure-1PSID=" + p.SessionKey
+		}
+		if acct, err := browser.FetchGeminiAccount(p.SessionKey, cookie); err == nil && acct.Email != "" {
+			_ = provider.SetProviderAccount(path, p.ID, acct.Email)
+		}
+	}
+}
+
 // chatgptTokenEmail returns the account email behind a stored ChatGPT
 // credential: an access-token JWT is read offline, a session cookie is
 // exchanged at chatgpt.com. "" when unknown (expired, offline).
@@ -705,6 +728,9 @@ func loginGeminiWeb(f loginFlags) {
 			fmt.Printf("✓ Auto-extracted Google __Secure-1PSID from %s!\n", bName)
 			key = tok
 			cookieHeader = "__Secure-1PSID=" + tok
+			if ts, _, _ := browser.ExtractCookie("google.com", "__Secure-1PSIDTS"); ts != "" {
+				cookieHeader += "; __Secure-1PSIDTS=" + ts
+			}
 		}
 	}
 	if cookieHeader == "" && key == "" {
@@ -724,26 +750,44 @@ func loginGeminiWeb(f loginFlags) {
 		return
 	}
 
-	id, priorityFloor, multi := nextPoolID(provider.PoolIDPrefix("gemini_web"))
-	priority := provider.PriorityWebGemini
-	if multi {
-		priority = priorityFloor
+	accountEmail := ""
+	accountPlan := "free"
+	if acct, err := browser.FetchGeminiAccount(key, cookieHeader); err != nil {
+		fmt.Printf("Could not detect account email: %v\n", err)
+		fmt.Println("Continuing without identity — re-login may create a new pool entry.")
+	} else {
+		accountEmail = acct.Email
+		if acct.Plan != "" {
+			accountPlan = acct.Plan
+		}
+		if accountPlan == "pro" {
+			fmt.Printf("✨ Signed in as %s [Subscription: Gemini Advanced / Google One].\n", accountEmail)
+		} else {
+			fmt.Printf("ℹ️ Signed in as %s [Tier: Free] -> Configured for Gemini Web proxy pool.\n", accountEmail)
+		}
 	}
-	err := provider.AddOrUpdateProvider(provider.DefaultAccountsPath(), provider.ProviderConfig{
-		ID:         id,
-		Type:       "gemini_web",
-		Priority:   priority,
-		SessionKey: key,
-		Cookies:    cookieHeader,
-		Model:      f.model,
+
+	model := f.model
+	if model == "" {
+		model = "gemini-2.5-flash"
+	}
+
+	if accountEmail != "" {
+		backfillGeminiAccounts()
+	}
+	savePoolLogin("gemini_web", accountEmail, func(slot provider.PoolSlot) provider.ProviderConfig {
+		return provider.ProviderConfig{
+			ID:         slot.ID,
+			Type:       "gemini_web",
+			Priority:   slot.Priority,
+			Enabled:    slot.Enabled,
+			Account:    accountEmail,
+			Plan:       accountPlan,
+			SessionKey: key,
+			Cookies:    cookieHeader,
+			Model:      model,
+		}
 	})
-	if err != nil {
-		fmt.Printf("Error saving: %v\n", err)
-		return
-	}
-	proxy.Sync()
-	fmt.Printf("Saved Gemini Web as %s.\n", id)
-	CmdAccounts()
 }
 
 // githubModelsRetired: GitHub retired GitHub Models (playground, catalog and

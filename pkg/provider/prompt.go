@@ -79,7 +79,7 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		body = strings.TrimSpace(trimmedBody) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
 		finalPrompt = preamble + body
 	} else {
-		finalPrompt = preamble + body + closer
+		finalPrompt = preamble + strings.TrimSpace(body) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
 	}
 	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
 }
