@@ -60,8 +60,12 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		if ranTools {
 			closer = midTaskCue(req.Messages) + closer
 		}
-	} else if ranTools && endsWithUserRequest(req.Messages) {
-		closer = newRequestCue + closer
+	} else if ranTools {
+		if endsWithUserRequest(req.Messages) {
+			closer = newRequestCue + closer
+		} else {
+			closer = "\n[next] Continuing task with tool results above. If you need to make code edits, write files, run tests, or commit: emit the next <tool_call> now (e.g. Bash/Edit/Write) — do NOT stop or describe a plan.\n" + closer
+		}
 	}
 	var preamble string
 	if continuingThread {
@@ -197,14 +201,22 @@ func currentUserTask(messages []types.ChatMessage) string {
 // repo; this points it back at <tool_call>.
 const newRequestCue = "\n[next] New request from the user above. You MUST start with <tool_call> now (e.g. Bash/Read/Edit) — do not describe a plan or claim you lack access.\n"
 
-// endsWithUserRequest is true when the last turn is a user message, not a tool result.
+// endsWithUserRequest is true when the latest conversational turn is a user message,
+// scanning backwards past trailing system reminders or hooks that IDE clients (e.g. Claude Code) attach.
 func endsWithUserRequest(msgs []types.ChatMessage) bool {
-	if len(msgs) == 0 {
-		return false
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		role := strings.ToLower(m.Role)
+		if role == "tool" || role == "assistant" {
+			return false
+		}
+		if role == "user" {
+			c := strings.TrimSpace(m.Content)
+			return c != "" && !strings.EqualFold(c, "(no content)")
+		}
+		// If role == "system", continue scanning backwards past client reminders.
 	}
-	last := msgs[len(msgs)-1]
-	c := strings.TrimSpace(last.Content)
-	return strings.EqualFold(last.Role, "user") && c != "" && !strings.EqualFold(c, "(no content)")
+	return false
 }
 
 // slimWebMessages drops client harness system turns. User/tool/assistant stay.

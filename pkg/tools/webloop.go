@@ -40,11 +40,14 @@ Assistant: <tool_call>
 Multiple blocks OK. CATALOG
 `
 
-// webToolReminder heads continuing-thread prompts. Web threads only see the
-// full preamble on their first turn; without restating that tools exist and
-// how to call them, ChatGPT drifts into "I have no tool access" a few turns in.
-const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools. Built-in python/container cannot see the repo — use <tool_call>, then stop for [Tool result].
-Never claim you lack tools or only have a text catalog. To inspect, read, edit, or run commands, emit <tool_call> now:
+const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools or only have a text catalog. Built-in python/container cannot see the repo — use <tool_call>, then stop for [Tool result].
+To read files, inspect code, run terminal commands, or commit changes, you MUST emit a <tool_call> block immediately:
+<tool_call>
+{"name":"TOOL_NAME","arguments":{...}}
+</tool_call>
+DO NOT decline or claim you lack tools/repo access.
+DO NOT claim you cannot commit or edit files directly. Emit <tool_call> (e.g. Bash, Read, Edit) and stop.
+The client executes the tool on the real workspace and replies with [Tool result].
 Example:
 <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
@@ -52,7 +55,7 @@ Example:
 `
 
 const webToolCloser = `
-[end] Need data → <tool_call> now. Have tool results → answer fully. No checklist / paste / "no tools".
+[end] Need to inspect, edit, write, test, or commit → emit <tool_call> now. Only provide final answer when ALL requested tasks and changes are completely finished on the repository. Never refuse or ask user to paste / no "lack of tools".
 `
 
 var (
@@ -468,6 +471,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		toolMarkupDetected := false
 		allowBashFence := !historyHasTools(hist)
 		thoughtExt := &streamThoughtExtractor{}
+		var pendingContent strings.Builder
 		for ch := range inner {
 			if ch.ID != "" {
 				id = ch.ID
@@ -502,9 +506,15 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				currAll := buf.String()
 				if hasExplicitWebToolMarkup(currAll) || (allowBashFence && strings.Contains(currAll, "```bash")) || IsToolRefusal(currAll) {
 					toolMarkupDetected = true
+					pendingContent.Reset()
 				} else if co != "" {
-					out <- types.StreamChunk{ID: id, Content: co}
-					streamedContentLen += len(co)
+					pendingContent.WriteString(co)
+					if pendingContent.Len() >= 120 {
+						toFlush := pendingContent.String()
+						out <- types.StreamChunk{ID: id, Content: toFlush}
+						streamedContentLen += len(toFlush)
+						pendingContent.Reset()
+					}
 				}
 			}
 		}
@@ -560,24 +570,78 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 // despite tools being live and available in the catalog.
 func IsToolRefusal(text string) bool {
 	lower := strings.ToLower(text)
-	return strings.Contains(lower, "không có quyền truy cập công cụ") ||
-		strings.Contains(lower, "không có quyền truy cập repo") ||
-		strings.Contains(lower, "không có quyền truy cập vào repo") ||
-		strings.Contains(lower, "chưa nhận được tool runtime") ||
-		strings.Contains(lower, "chỉ có catalog dạng văn bản") ||
-		strings.Contains(lower, "không thể gọi <tool_call>") ||
-		strings.Contains(lower, "khi tool repo được bật lại") ||
-		strings.Contains(lower, "không có tool runtime") ||
-		strings.Contains(lower, "don't have access to tools") ||
-		strings.Contains(lower, "do not have access to tools") ||
-		strings.Contains(lower, "no access to the repository") ||
-		strings.Contains(lower, "cannot execute commands on the repository") ||
-		strings.Contains(lower, "i lack tool access") ||
-		strings.Contains(lower, "only text catalog") ||
-		strings.Contains(lower, "i cannot run bash") ||
-		strings.Contains(lower, "i cannot edit files directly") ||
-		strings.Contains(lower, "không thể tự `git init`") ||
-		strings.Contains(lower, "không thể tự git init")
+	refusalKeywords := []string{
+		"không có quyền truy cập công cụ",
+		"không có quyền truy cập repo",
+		"không có quyền truy cập vào repo",
+		"không có quyền truy cập workspace",
+		"không có công cụ repo",
+		"không có công cụ",
+		"chưa có công cụ",
+		"thiếu công cụ",
+		"chưa kết nối công cụ",
+		"chưa nhận được tool runtime",
+		"không có tool runtime",
+		"không có tool",
+		"chỉ có catalog dạng văn bản",
+		"chỉ có catalog",
+		"không thể gọi <tool_call>",
+		"khi tool repo được bật lại",
+		"bật lại phiên có tool",
+		"gửi lại ngữ cảnh tool",
+		"phiên này chưa cung cấp tool",
+		"cần quyền truy cập repo qua tool",
+		"chưa thể thực hiện commit trực tiếp",
+		"không thể thực hiện commit trực tiếp",
+		"chưa thể commit trực tiếp",
+		"không thể commit trực tiếp",
+		"không thể tự commit",
+		"không thể tự `git",
+		"không thể tự git",
+		"mình chưa thể thực hiện commit",
+		"chưa thể bắt đầu thao tác vì",
+		"không có quyền thao tác",
+		"không thể thao tác trực tiếp trên repo",
+		"không thể thao tác trực tiếp",
+		"chưa thể thao tác trực tiếp",
+		"không có quyền gọi",
+		"không có quyền gọi các tool",
+		"không thể trung thực nói rằng đã sửa file",
+		"mở lại phiên có workspace tools",
+		"mở lại phiên có",
+		"thao tác trực tiếp trên repo thật",
+		"để thao tác trực tiếp",
+		"chưa thực sự ghi được vào repo",
+		"phiên hiện tại mình không có",
+		"phiên hiện tại không có",
+		"workspace tools",
+		"don't have access to tools",
+		"do not have access to tools",
+		"no access to the repository",
+		"no access to the repo",
+		"cannot access the repo",
+		"cannot access the workspace",
+		"cannot execute commands on the repository",
+		"i lack tool access",
+		"i do not have tool access",
+		"only text catalog",
+		"only a text catalog",
+		"i cannot run bash",
+		"i cannot edit files directly",
+		"cannot commit directly",
+		"unable to run git",
+		"don't have permission to call tools",
+		"cannot call tools in this session",
+		"do not have direct access to modify",
+		"cannot directly modify",
+		"cannot directly write",
+	}
+	for _, kw := range refusalKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // FinalizeWebToolCalls parses web text into tool calls and coerces arg keys to the client dialect schema.
@@ -605,7 +669,15 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 				})
 				forced = true
 			} else {
-				b, _ := json.Marshal(map[string]string{"command": "git status"})
+				lastUser := lastUserText(hist)
+				lowerUser := strings.ToLower(lastUser)
+				cmd := "git status"
+				if strings.Contains(lowerUser, "diff") {
+					cmd = "git diff"
+				} else if strings.Contains(lowerUser, "log") {
+					cmd = "git log -n 5 --oneline"
+				}
+				b, _ := json.Marshal(map[string]string{"command": cmd})
 				calls = append(calls, types.ToolCall{
 					ID:        newWebToolID(),
 					Name:      bashDef.Name,
@@ -617,6 +689,15 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 	}
 	calls = uniqueWebToolIDs(calls, hist)
 	return coerceAllToolArgs(calls, defs, projectRoot...), forced
+}
+
+func lastUserText(hist []types.ChatMessage) string {
+	for i := len(hist) - 1; i >= 0; i-- {
+		if strings.EqualFold(hist[i].Role, "user") {
+			return hist[i].Content
+		}
+	}
+	return ""
 }
 
 // newWebToolID mints a tool_use id for a call parsed from web text.
