@@ -57,21 +57,36 @@ func TestWebBackendPrompt_ToolsCloserLast(t *testing.T) {
 	}
 }
 
+// The live thread already holds the system prompt from its first turn;
+// re-sending it every turn reads to ChatGPT like pasted text.
 func TestWebBackendPrompt_ContinuingUsesLastUser(t *testing.T) {
 	req := &types.ChatRequest{
 		Messages: []types.ChatMessage{
-			{Role: "system", Content: "sys"},
+			{Role: "system", Content: "SYSTEM PROMPT"},
 			{Role: "user", Content: "first"},
 			{Role: "assistant", Content: "ok"},
 			{Role: "user", Content: "second"},
 		},
 	}
 	got := WebBackendPrompt(req, true)
-	if !strings.Contains(got, "sys") || !strings.Contains(got, "second") {
+	if !strings.Contains(got, "second") {
 		t.Fatalf("got %q", got)
 	}
-	if strings.Contains(got, "first") {
-		t.Fatalf("should not flatten when continuing: %q", got)
+	if strings.Contains(got, "first") || strings.Contains(got, "SYSTEM PROMPT") {
+		t.Fatalf("should not flatten or re-send system when continuing: %q", got)
+	}
+}
+
+// A fresh thread has never seen the system prompt, so it must carry it.
+func TestWebBackendPrompt_FreshThreadCarriesSystem(t *testing.T) {
+	req := &types.ChatRequest{
+		Messages: []types.ChatMessage{
+			{Role: "system", Content: "SYSTEM PROMPT"},
+			{Role: "user", Content: "first"},
+		},
+	}
+	if got := WebBackendPrompt(req, false); !strings.Contains(got, "SYSTEM PROMPT") {
+		t.Fatalf("fresh thread dropped system prompt: %q", got)
 	}
 }
 
@@ -276,5 +291,38 @@ func TestWebBackendPrompt_ContinuingTaskGoalIsCurrentRequest(t *testing.T) {
 	}
 	if strings.Contains(got, "review amux") || strings.Contains(got, "New request from the user above") {
 		t.Fatalf("stale task or new-request cue on a tool-result turn:\n%s", got)
+	}
+}
+
+// Claude Code's system prompt alone exceeds the web token budget, so
+// ctxshrink folds the tool turns into a [compact] note. The session still ran
+// tools: the live thread must get the delta and the new-request cue, not the
+// whole client system prompt re-sent ahead of "improve it" — ChatGPT read
+// that as pasted text and replied it had no repo access.
+func TestWebBackendPrompt_ContinuingFollowUpAfterShrinkDroppedToolTurns(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "system", Content: "CLIENT SYSTEM " + strings.Repeat("instructions ", 30000)},
+			{Role: "user", Content: "review amux"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Bash", Arguments: `{"command":"ls"}`}}},
+			{Role: "tool", ToolCallID: "t1", Content: strings.Repeat("line\n", 5000)},
+			{Role: "assistant", Content: "REVIEW ANSWER " + strings.Repeat("x ", 3000)},
+			{Role: "user", Content: "improve"},
+			{Role: "assistant", Content: "PLAN TEXT " + strings.Repeat("y ", 3000)},
+			{Role: "user", Content: "improve the weak points the review found"},
+		},
+	}
+	got := WebBackendPrompt(req, true)
+	for _, stale := range []string{"CLIENT SYSTEM", "PLAN TEXT", "REVIEW ANSWER"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("follow-up prompt replays %q (%d runes)", stale, len([]rune(got)))
+		}
+	}
+	if !strings.Contains(got, "improve the weak points the review found") {
+		t.Fatalf("missing new request:\n%s", got)
+	}
+	if !strings.Contains(got, "New request from the user above") {
+		t.Fatalf("missing new-request cue:\n%s", got)
 	}
 }

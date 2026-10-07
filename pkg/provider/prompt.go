@@ -9,67 +9,58 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-// PromptWithSystem prepends all system turns to userPrompt. Web adapters that
-// only POST a single completion string (Claude/ChatGPT/Gemini web) must use
-// this so Claude Code / client system prompts are not dropped.
-func PromptWithSystem(messages []types.ChatMessage, userPrompt string) string {
-	var sys strings.Builder
-	for _, m := range messages {
-		if strings.EqualFold(m.Role, "system") && m.Content != "" {
-			if sys.Len() > 0 {
-				sys.WriteString("\n\n")
-			}
-			sys.WriteString(m.Content)
-		}
-	}
-	if sys.Len() == 0 {
-		return userPrompt
-	}
-	return sys.String() + "\n\n" + userPrompt
-}
-
 const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output. Emit <tool_call> if you need files/commands; else answer.
 
 `
 
 // WebBackendPrompt builds the single string web UIs accept.
-// When conversations exceed safety token limits (~20k tokens) or max rune limits (85k runes),
-// it progressively fits messages while preserving initial user goal, system instructions, and recent tail.
+//
+// A live thread (continuingThread without FullContext) already holds the
+// client's system prompt and earlier turns, so it gets only what it has not
+// seen: the new user request, or the tool results since the last reply.
+// A fresh thread or a handoff gets the full transcript, shrunk to the web
+// token budget (~20k tokens) while keeping the system prompt, first user
+// goal and recent tail.
 func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
 	}
 	msgs := req.Messages
-	if len(req.Tools) > 0 && ctxshrink.EstimateMessagesTokens(msgs) > ctxshrink.DefaultWebMaxTokens {
-		msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
-	}
+	// Decide on the client's history, not a shrunk copy: Claude Code's
+	// system prompt alone exceeds the web budget, so shrinking folds the tool
+	// turns into a [compact] note and the session would look tool-free.
+	ranTools := historyHasToolTurns(msgs)
+	liveThread := continuingThread && !req.FullContext
 
 	var body string
-	if req.FullContext {
-		body = BuildConcatenatedPrompt(msgs)
-		if body == "" {
-			return ""
-		}
-		body = contextHandoffPreamble + body
-	} else if continuingThread {
-		if historyHasToolTurns(msgs) {
+	if liveThread {
+		if ranTools {
 			body = BuildDeltaWebPrompt(msgs)
 		} else {
-			body = PromptWithSystem(msgs, lastUserPrompt(msgs))
+			body = lastUserPrompt(msgs)
 		}
 	} else {
+		if len(req.Tools) > 0 && ctxshrink.EstimateMessagesTokens(msgs) > ctxshrink.DefaultWebMaxTokens {
+			msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
+		}
 		body = BuildConcatenatedPrompt(msgs)
+		if req.FullContext {
+			if body == "" {
+				return ""
+			}
+			body = contextHandoffPreamble + body
+		}
 	}
 
 	if len(req.Tools) == 0 {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
-	if !continuingThread || req.FullContext {
-		if historyHasToolTurns(msgs) {
-			closer = midTaskCue(msgs) + closer
+	if !liveThread {
+		if ranTools {
+			closer = midTaskCue(req.Messages) + closer
 		}
-	} else if historyHasToolTurns(msgs) && endsWithUserRequest(msgs) {
+	} else if ranTools && endsWithUserRequest(req.Messages) {
 		closer = newRequestCue + closer
 	}
 	var preamble string
