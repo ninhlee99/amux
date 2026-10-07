@@ -217,3 +217,11 @@ func TestBuildAGYRequestBody_ClaudeToolsFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckAGYAuthAvailable(t *testing.T) {
+	t.Logf("findAGYBinary: %q", findAGYBinary())
+	c, err := loadAGYCredentials()
+	t.Logf("loadAGYCredentials: %v, err: %v", c, err)
+	t.Logf("AGYAuthAvailable: %v", AGYAuthAvailable())
+}
+

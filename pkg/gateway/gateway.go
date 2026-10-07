@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -38,6 +39,11 @@ type GatewayStatus struct {
 // PIDFilePath returns ~/.amux/gateway.pid.
 func PIDFilePath() string {
 	return filepath.Join(types.BaseDir(), "gateway.pid")
+}
+
+// LogFilePath returns ~/.amux/gateway.log.
+func LogFilePath() string {
+	return filepath.Join(types.BaseDir(), "gateway.log")
 }
 
 // IsRunning reports whether the gateway is responding to HTTP requests.
@@ -143,8 +149,18 @@ func Start() error {
 		Setpgid: true, // detach from terminal process group
 	}
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+
+	logPath := LogFilePath()
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if logErr == nil {
+		defer logFile.Close()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else {
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn detached gateway: %w", err)
@@ -216,6 +232,14 @@ func RunDaemon(serverFunc func() error) error {
 	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 	defer os.Remove(PIDFilePath())
+
+	logPath := LogFilePath()
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		defer f.Close()
+		log.SetOutput(f)
+		log.Printf("=== AMUX Gateway Daemon started (PID: %d) ===", pid)
+	}
 
 	return serverFunc()
 }

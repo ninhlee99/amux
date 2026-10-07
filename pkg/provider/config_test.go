@@ -521,3 +521,16 @@ func TestInferIDE(t *testing.T) {
 		t.Fatal("web")
 	}
 }
+
+func TestInspectLoadAccounts(t *testing.T) {
+	adapters, err := LoadAccounts(DefaultAccountsPath())
+	if err != nil {
+		t.Fatalf("LoadAccounts: %v", err)
+	}
+	var ids []string
+	for _, a := range adapters {
+		ids = append(ids, a.ID())
+	}
+	t.Logf("Loaded accounts: %v", ids)
+}
+

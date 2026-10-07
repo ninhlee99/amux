@@ -724,6 +724,33 @@ func TestParseWebTools_PreservesServerNameCasing(t *testing.T) {
 	}
 }
 
+func TestParseWebTools_FunctionCallAndReActFormats(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "Bash", InputSchema: []byte(`{"properties":{"command":{"type":"string"}}}`)},
+	}
 
+	// 1. <function_call> without tag attributes
+	xmlBody := `<function_call>
+{"name": "Bash", "arguments": {"command": "cargo test"}}
+</function_call>`
+	calls1 := ParseWebTools(xmlBody, defs)
+	if len(calls1) != 1 || calls1[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from <function_call>, got: %+v", calls1)
+	}
+	if !strings.Contains(calls1[0].Arguments, "cargo test") {
+		t.Errorf("expected cargo test argument, got: %s", calls1[0].Arguments)
+	}
 
-
+	// 2. ReAct Action: / Action Input: format
+	reactText := `I need to check the build status.
+Action: Bash
+Action Input: {"command": "go build ./..."}
+`
+	calls2 := ParseWebTools(reactText, defs)
+	if len(calls2) != 1 || calls2[0].Name != "Bash" {
+		t.Fatalf("expected 1 Bash call from ReAct format, got: %+v", calls2)
+	}
+	if !strings.Contains(calls2[0].Arguments, "go build") {
+		t.Errorf("expected go build argument, got: %s", calls2[0].Arguments)
+	}
+}

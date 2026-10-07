@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -77,8 +79,119 @@ Examples:
 `)
 }
 
-func cmdIDList() {
+func parseJWTEmail(tok string) string {
+	parts := strings.Split(tok, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	seg := parts[1]
+	if m := len(seg) % 4; m != 0 {
+		seg += strings.Repeat("=", 4-m)
+	}
+	b, err := base64.URLEncoding.DecodeString(seg)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email string `json:"email"`
+	}
+	_ = json.Unmarshal(b, &claims)
+	return strings.TrimSpace(claims.Email)
+}
+
+func syncAddressableAdaptersToIdentities() {
 	_, _ = identity.MigrateLegacyAccounts("", "")
+	adapters, err := provider.LoadAllAddressable(provider.DefaultAccountsPath())
+	if err != nil || len(adapters) == 0 {
+		return
+	}
+	cfg, err := identity.LoadConfig("")
+	if err != nil || cfg == nil {
+		cfg = &identity.Config{ThresholdPct: identity.DefaultThresholdPct}
+	}
+	existing := make(map[string]bool)
+	for _, id := range cfg.Identities {
+		existing[id.ID] = true
+	}
+	changed := false
+	for _, a := range adapters {
+		if existing[a.ID()] {
+			continue
+		}
+		tier := identity.TierSubscription
+		authType := string(identity.AuthOAuth)
+		pLower := strings.ToLower(a.ID())
+		providerName := "subscription"
+		switch {
+		case strings.HasPrefix(pLower, "claude"):
+			providerName = "claude"
+		case strings.HasPrefix(pLower, "codex"):
+			providerName = "codex"
+		case strings.HasPrefix(pLower, "agy") || strings.HasPrefix(pLower, "antigravity"):
+			providerName = "antigravity"
+		case strings.HasPrefix(pLower, "chatgpt"):
+			providerName = "chatgpt"
+			tier = identity.TierWeb
+			authType = string(identity.AuthCDP)
+		case strings.HasPrefix(pLower, "gemini:web"):
+			providerName = "gemini"
+			tier = identity.TierWeb
+			authType = string(identity.AuthCDP)
+		case strings.Contains(pLower, ":api"):
+			tier = identity.TierAPIKey
+			authType = string(identity.AuthAPIKey)
+			providerName = strings.Split(pLower, ":")[0]
+		}
+		creds := map[string]string{
+			"source": "system_adapter",
+		}
+		email := "-"
+		if strings.HasPrefix(pLower, "codex") {
+			if doc, err := os.ReadFile(provider.CodexAuthPath()); err == nil {
+				var d map[string]any
+				if json.Unmarshal(doc, &d) == nil {
+					if tokens, ok := d["tokens"].(map[string]any); ok {
+						for _, k := range []string{"id_token", "access_token"} {
+							if tok, ok := tokens[k].(string); ok && tok != "" {
+								if em := parseJWTEmail(tok); em != "" {
+									email = em
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		meta := map[string]interface{}{
+			"migrated_from": "system_adapter",
+			"plan":          "pro",
+		}
+		if email != "" && email != "-" {
+			meta["email"] = email
+			creds["account"] = email
+		}
+		newId := identity.Identity{
+			ID:          a.ID(),
+			Provider:    providerName,
+			Tier:        tier,
+			AuthType:    authType,
+			Credentials: creds,
+			Active:      false,
+			Metadata:    meta,
+		}
+		if err := identity.Upsert("", newId); err == nil {
+			existing[a.ID()] = true
+			changed = true
+		}
+	}
+	if changed {
+		proxy.Sync()
+	}
+}
+
+func cmdIDList() {
+	syncAddressableAdaptersToIdentities()
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
 		fmt.Println("No accounts yet. Add one with: amux login")
@@ -184,6 +297,7 @@ func cmdIDHealth() {
 }
 
 func cmdIDSelect(args []string) {
+	syncAddressableAdaptersToIdentities()
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
 		die("no accounts yet. Add one with: amux login")

@@ -27,6 +27,7 @@ import (
 	"amux-accounts/pkg/profile"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
+	"amux-accounts/pkg/telemetry"
 	"amux-accounts/pkg/term"
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
@@ -91,6 +92,7 @@ const shutdownGrace = 3 * time.Second
 // RunProxy starts the server on the given address, serving Claude Code,
 // OpenAI gateway, and administrative endpoints.
 func RunProxy(addr, upstream string) error {
+	_ = telemetry.InitLogging("")
 	monitor.EnableTermSink()
 
 	if addr == "" {
@@ -492,6 +494,12 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		profile.SyncActiveFromSystem("claude")
 		rot.RefreshFromDisk()
 		rot.EvictDisabledActive()
+		chatPool.SetAutoRotateFilter(identity.AutoRotateFilter(""))
+		chatPool.SetSubscriptionPoolFilter(identity.PoolMemberFilter(""))
+		if toolPool != chatPool {
+			toolPool.SetAutoRotateFilter(identity.AutoRotateFilter(""))
+			toolPool.SetSubscriptionPoolFilter(identity.PoolMemberFilter(""))
+		}
 		if reloaded, err := provider.LoadAccounts(provider.DefaultAccountsPath()); err == nil {
 			chatPool.Reload(reloaded)
 			if toolPool != chatPool {
@@ -536,6 +544,30 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 		}
 
 		path := r.URL.Path
+
+		// Path-based provider routing: /p/<provider>/... or /provider/<provider>/...
+		if strings.HasPrefix(path, "/p/") || strings.HasPrefix(path, "/provider/") {
+			prefix := "/p/"
+			if strings.HasPrefix(path, "/provider/") {
+				prefix = "/provider/"
+			}
+			rest := strings.TrimPrefix(path, prefix)
+			if idx := strings.IndexByte(rest, '/'); idx != -1 {
+				p := rest[:idx]
+				path = rest[idx:]
+				r.URL.Path = path
+				if r.Header.Get("X-Provider") == "" {
+					r.Header.Set("X-Provider", p)
+				}
+			}
+		}
+
+		// Query-based provider routing: ?provider=<provider>
+		if qp := strings.TrimSpace(r.URL.Query().Get("provider")); qp != "" {
+			if r.Header.Get("X-Provider") == "" {
+				r.Header.Set("X-Provider", qp)
+			}
+		}
 
 		if strings.HasPrefix(path, "/_am/") {
 			withGzip(mux).ServeHTTP(w, r)

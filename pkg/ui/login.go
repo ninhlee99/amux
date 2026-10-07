@@ -304,6 +304,7 @@ func loginCursor(f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved Cursor account as %s.\n", id)
+	fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", id, id)
 	CmdAccounts()
 }
 
@@ -578,6 +579,9 @@ func savePoolLogin(providerType, accountEmail string, build func(provider.PoolSl
 	default:
 		fmt.Printf("Saved as %s.\n", slot.ID)
 	}
+	if slot.Enabled == nil || !*slot.Enabled {
+		fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", slot.ID, slot.ID)
+	}
 	CmdAccounts()
 }
 
@@ -626,6 +630,7 @@ func loginGemini(f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved Gemini as %s.\n", id)
+	fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", id, id)
 	CmdAccounts()
 }
 
@@ -788,6 +793,7 @@ func loginOpenAICompat(spec openAICompatSpec, f loginFlags) {
 	}
 	proxy.Sync()
 	fmt.Printf("Saved %s as %s (model: %s).\n", spec.Name, id, model)
+	fmt.Printf("Tip: To include %s in auto-failover pool, run: amux pool add %s\n", id, id)
 	CmdAccounts()
 }
 

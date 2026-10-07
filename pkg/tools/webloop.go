@@ -46,12 +46,13 @@ var (
 	reReflection       = regexp.MustCompile(`(?si)<reflection>\s*(.*?)\s*</reflection>`)
 	reXMLTool          = regexp.MustCompile(`(?si)<tool_call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool_call>`)
 	reHyphenTool       = regexp.MustCompile(`(?si)<tool-call(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</tool-call>`)
-	reInvokeTool       = regexp.MustCompile(`(?si)<(?:invoke|function_call)\s+name="?([^"\s>]+)"?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
+	reInvokeTool       = regexp.MustCompile(`(?si)<(?:invoke|function_call)(?:\s+name="?([^"\s>]+)"?)?(?:\s+id="?([^"\s>]+)"?)?[^>]*>\s*(.*?)\s*</(?:invoke|function_call)>`)
 	reXMLParam         = regexp.MustCompile(`(?si)<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>`)
 	reAMUXTool         = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
 	reToolJSON         = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence        = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
 	reGeminiCall       = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
+	reActionTool       = regexp.MustCompile(`(?im)^Action:\s*([A-Za-z0-9_-]+)\s*\n(?:Action\s+Input|Input|Arguments|Args):\s*(\{[\s\S]*?\}|"[^"\n]*"|[^\n]+)`)
 	reToolCallFence    = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
 	// ChatGPT copies Claude Code's display form: [tool_call name=Bash id=…] or history format [Tool call: Bash id=…]
 	reBracketTool      = regexp.MustCompile(`(?is)\[(?:tool[ _]call|tool_call):?\s+(?:name="?)?([A-Za-z0-9_-]+)"?(?:\s+id="?([^"\s\]]+)"?)?\]\s*(\{[\s\S]*?\})`)
@@ -200,6 +201,74 @@ func MaybeWrapWebStream(source string, req *types.ChatRequest, inner <-chan type
 	return wrapWebStream(source, req.Tools, req.Messages, inner, proj)
 }
 
+type streamThoughtExtractor struct {
+	buf             strings.Builder
+	lastStreamedIdx int
+	inThought       bool
+	openTag         string
+	closeTag        string
+}
+
+func (e *streamThoughtExtractor) Feed(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	e.buf.WriteString(chunk)
+	curr := e.buf.String()
+	var emitted strings.Builder
+
+	for {
+		if !e.inThought {
+			if e.lastStreamedIdx >= len(curr) {
+				break
+			}
+			lower := strings.ToLower(curr[e.lastStreamedIdx:])
+			if idx := strings.Index(lower, "<thought>"); idx != -1 {
+				e.inThought = true
+				e.openTag = "<thought>"
+				e.closeTag = "</thought>"
+				e.lastStreamedIdx += idx + len("<thought>")
+			} else if idx := strings.Index(lower, "<thinking>"); idx != -1 {
+				e.inThought = true
+				e.openTag = "<thinking>"
+				e.closeTag = "</thinking>"
+				e.lastStreamedIdx += idx + len("<thinking>")
+			} else {
+				break
+			}
+		}
+
+		if e.inThought {
+			if e.lastStreamedIdx > len(curr) {
+				break
+			}
+			rest := curr[e.lastStreamedIdx:]
+			lowerRest := strings.ToLower(rest)
+			if closeIdx := strings.Index(lowerRest, e.closeTag); closeIdx != -1 {
+				delta := rest[:closeIdx]
+				e.lastStreamedIdx += closeIdx + len(e.closeTag)
+				e.inThought = false
+				emitted.WriteString(delta)
+				continue
+			}
+			safeLen := len(rest)
+			for _, prefix := range []string{"</thinking", "</thought", "</think", "</thou", "</tho", "</th", "</t", "</", "<"} {
+				if strings.HasSuffix(strings.ToLower(rest), prefix) {
+					safeLen -= len(prefix)
+					break
+				}
+			}
+			if safeLen > 0 {
+				delta := rest[:safeLen]
+				e.lastStreamedIdx += safeLen
+				emitted.WriteString(delta)
+			}
+			break
+		}
+	}
+	return emitted.String()
+}
+
 func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage, inner <-chan types.StreamChunk, projectRoot ...string) <-chan types.StreamChunk {
 	out := make(chan types.StreamChunk, 8)
 	go func() {
@@ -207,6 +276,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		var buf strings.Builder
 		id := source
 		hasStreamedThinking := false
+		thoughtExt := &streamThoughtExtractor{}
 		for ch := range inner {
 			if ch.ID != "" {
 				id = ch.ID
@@ -218,6 +288,9 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			if ch.Thinking != "" {
 				hasStreamedThinking = true
 				out <- types.StreamChunk{ID: id, Thinking: ch.Thinking}
+			} else if th := thoughtExt.Feed(ch.Content); th != "" {
+				hasStreamedThinking = true
+				out <- types.StreamChunk{ID: id, Thinking: th}
 			}
 			if len(ch.ToolCalls) > 0 {
 				raw := buf.String()
@@ -302,6 +375,7 @@ func hasExplicitWebToolMarkup(text string) bool {
 		strings.Contains(lower, "<<<amux_tool") ||
 		strings.Contains(lower, "call:default_api:") ||
 		strings.Contains(lower, "call:") ||
+		strings.Contains(lower, "action:") ||
 		(strings.Contains(text, `"name"`) &&
 			(strings.Contains(text, `"arguments"`) || strings.Contains(text, `"input"`)))
 }
@@ -651,6 +725,18 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			continue
 		}
 		add(name, "", raw)
+	}
+	for _, m := range reActionTool.FindAllStringSubmatch(text, -1) {
+		name := strings.TrimSpace(m[1])
+		rawArgs := strings.TrimSpace(m[2])
+		if n, i, args, ok := parseToolCallJSON(rawArgs); ok {
+			if n != "" {
+				name = n
+			}
+			add(name, i, args)
+			continue
+		}
+		add(name, "", rawArgs)
 	}
 	for _, m := range reAMUXTool.FindAllStringSubmatch(text, -1) {
 		add(m[1], m[2], m[3])
@@ -1291,6 +1377,7 @@ func StripWebToolMarkup(text string) string {
 	s = reToolJSON.ReplaceAllString(s, "")
 	s = reBashFence.ReplaceAllString(s, "")
 	s = reEmptyFence.ReplaceAllString(s, "")
+	s = reActionTool.ReplaceAllString(s, "")
 	return strings.TrimSpace(s)
 }
 
@@ -1309,6 +1396,7 @@ func StripInternalThoughtAndToolTags(text string) string {
 	s = reBracketToolAlt.ReplaceAllString(s, "")
 	s = reStrayBracketTool.ReplaceAllString(s, "")
 	s = reGeminiCall.ReplaceAllString(s, "")
+	s = reActionTool.ReplaceAllString(s, "")
 	s = reEndNotice.ReplaceAllString(s, "")
 	s = reXferNotice.ReplaceAllString(s, "")
 	s = reCatalogNotice.ReplaceAllString(s, "")

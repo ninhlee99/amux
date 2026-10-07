@@ -29,6 +29,7 @@ func CmdPool(args []string) {
 }
 
 func cmdPoolSet(args []string, in bool) {
+	syncAddressableAdaptersToIdentities()
 	verb := "add"
 	if !in {
 		verb = "remove"
@@ -57,6 +58,7 @@ func cmdPoolSet(args []string, in bool) {
 }
 
 func cmdPoolList() {
+	syncAddressableAdaptersToIdentities()
 	cfg, err := identity.LoadConfig("")
 	if err != nil || len(cfg.Identities) == 0 {
 		fmt.Println("No accounts yet. Add one with: amux login")

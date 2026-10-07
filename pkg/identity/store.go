@@ -206,10 +206,13 @@ func DeduplicateIdentities(list []Identity) []Identity {
 		return list
 	}
 
-	// First pass: remove ghosts (empty credentials and no account email)
+	// First pass: remove ghosts (empty ID or empty provider with no credentials/email)
 	var nonGhosts []Identity
 	for _, item := range list {
-		if len(item.Credentials) == 0 && item.Email() == "-" {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		if strings.TrimSpace(item.Provider) == "" && len(item.Credentials) == 0 && item.Email() == "-" {
 			continue
 		}
 		nonGhosts = append(nonGhosts, item)

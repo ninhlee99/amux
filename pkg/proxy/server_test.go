@@ -781,3 +781,24 @@ func TestHandler_ClaudeDirectPassthroughPreservesBodyAndSSE(t *testing.T) {
 		t.Fatalf("upstream response header lost: %v", rec.Header())
 	}
 }
+
+func TestHandler_PathAndQueryProviderRouting(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 1. Path-based provider routing: /p/chatgpt:01/v1/chat/completions
+	req := httptest.NewRequest(http.MethodPost, "/p/chatgpt:01/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("expected path routing to strip prefix and reach handler, got 404")
+	}
+
+	// 2. Query-based provider routing: /v1/chat/completions?provider=claude:01
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?provider=claude:01", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code == http.StatusNotFound {
+		t.Fatalf("expected query routing to reach handler, got 404")
+	}
+}
+

@@ -149,14 +149,20 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		return nil, err
 	}
 	text := strings.TrimSpace(sb.String())
-	if clean := tools.StripInternalThoughtAndToolTags(text); strings.TrimSpace(clean) != "" {
-		text = strings.TrimSpace(clean)
-	} else if len(recordedToolCalls) > 0 {
+	clean := strings.TrimSpace(tools.StripInternalThoughtAndToolTags(text))
+	if len(recordedToolCalls) > 0 {
 		var parts []string
 		for _, tc := range recordedToolCalls {
 			parts = append(parts, fmt.Sprintf("%s(%s)", tc.Name, tc.Arguments))
 		}
-		text = "Provider requested tool execution: " + strings.Join(parts, "; ")
+		toolSummary := "Provider requested tool execution: " + strings.Join(parts, "; ")
+		if clean != "" {
+			text = clean + "\n\n" + toolSummary
+		} else {
+			text = toolSummary
+		}
+	} else if clean != "" {
+		text = clean
 	}
 	if text == "" && thinking.Len() > 0 {
 		text = strings.TrimSpace(thinking.String())

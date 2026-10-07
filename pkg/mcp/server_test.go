@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -274,4 +276,37 @@ func (n namedAdapter) Priority() int { return 1 }
 func (n namedAdapter) SendMessageStream(context.Context, *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	return nil, nil
 }
+
+func TestPoolBackend_Providers_IdentitiesIntegration(t *testing.T) {
+	tmpDir := t.TempDir()
+	idPath := filepath.Join(tmpDir, "identities.json")
+	_ = os.WriteFile(idPath, []byte(`{
+		"threshold_pct": 95,
+		"identities": [
+			{
+				"id": "claude:code:01",
+				"provider": "anthropic",
+				"tier": "subscription",
+				"auth_type": "oauth",
+				"active": true
+			}
+		]
+	}`), 0o600)
+
+	t.Setenv("AMUX_HOME", tmpDir)
+	backend := &PoolBackend{
+		AccountsPath: filepath.Join(tmpDir, "accounts.json"),
+	}
+	providers, err := backend.Providers()
+	if err != nil {
+		t.Fatalf("expected backend.Providers() to succeed using identities.json, got: %v", err)
+	}
+	if len(providers) == 0 {
+		t.Fatalf("expected at least 1 provider from identities.json, got 0")
+	}
+	if providers[0].ID != "claude:code:01" {
+		t.Fatalf("expected provider ID 'claude:code:01', got %s", providers[0].ID)
+	}
+}
+
 

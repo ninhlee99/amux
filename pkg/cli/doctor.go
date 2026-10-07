@@ -16,10 +16,15 @@ import (
 	"amux-accounts/pkg/mcp"
 	"amux-accounts/pkg/monitor"
 	"amux-accounts/pkg/types"
+	"amux-accounts/pkg/ui"
 )
 
 // CmdDoctor runs diagnostics for network, Keychain access, tool compatibility, and daemon health.
 func CmdDoctor(args []string) {
+	if len(args) > 0 && (args[0] == "providers" || args[0] == "--providers") {
+		ui.CmdDoctorProviders()
+		return
+	}
 	if len(args) > 0 && (args[0] == "--security" || args[0] == "security") {
 		CmdAudit(args[1:])
 		return

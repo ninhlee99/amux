@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"amux-accounts/pkg/types"
 )
 
 var (
@@ -21,10 +23,7 @@ func InitLogging(filePath string) error {
 	defer logMu.Unlock()
 
 	if filePath == "" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			filePath = filepath.Join(home, ".am", "gateway.log")
-		}
+		filePath = filepath.Join(types.BaseDir(), "gateway.log")
 	}
 
 	if filePath != "" {

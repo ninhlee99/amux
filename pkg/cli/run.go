@@ -131,6 +131,26 @@ func PrepareSandboxEnv(target, gatewayURL string) (string, map[string]string) {
 		if os.Getenv("ANTHROPIC_API_KEY") == "" {
 			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
 		}
+	case "code", "vscode":
+		binName = "code"
+		envOverrides["OPENAI_BASE_URL"] = gatewayURL + "/v1"
+		envOverrides["OPENAI_API_BASE"] = gatewayURL + "/v1"
+		envOverrides["ANTHROPIC_BASE_URL"] = gatewayURL
+		envOverrides["GOOGLE_GEMINI_BASE_URL"] = gatewayURL
+		envOverrides["GEMINI_API_BASE"] = gatewayURL
+		envOverrides["GOOGLE_GENAI_BASE_URL"] = gatewayURL
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			envOverrides["OPENAI_API_KEY"] = defaultToken
+		}
+		if os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			envOverrides["ANTHROPIC_AUTH_TOKEN"] = defaultToken
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			envOverrides["ANTHROPIC_API_KEY"] = defaultToken
+		}
+		if os.Getenv("GEMINI_API_KEY") == "" {
+			envOverrides["GEMINI_API_KEY"] = defaultToken
+		}
 	default:
 		// Arbitrary command execution with universal proxy variables
 		binName = target
@@ -233,12 +253,23 @@ func CmdRun(args []string) {
 	target := strings.ToLower(args[0])
 	rawExtraArgs := args[1:]
 
-	// Detect --setup flag
+	// Detect --setup and --provider / -p flags
 	setupRequested := false
+	var selectedProvider string
 	var extraArgs []string
-	for _, arg := range rawExtraArgs {
+	for i := 0; i < len(rawExtraArgs); i++ {
+		arg := rawExtraArgs[i]
 		if arg == "--setup" {
 			setupRequested = true
+		} else if strings.HasPrefix(arg, "--provider=") {
+			selectedProvider = strings.TrimPrefix(arg, "--provider=")
+		} else if strings.HasPrefix(arg, "-p=") {
+			selectedProvider = strings.TrimPrefix(arg, "-p=")
+		} else if arg == "--provider" || arg == "-p" {
+			if i+1 < len(rawExtraArgs) {
+				selectedProvider = rawExtraArgs[i+1]
+				i++
+			}
 		} else {
 			extraArgs = append(extraArgs, arg)
 		}
@@ -277,12 +308,25 @@ func CmdRun(args []string) {
 		}
 	}
 
+	if selectedProvider != "" {
+		gatewayURL = strings.TrimRight(gatewayURL, "/") + "/p/" + selectedProvider
+	}
+
 	binName, envOverrides := PrepareSandboxEnv(target, gatewayURL)
+	if selectedProvider != "" {
+		envOverrides["AMUX_PROVIDER"] = selectedProvider
+	}
 
 	binPath, err := ResolveBinaryPath(binName)
 	if err != nil {
 		if setupRequested {
 			// If user only wanted to set up settings and the IDE binary isn't in PATH, exit cleanly
+			return
+		}
+		if target == "cline" || target == "roo" || target == "roo-code" {
+			fmt.Printf("💡 Note: %s is an IDE extension (VS Code / Cursor / Windsurf), not a standalone CLI binary.\n", strings.Title(target))
+			fmt.Printf("   • MCP integration: run 'amux mcp install %s' to register AMUX tools.\n", target)
+			fmt.Printf("   • Model gateway: in %s extension settings, set Custom OpenAI Base URL to %s/v1 (API Key: am-proxy).\n", strings.Title(target), gatewayURL)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "amux run: %v\n", err)
@@ -317,13 +361,20 @@ func CmdRun(args []string) {
 		fmt.Println("⚠ Notice: No accounts configured in AMUX yet. Run 'amux login' to connect Claude, ChatGPT, Gemini, or an API key.")
 	}
 
-	fmt.Printf("⚡ AMUX Sandbox: %s → %s (isolated session)\n", binName, gatewayURL)
+	if selectedProvider != "" {
+		fmt.Printf("⚡ AMUX Sandbox: %s → %s [pinned: %s] (isolated session)\n", binName, gatewayURL, selectedProvider)
+	} else {
+		fmt.Printf("⚡ AMUX Sandbox: %s → %s (isolated session)\n", binName, gatewayURL)
+	}
+
 	if target == "cursor" {
 		cm := hook.LoadCursorSettings()
 		base, ok := cm["cursor.general.openaiBaseUrl"].(string)
 		base2, ok2 := cm["openai.baseUrl"].(string)
 		if (ok && strings.TrimSpace(base) != "") || (ok2 && strings.TrimSpace(base2) != "") {
 			fmt.Printf("✓ Cursor AI Chat already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else if setupRequested {
+			fmt.Printf("✓ Auto-configured Cursor settings.json (openai.baseUrl -> %s/v1)\n", gatewayURL)
 		} else {
 			fmt.Printf("💡 Tip: For Cursor GUI AI Chat, run 'amux run cursor --setup' to auto-configure settings.json.\n")
 		}
@@ -332,6 +383,8 @@ func CmdRun(args []string) {
 		base, ok := wm["openai.baseUrl"].(string)
 		if ok && strings.TrimSpace(base) != "" {
 			fmt.Printf("✓ Windsurf Cascade already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else if setupRequested {
+			fmt.Printf("✓ Auto-configured Windsurf settings.json (openai.baseUrl -> %s/v1)\n", gatewayURL)
 		} else {
 			fmt.Printf("💡 Tip: For Windsurf Cascade GUI Chat, run 'amux run windsurf --setup' to auto-configure settings.json.\n")
 		}
@@ -339,9 +392,13 @@ func CmdRun(args []string) {
 		cfgPath := hook.CodexConfigPath()
 		if b, err := os.ReadFile(cfgPath); err == nil && strings.Contains(string(b), gatewayURL) {
 			fmt.Printf("✓ Codex CLI already configured to use AMUX Gateway (%s/v1)\n", gatewayURL)
+		} else if setupRequested {
+			fmt.Printf("✓ Auto-configured Codex config.toml (openai_base_url -> %s/v1)\n", gatewayURL)
 		} else {
 			fmt.Printf("💡 Tip: For persistent Codex config, run 'amux run codex --setup' to auto-configure config.toml.\n")
 		}
+	} else if target == "code" || target == "vscode" {
+		fmt.Printf("✓ VS Code connected to AMUX Gateway (%s)\n", gatewayURL)
 	} else if target == "agy" || target == "antigravity" {
 		fmt.Printf("✓ AGY (Antigravity) connected to AMUX Gateway (%s)\n", gatewayURL)
 	} else if target == "aider" {
@@ -383,7 +440,7 @@ func CmdRun(args []string) {
 }
 
 func helpRun() {
-	fmt.Println("Usage: amux run <ide> [--setup] [args...]")
+	fmt.Println("Usage: amux run <ide> [--setup] [-p <provider>] [args...]")
 	fmt.Println("  Runs the selected IDE or coding agent in a sandboxed session")
 	fmt.Println("  pointing to the AMUX Gateway without altering global system files.")
 	fmt.Println()
@@ -396,9 +453,13 @@ func helpRun() {
 	fmt.Println("  aider     - Runs Aider CLI with OPENAI_API_BASE & ANTHROPIC_BASE_URL injected")
 	fmt.Println("  opencode  - Runs OpenCode agent with OPENAI_BASE_URL injected")
 	fmt.Println("  zed       - Runs Zed editor with AI proxy variables injected")
+	fmt.Println("  code      - Runs VS Code with universal AI proxy variables injected")
 	fmt.Println("  <cmd>     - Arbitrary agent or tool with all AI proxy variables preconfigured")
 	fmt.Println()
+	fmt.Println("Extension agents (Cline, Roo Code, Continue):")
+	fmt.Println("  Run 'amux mcp install <target>' or set custom OpenAI Base URL to http://127.0.0.1:8787/v1")
 	fmt.Println("Options:")
-	fmt.Println("  --setup   - Automatically configures the IDE settings (e.g. Cursor / Windsurf settings.json)")
-	fmt.Println("              to connect to AMUX Gateway before launching.")
+	fmt.Println("  -p, --provider <id> - Pin this session to a specific account (e.g. gemini:web:01) or family (gemini:web, chatgpt)")
+	fmt.Println("  --setup             - Automatically configure persistent IDE settings (e.g. Cursor settings.json)")
+	fmt.Println("                        to connect to AMUX Gateway before launching.")
 }

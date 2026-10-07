@@ -43,7 +43,10 @@ func (a *ChatGPTWebAdapter) convs() *ProjectConversationManager {
 	return a.convMgr
 }
 
-const chatGPTConversationURL = "https://chatgpt.com/backend-api/conversation"
+const (
+	chatGPTConversationURL = "https://chatgpt.com/backend-api/conversation"
+	chatgptDefaultModel    = "gpt-6-luna"
+)
 
 func (a *ChatGPTWebAdapter) ID() string    { return a.AdapterID }
 func (a *ChatGPTWebAdapter) Priority() int { return a.PriorityLvl }
@@ -102,14 +105,18 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sb.WriteString(m.Content)
 			for _, tc := range m.ToolCalls {
 				sb.WriteString("\n<tool_call>\n")
+				argsRaw := json.RawMessage(`{}`)
+				if strings.TrimSpace(tc.Arguments) != "" && json.Valid([]byte(tc.Arguments)) {
+					argsRaw = json.RawMessage(tc.Arguments)
+				}
 				toolJSON, err := json.Marshal(map[string]any{
 					"name":      tc.Name,
-					"arguments": json.RawMessage(tc.Arguments),
+					"arguments": argsRaw,
 				})
 				if err != nil {
 					toolJSON, _ = json.Marshal(map[string]any{
 						"name":      tc.Name,
-						"arguments": tc.Arguments,
+						"arguments": map[string]any{},
 					})
 				}
 				sb.WriteString(string(toolJSON))
@@ -219,9 +226,11 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		return nil, fmt.Errorf("%s: %w: no session token configured", a.AdapterID, types.ErrAuthentication)
 	}
 
-	model := a.TargetModel
-	if model == "" {
-		model = "auto"
+	model := chatgptDefaultModel
+	if a.TargetModel != "" && a.TargetModel != "auto" {
+		model = a.TargetModel
+	} else if req.Model != "" && req.Model != "default" && req.Model != "auto" {
+		model = req.Model
 	}
 
 	accountID := chatgptAccountIDFromJWT(a.SessionToken)

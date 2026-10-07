@@ -7,13 +7,13 @@ import (
 
 const (
 	// DefaultMaxToolOutputBytes is the threshold before pruning large tool outputs for web prompts.
-	DefaultMaxToolOutputBytes = 4000
+	DefaultMaxToolOutputBytes = 24000
 	// DefaultMaxToolOutputLines is the line threshold before pruning large tool outputs.
-	DefaultMaxToolOutputLines = 80
+	DefaultMaxToolOutputLines = 300
 	// DefaultPruneHeadLines is the number of leading lines preserved.
-	DefaultPruneHeadLines = 30
+	DefaultPruneHeadLines = 100
 	// DefaultPruneTailLines is the number of trailing lines preserved.
-	DefaultPruneTailLines = 40
+	DefaultPruneTailLines = 120
 )
 
 // PruneToolResult compacts overly long CLI/tool outputs so they fit comfortably
@@ -42,8 +42,8 @@ func PruneToolResult(s string) string {
 	// Long lines but fewer total lines (e.g. minified single-line payload)
 	if len(s) > DefaultMaxToolOutputBytes {
 		runes := []rune(s)
-		headCount := 1800
-		tailCount := 1800
+		headCount := 10000
+		tailCount := 10000
 		if len(runes) > headCount+tailCount {
 			return fmt.Sprintf("%s\n\n[... truncated verbose payload ...]\n\n%s",
 				string(runes[:headCount]),

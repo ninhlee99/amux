@@ -697,13 +697,17 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 		}
 		return g, nil
 
-	case "chatgpt_web":
+	case "chatgpt", "chatgpt_web":
+		model := p.Model
+		if model == "" || model == "auto" {
+			model = chatgptDefaultModel
+		}
 		return &ChatGPTWebAdapter{
 			AdapterID:    p.ID,
 			PriorityLvl:  p.Priority,
 			SessionToken: ResolveSecret(p.SessionToken),
 			RefreshToken: ResolveSecret(p.RefreshToken),
-			TargetModel:  p.Model,
+			TargetModel:  model,
 			PlanTier:     p.Plan,
 			HTTPClient:   proxyClient,
 		}, nil
@@ -1108,12 +1112,12 @@ func claudePoolID() string {
 
 // IdentityToProviderConfig converts a flat Identity into a ProviderConfig row.
 func IdentityToProviderConfig(id identity.Identity, priority int) ProviderConfig {
-	active := id.Active
+	enabled := identity.IsEnabled(id)
 	cfg := ProviderConfig{
 		ID:       id.ID,
 		Priority: priority,
 		Model:    id.Model,
-		Enabled:  &active,
+		Enabled:  &enabled,
 	}
 	email := id.Email()
 	if email != "" && email != "-" {
@@ -1202,7 +1206,7 @@ func LoadConfigFile(path string) (*AccountsFile, error) {
 	}
 
 	// Unify with identities.json: merge identities not present in accounts.json for default paths
-	isDefault := path == "" || path == DefaultAccountsPath() || filepath.Base(filepath.Dir(path)) == ".amux"
+	isDefault := path == "" || path == DefaultAccountsPath() || filepath.Base(filepath.Dir(path)) == ".amux" || filepath.Base(filepath.Dir(path)) == ".am" || filepath.Clean(filepath.Dir(path)) == filepath.Clean(types.BaseDir())
 	if isDefault {
 		if idCfg, idErr := identity.LoadConfig(""); idErr == nil && len(idCfg.Identities) > 0 {
 			seen := make(map[string]bool, len(f.Providers))

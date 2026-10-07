@@ -48,7 +48,13 @@ func TestPrepareSandboxEnv_AllTargets(t *testing.T) {
 		t.Fatalf("agy env mismatch: env=%+v", env)
 	}
 
-	// 6. Arbitrary CLI tool (e.g. aider, opencode)
+	// 6. VS Code
+	bin, env = PrepareSandboxEnv("vscode", gw)
+	if bin != "code" || env["OPENAI_BASE_URL"] != gw+"/v1" || env["ANTHROPIC_BASE_URL"] != gw {
+		t.Fatalf("vscode env mismatch: bin=%s, env=%+v", bin, env)
+	}
+
+	// 7. Arbitrary CLI tool (e.g. aider, opencode)
 	bin, env = PrepareSandboxEnv("aider", gw)
 	if bin != "aider" {
 		t.Fatalf("arbitrary bin mismatch: bin=%s", bin)
@@ -74,3 +80,20 @@ func TestResolveBinaryPath_Standard(t *testing.T) {
 		t.Fatal("expected error for non-existent binary")
 	}
 }
+
+func TestPrepareSandboxEnv_ProviderPinning(t *testing.T) {
+	gw := "http://127.0.0.1:8787/p/chatgpt:01"
+
+	// Claude with provider path
+	bin, env := PrepareSandboxEnv("claude", gw)
+	if bin != "claude" || env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:8787/p/chatgpt:01" {
+		t.Fatalf("claude provider pinning mismatch: %+v", env)
+	}
+
+	// Cursor with provider path
+	bin, env = PrepareSandboxEnv("cursor", gw)
+	if bin != "cursor" || env["OPENAI_BASE_URL"] != "http://127.0.0.1:8787/p/chatgpt:01/v1" {
+		t.Fatalf("cursor provider pinning mismatch: %+v", env)
+	}
+}
+

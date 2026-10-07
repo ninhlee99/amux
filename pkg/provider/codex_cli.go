@@ -41,7 +41,7 @@ const (
 	// Public client_id Codex CLI itself uses for its device/refresh OAuth
 	// flow — not a secret, it's baked into the open-source codex binary.
 	codexOAuthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	codexDefaultModel  = "gpt-6.1-sol" // Codex list: gpt-6-astra, gpt-6.1-sol, gpt-6-luna
+	codexDefaultModel  = "gpt-6-luna" // Supported by ChatGPT Codex backend: gpt-6-luna, gpt-5.5, gpt-5.6-terra, gpt-5.6-luna
 	codexRefreshLead   = 2 * time.Minute
 )
 
@@ -326,9 +326,8 @@ func (a *CodexCLIAdapter) SendMessageStream(ctx context.Context, req *types.Chat
 
 func isCodexCompatibleModel(m string) bool {
 	lower := strings.ToLower(m)
-	// ChatGPT Codex backend rejects GPT-4 class ids ("gpt-4o is not
-	// supported when using Codex with a ChatGPT account").
-	if strings.HasPrefix(lower, "gpt-4") {
+	// ChatGPT Codex backend rejects GPT-4 class ids and unsupported models like gpt-6.1-sol
+	if strings.HasPrefix(lower, "gpt-4") || lower == "gpt-6.1-sol" {
 		return false
 	}
 	return strings.HasPrefix(lower, "gpt-") ||
