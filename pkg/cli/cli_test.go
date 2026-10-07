@@ -2,6 +2,7 @@ package cli
 
 import (
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,16 @@ func TestUsageHelp_ClearCategoriesAndNoInternalNoise(t *testing.T) {
 }
 
 func TestProxyDown_PublicFlag(t *testing.T) {
+	// Point at a port nothing listens on: the default 127.0.0.1:8787 is the
+	// developer's real gateway, and proxy down would POST /_am/shutdown to it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := ln.Addr().String()
+	ln.Close()
+	t.Setenv("AM_PROXY_ADDR", deadAddr)
+
 	// Set public bind
 	_ = proxy.SaveBindPublic(true)
 	_, _ = proxy.IssueNewAuthToken()
@@ -433,6 +444,3 @@ func TestCli_PerCommandHelp(t *testing.T) {
 		}
 	}
 }
-
-
-

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,20 @@ func withStubProxy(t *testing.T, h http.Handler) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	t.Setenv("AM_PROXY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+}
+
+// withDeadProxy points AM_PROXY_ADDR at a port nothing listens on, so a
+// "proxy down" under test cannot POST /_am/shutdown to the developer's real
+// gateway on 127.0.0.1:8787.
+func withDeadProxy(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	t.Setenv("AM_PROXY_ADDR", addr)
 }
 
 func TestProxyUp_True(t *testing.T) {
@@ -65,6 +80,7 @@ func TestAttachedSessions_UnreachableReturnsNegativeOne(t *testing.T) {
 }
 
 func TestCmdProxyDownPublic_RevertsBindAndClearsToken(t *testing.T) {
+	withDeadProxy(t)
 	// First set public = true and write a token
 	_ = SaveBindPublic(true)
 	_, _ = IssueNewAuthToken()
