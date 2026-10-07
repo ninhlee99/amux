@@ -66,6 +66,101 @@ var (
 	reEmptyFence       = regexp.MustCompile("(?si)```[a-zA-Z0-9_-]*\\s*```")
 )
 
+// ExtractThoughts extracts all content inside <thought>, <thinking>, or <reflection> tags.
+func ExtractThoughts(text string) string {
+	var sb strings.Builder
+	for _, m := range reThought.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(strings.TrimSpace(m[1]))
+		}
+	}
+	for _, m := range reThinking.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(strings.TrimSpace(m[1]))
+		}
+	}
+	for _, m := range reReflection.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(strings.TrimSpace(m[1]))
+		}
+	}
+	return sb.String()
+}
+
+// DiscoverKnownMCPServers scans known MCP server locations (AGY, Cursor, Claude)
+// to return known server names sorted by length descending so longer prefixes match first.
+func DiscoverKnownMCPServers() []string {
+	seen := map[string]bool{}
+	var list []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[strings.ToLower(s)] {
+			seen[strings.ToLower(s)] = true
+			list = append(list, s)
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		mcpDir := filepath.Join(home, ".gemini", "antigravity-cli", "mcp")
+		if entries, err := os.ReadDir(mcpDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					add(e.Name())
+				}
+			}
+		}
+	}
+
+	sort.Slice(list, func(i, j int) bool {
+		return len(list[i]) > len(list[j])
+	})
+	return list
+}
+
+// SplitMCPServerTool decomposes an MCP tool name like "mcp__server__tool" or
+// "mcp_supabase_mcp_server_list_tables" into (ServerName, ToolName).
+func SplitMCPServerTool(raw string) (string, string) {
+	clean := raw
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "mcp__") {
+		clean = clean[5:]
+	} else if strings.HasPrefix(lower, "mcp_") {
+		clean = clean[4:]
+	} else if strings.HasPrefix(lower, "mcp.") {
+		clean = clean[4:]
+	}
+	if parts := strings.SplitN(clean, "__", 2); len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+
+	known := DiscoverKnownMCPServers()
+	lowerClean := strings.ToLower(clean)
+	for _, s := range known {
+		sNorm := strings.ToLower(strings.ReplaceAll(s, "-", "_"))
+		if strings.HasPrefix(lowerClean, sNorm+"_") {
+			return s, clean[len(sNorm)+1:]
+		}
+		if strings.HasPrefix(lowerClean, strings.ToLower(s)+"_") {
+			return s, clean[len(s)+1:]
+		}
+	}
+
+	if parts := strings.SplitN(clean, "_", 2); len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", clean
+}
+
 // WebPreamble is appended to a web-backend prompt when the client sent tools[].
 func WebPreamble(defs []types.ToolDef) string {
 	if len(defs) == 0 {
@@ -209,37 +304,65 @@ type streamThoughtExtractor struct {
 	closeTag        string
 }
 
-func (e *streamThoughtExtractor) Feed(chunk string) string {
+func (e *streamThoughtExtractor) Feed(chunk string) (string, string) {
 	if chunk == "" {
-		return ""
+		return "", ""
 	}
 	e.buf.WriteString(chunk)
 	curr := e.buf.String()
-	var emitted strings.Builder
+	var emittedThought strings.Builder
+	var emittedContent strings.Builder
 
 	for {
 		if !e.inThought {
 			if e.lastStreamedIdx >= len(curr) {
 				break
 			}
-			lower := strings.ToLower(curr[e.lastStreamedIdx:])
-			if idx := strings.Index(lower, "<thought>"); idx != -1 {
-				e.inThought = true
-				e.openTag = "<thought>"
-				e.closeTag = "</thought>"
-				e.lastStreamedIdx += idx + len("<thought>")
-			} else if idx := strings.Index(lower, "<thinking>"); idx != -1 {
-				e.inThought = true
-				e.openTag = "<thinking>"
-				e.closeTag = "</thinking>"
-				e.lastStreamedIdx += idx + len("<thinking>")
-			} else {
-				break
+			rest := curr[e.lastStreamedIdx:]
+			lowerRest := strings.ToLower(rest)
+			idxThought := strings.Index(lowerRest, "<thought>")
+			idxThinking := strings.Index(lowerRest, "<thinking>")
+
+			openIdx := -1
+			openTag := ""
+			closeTag := ""
+			if idxThought != -1 && (idxThinking == -1 || idxThought < idxThinking) {
+				openIdx = idxThought
+				openTag = "<thought>"
+				closeTag = "</thought>"
+			} else if idxThinking != -1 {
+				openIdx = idxThinking
+				openTag = "<thinking>"
+				closeTag = "</thinking>"
 			}
+
+			if openIdx != -1 {
+				if openIdx > 0 {
+					emittedContent.WriteString(rest[:openIdx])
+				}
+				e.inThought = true
+				e.openTag = openTag
+				e.closeTag = closeTag
+				e.lastStreamedIdx += openIdx + len(openTag)
+				continue
+			}
+
+			safeLen := len(rest)
+			for _, prefix := range []string{"<thinking", "<thought", "<think", "<thou", "<tho", "<th", "<t", "<"} {
+				if strings.HasSuffix(strings.ToLower(rest), prefix) {
+					safeLen -= len(prefix)
+					break
+				}
+			}
+			if safeLen > 0 {
+				emittedContent.WriteString(rest[:safeLen])
+				e.lastStreamedIdx += safeLen
+			}
+			break
 		}
 
 		if e.inThought {
-			if e.lastStreamedIdx > len(curr) {
+			if e.lastStreamedIdx >= len(curr) {
 				break
 			}
 			rest := curr[e.lastStreamedIdx:]
@@ -248,7 +371,7 @@ func (e *streamThoughtExtractor) Feed(chunk string) string {
 				delta := rest[:closeIdx]
 				e.lastStreamedIdx += closeIdx + len(e.closeTag)
 				e.inThought = false
-				emitted.WriteString(delta)
+				emittedThought.WriteString(delta)
 				continue
 			}
 			safeLen := len(rest)
@@ -261,12 +384,12 @@ func (e *streamThoughtExtractor) Feed(chunk string) string {
 			if safeLen > 0 {
 				delta := rest[:safeLen]
 				e.lastStreamedIdx += safeLen
-				emitted.WriteString(delta)
+				emittedThought.WriteString(delta)
 			}
 			break
 		}
 	}
-	return emitted.String()
+	return emittedThought.String(), emittedContent.String()
 }
 
 func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage, inner <-chan types.StreamChunk, projectRoot ...string) <-chan types.StreamChunk {
@@ -276,6 +399,9 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		var buf strings.Builder
 		id := source
 		hasStreamedThinking := false
+		streamedContentLen := 0
+		toolMarkupDetected := false
+		allowBashFence := !historyHasTools(hist)
 		thoughtExt := &streamThoughtExtractor{}
 		for ch := range inner {
 			if ch.ID != "" {
@@ -285,10 +411,11 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				out <- ch
 				return
 			}
+			th, co := thoughtExt.Feed(ch.Content)
 			if ch.Thinking != "" {
 				hasStreamedThinking = true
 				out <- types.StreamChunk{ID: id, Thinking: ch.Thinking}
-			} else if th := thoughtExt.Feed(ch.Content); th != "" {
+			} else if th != "" {
 				hasStreamedThinking = true
 				out <- types.StreamChunk{ID: id, Thinking: th}
 			}
@@ -305,6 +432,16 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 				return
 			}
 			buf.WriteString(ch.Content)
+
+			if !toolMarkupDetected {
+				currAll := buf.String()
+				if hasExplicitWebToolMarkup(currAll) || (allowBashFence && strings.Contains(currAll, "```bash")) {
+					toolMarkupDetected = true
+				} else if co != "" {
+					out <- types.StreamChunk{ID: id, Content: co}
+					streamedContentLen += len(co)
+				}
+			}
 		}
 		text := buf.String()
 		if !hasStreamedThinking {
@@ -318,10 +455,15 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
 			cleanText := text
-			if hasExplicitWebToolMarkup(text) || strings.Contains(text, "<thought") {
+			if hasExplicitWebToolMarkup(text) || strings.Contains(text, "<thought") || strings.Contains(text, "<thinking") {
 				cleanText = StripInternalThoughtAndToolTags(text)
 			}
-			if cleanText != "" {
+			if streamedContentLen < len(cleanText) {
+				rem := cleanText[streamedContentLen:]
+				if rem != "" {
+					out <- types.StreamChunk{ID: id, Content: rem, LogText: text}
+				}
+			} else if streamedContentLen == 0 && cleanText != "" {
 				out <- types.StreamChunk{ID: id, Content: cleanText, LogText: text}
 			}
 			out <- types.StreamChunk{ID: id, Done: true, LogText: text}
@@ -330,7 +472,12 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 		// API-key style: tool_use only. Drop "please paste" prose.
 		if !forced {
 			if visible := StripWebToolMarkup(text); strings.TrimSpace(visible) != "" {
-				out <- types.StreamChunk{ID: id, Content: visible, LogText: text}
+				if streamedContentLen < len(visible) {
+					rem := visible[streamedContentLen:]
+					if strings.TrimSpace(rem) != "" {
+						out <- types.StreamChunk{ID: id, Content: rem, LogText: text}
+					}
+				}
 			}
 		}
 		out <- types.StreamChunk{
@@ -530,7 +677,7 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			kClean = strings.TrimPrefix(kClean, "mcp.")
 			kCleanNorm := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(kClean, "__", "_"), "-", "_"), ".", "_")
 			kCleanNorm = strings.ReplaceAll(kCleanNorm, "/", "_")
-			if kCleanNorm == cleanNameNorm || strings.HasSuffix(kCleanNorm, "_"+cleanNameNorm) {
+			if kCleanNorm == cleanNameNorm || strings.HasSuffix(kCleanNorm, "_"+cleanNameNorm) || strings.HasSuffix(cleanNameNorm, "_"+kCleanNorm) {
 				return canon, true
 			}
 		}
@@ -593,22 +740,13 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 
 		// If client expects call_mcp_tool and incoming is an mcp__server__tool name:
 		if strings.EqualFold(canon, "call_mcp_tool") && (strings.HasPrefix(strings.ToLower(name), "mcp__") || strings.HasPrefix(strings.ToLower(name), "mcp_")) {
-			clean := name
-			if strings.HasPrefix(strings.ToLower(clean), "mcp__") {
-				clean = clean[5:]
-			} else if strings.HasPrefix(strings.ToLower(clean), "mcp_") {
-				clean = clean[4:]
-			}
-			parts := strings.SplitN(clean, "__", 2)
-			if len(parts) < 2 {
-				parts = strings.SplitN(clean, "_", 2)
-			}
-			if len(parts) == 2 {
+			server, tool := SplitMCPServerTool(name)
+			if server != "" && tool != "" {
 				var innerArgs any
 				if json.Unmarshal([]byte(args), &innerArgs) == nil {
 					wrapped := map[string]any{
-						"ServerName":  parts[0],
-						"ToolName":    parts[1],
+						"ServerName":  server,
+						"ToolName":    tool,
 						"Arguments":   innerArgs,
 						"toolAction":  "Calling MCP tool",
 						"toolSummary": "MCP tool call",
@@ -856,8 +994,8 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 		return 0, false
 	}
 
-	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory")
-	remap(wantPath, "file_path", "path", "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory", "file", "filename", "filepath")
+	wantPath := toolArgKey(def, "file_path", "path", "AbsolutePath", "TargetFile")
+	remap(wantPath, "file_path", "path", "AbsolutePath", "TargetFile", "file", "filename", "filepath")
 
 	wantCmd := toolArgKey(def, "command", "CommandLine", "cmd")
 	remap(wantCmd, "command", "CommandLine", "cmd", "script", "code")
@@ -875,7 +1013,7 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 	remap(wantQuery, "query", "pattern", "Query", "Pattern", "regex", "search_term")
 
 	wantDir := toolArgKey(def, "dir", "directory", "SearchDirectory", "SearchPath")
-	remap(wantDir, "dir", "directory", "SearchDirectory", "SearchPath", "path", "cwd")
+	remap(wantDir, "dir", "directory", "SearchDirectory", "SearchPath", "folder", "cwd")
 
 	wantSkill := toolArgKey(def, "skill", "skill_name", "name")
 	remap(wantSkill, "skill", "skill_name", "name", "skillName")
@@ -1055,6 +1193,7 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 			if targetStr, ok := m["TargetContent"].(string); ok && targetStr != "" {
 				targetLines := strings.Split(targetStr, "\n")
 				tLen := len(targetLines)
+				// 1. Exact match
 				for i := 0; i <= len(lines)-tLen; i++ {
 					match := true
 					for j := 0; j < tLen; j++ {
@@ -1067,6 +1206,23 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 						foundStart = i + 1
 						foundEnd = i + tLen
 						break
+					}
+				}
+				// 2. Whitespace-trimmed line fallback match
+				if foundStart == 0 {
+					for i := 0; i <= len(lines)-tLen; i++ {
+						match := true
+						for j := 0; j < tLen; j++ {
+							if strings.TrimRight(lines[i+j], "\r \t") != strings.TrimRight(targetLines[j], "\r \t") {
+								match = false
+								break
+							}
+						}
+						if match {
+							foundStart = i + 1
+							foundEnd = i + tLen
+							break
+						}
 					}
 				}
 			}

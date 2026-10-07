@@ -105,16 +105,7 @@ func (g *ToolGateway) NormalizeCall(call types.ToolCall, defs []types.ToolDef, c
 			}
 		}
 		if hasCallMCP {
-			clean := strings.TrimPrefix(lowerCallName, "mcp__")
-			clean = strings.TrimPrefix(clean, "mcp_")
-			var server, tool string
-			if parts := strings.SplitN(clean, "__", 2); len(parts) == 2 {
-				server = parts[0]
-				tool = parts[1]
-			} else if parts := strings.SplitN(clean, "_", 2); len(parts) == 2 {
-				server = parts[0]
-				tool = parts[1]
-			}
+			server, tool := SplitMCPServerTool(lowerCallName)
 			if server != "" && tool != "" {
 				var origArgs map[string]any
 				_ = json.Unmarshal([]byte(call.Arguments), &origArgs)

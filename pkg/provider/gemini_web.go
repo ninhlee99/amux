@@ -90,66 +90,76 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 
 	project := req.Project()
 	cm := a.convs()
-	rotated := false
-	for attempt := 0; attempt < 2; attempt++ {
-		activeConv, hasActive := cm.GetActive(project)
-		var meta []string
-		canReuse := hasActive && activeConv != nil && !rotated &&
-			(activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
-		if canReuse {
-			meta = activeConv.Metadata
-		}
-		if rotated {
-			cm.ResetProject(project)
-			meta = nil
-		}
-
-		// After rotate or when meta is empty, force full context.
-		continuing := len(meta) > 0 && !rotated
-		promptReq := req
-		if continuing && historyHasToolTurns(req.Messages) {
-			cloned := *req
-			cloned.FullContext = false
-			promptReq = &cloned
-		}
-		prompt := WebBackendPrompt(promptReq, continuing)
-		text, newMeta, err := a.streamGenerate(ctx, prompt, meta)
-		if err != nil {
-			if isGeminiUsageLimit(err) {
-				if !rotated {
-					rotated = true
-					cm.ResetProject(project)
-					log.Printf("%s: rate/usage limit on thread for project %s — starting a new Gemini chat", a.AdapterID, project)
-					continue
-				}
-				return nil, fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrRateLimitReached, err)
+	out := make(chan types.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		rotated := false
+		for attempt := 0; attempt < 2; attempt++ {
+			activeConv, hasActive := cm.GetActive(project)
+			var meta []string
+			canReuse := hasActive && activeConv != nil && !rotated &&
+				(activeConv.SessionID == "" || req.SessionID == "" || activeConv.SessionID == req.SessionID)
+			if canReuse {
+				meta = activeConv.Metadata
 			}
-			if isGeminiAuthErr(err) {
-				if attempt == 0 {
-					a.mu.Lock()
-					rerr := a.refreshCookiesFromBrowserLocked()
-					a.mu.Unlock()
-					if rerr == nil && a.ensureInit(ctx) == nil {
-						log.Printf("%s: auth expired — auto-refreshed cookies from browser, retrying", a.AdapterID)
+			if rotated {
+				cm.ResetProject(project)
+				meta = nil
+			}
+
+			// After rotate or when meta is empty, force full context.
+			continuing := len(meta) > 0 && !rotated
+			promptReq := req
+			if continuing && historyHasToolTurns(req.Messages) {
+				cloned := *req
+				cloned.FullContext = false
+				promptReq = &cloned
+			}
+			prompt := WebBackendPrompt(promptReq, continuing)
+			var streamedDelta bool
+			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, func(delta string) {
+				streamedDelta = true
+				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: delta})
+			})
+			if err != nil {
+				if isGeminiUsageLimit(err) && !streamedDelta {
+					if !rotated {
+						rotated = true
+						cm.ResetProject(project)
+						log.Printf("%s: rate/usage limit on thread for project %s — starting a new Gemini chat", a.AdapterID, project)
 						continue
 					}
+					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrRateLimitReached, err)})
+					return
 				}
-				return nil, fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrAuthentication, err)
+				if isGeminiAuthErr(err) && !streamedDelta {
+					if attempt == 0 {
+						a.mu.Lock()
+						rerr := a.refreshCookiesFromBrowserLocked()
+						a.mu.Unlock()
+						if rerr == nil && a.ensureInit(ctx) == nil {
+							log.Printf("%s: auth expired — auto-refreshed cookies from browser, retrying", a.AdapterID)
+							continue
+						}
+					}
+					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrAuthentication, err)})
+					return
+				}
+				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w", a.AdapterID, err)})
+				return
 			}
-			return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
-		}
-		if len(newMeta) > 0 && newMeta[0] != "" {
-			cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
-		}
-		out := make(chan types.StreamChunk, 2)
-		go func() {
-			defer close(out)
-			sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: text})
+			if len(newMeta) > 0 && newMeta[0] != "" {
+				cm.Register(project, req.SessionID, newMeta[0], "", newMeta)
+			}
+			if !streamedDelta && text != "" {
+				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: text})
+			}
 			sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Done: true})
-		}()
-		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
-	}
-	return nil, types.ErrRateLimitReached
+			return
+		}
+		sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: types.ErrRateLimitReached})
+	}()
+	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 }
 
 func (a *GeminiWebAdapter) refreshCookiesFromBrowserLocked() error {
@@ -235,7 +245,7 @@ func (a *GeminiWebAdapter) ResetConversationForScope(scopeKey string) {
 	a.convs().ResetProject(scopeKey)
 }
 
-func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, metadata []string) (text string, newMeta []string, err error) {
+func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, metadata []string, onDelta ...func(string)) (text string, newMeta []string, err error) {
 	a.mu.Lock()
 	at := a.accessToken
 	bl := a.buildLabel
@@ -331,8 +341,12 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 					bestMeta = meta
 				}
 			}
-			if len(t) >= len(bestText) {
+			if len(t) > len(bestText) {
+				delta := t[len(bestText):]
 				bestText = t
+				if len(onDelta) > 0 && onDelta[0] != nil && delta != "" {
+					onDelta[0](delta)
+				}
 			}
 		}
 	}

@@ -133,9 +133,7 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 	}
 
 	var slice []types.ChatMessage
-	if lastAssistant >= 0 && lastAssistant < len(messages)-1 {
-		slice = messages[lastAssistant+1:]
-	} else if lastAssistant >= 0 {
+	if lastAssistant >= 0 {
 		slice = messages[lastAssistant:]
 	} else {
 		slice = messages

@@ -754,3 +754,47 @@ Action Input: {"command": "go build ./..."}
 		t.Errorf("expected go build argument, got: %s", calls2[0].Arguments)
 	}
 }
+
+func TestSplitMCPServerTool(t *testing.T) {
+	cases := []struct {
+		input      string
+		wantServer string
+		wantTool   string
+	}{
+		{"mcp__StitchMCP__list_projects", "StitchMCP", "list_projects"},
+		{"mcp_StitchMCP_list_projects", "StitchMCP", "list_projects"},
+		{"mcp__supabase-mcp-server__list_tables", "supabase-mcp-server", "list_tables"},
+		{"mcp_supabase_mcp_server_list_tables", "supabase-mcp-server", "list_tables"},
+		{"mcp__custom_server__tool_name", "custom_server", "tool_name"},
+	}
+	for _, tc := range cases {
+		s, tool := SplitMCPServerTool(tc.input)
+		if s != tc.wantServer || tool != tc.wantTool {
+			t.Errorf("SplitMCPServerTool(%q) = (%q, %q), want (%q, %q)", tc.input, s, tool, tc.wantServer, tc.wantTool)
+		}
+	}
+}
+
+func TestExtractThoughts(t *testing.T) {
+	input := `<thought>
+First step is to check database tables.
+</thought>
+Here is the answer.`
+	extracted := ExtractThoughts(input)
+	if !strings.Contains(extracted, "First step is to check database tables.") {
+		t.Errorf("expected extracted thoughts, got: %q", extracted)
+	}
+}
+
+func TestBidirectionalMCPMatching(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "list_tables", InputSchema: []byte(`{}`)},
+	}
+	text := `<tool_call>
+{"name": "supabase_mcp_server_list_tables", "arguments": {}}
+</tool_call>`
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 || calls[0].Name != "list_tables" {
+		t.Fatalf("expected list_tables call, got: %+v", calls)
+	}
+}

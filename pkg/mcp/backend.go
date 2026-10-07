@@ -163,6 +163,13 @@ func (b *PoolBackend) Ask(ctx context.Context, a AskRequest, onDelta func(string
 		}
 	} else if clean != "" {
 		text = clean
+	} else if text != "" {
+		// If clean was stripped leaving empty text (e.g. only thought tags returned),
+		// extract inner thoughts so the caller gets an actual answer instead of an error!
+		extracted := tools.ExtractThoughts(text)
+		if strings.TrimSpace(extracted) != "" {
+			text = strings.TrimSpace(extracted)
+		}
 	}
 	if text == "" && thinking.Len() > 0 {
 		text = strings.TrimSpace(thinking.String())
