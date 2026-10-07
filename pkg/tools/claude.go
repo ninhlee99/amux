@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/utils"
@@ -72,13 +73,17 @@ func ToClaudeTools(defs []types.ToolDef) []ClaudeTool {
 func ToClaudeToolUseBlocks(calls []types.ToolCall) []ClaudeToolUseBlock {
 	out := make([]ClaudeToolUseBlock, 0, len(calls))
 	for _, c := range calls {
+		id := c.ID
+		if id == "" {
+			id = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		}
 		input := json.RawMessage(`{}`)
 		if strings.TrimSpace(c.Arguments) != "" && json.Valid([]byte(c.Arguments)) {
 			input = json.RawMessage(c.Arguments)
 		}
 		out = append(out, ClaudeToolUseBlock{
 			Type:  "tool_use",
-			ID:    c.ID,
+			ID:    id,
 			Name:  c.Name,
 			Input: input,
 		})
@@ -186,19 +191,27 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 			if callID == "" {
 				callID = m.Name
 			}
+			if callID == "" {
+				callID = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			}
 			content := m.Content
 			if content == "" {
 				content = "{}"
 			}
+			trBlock := anthropicBlock{
+				"type":        "tool_result",
+				"tool_use_id": callID,
+				"content":     content,
+			}
+			if m.IsError {
+				trBlock["is_error"] = true
+			}
+			if m.CacheControl {
+				trBlock["cache_control"] = map[string]string{"type": "ephemeral"}
+			}
 			rawMsgs = append(rawMsgs, anthropicMsg{
-				Role: "user",
-				Content: []anthropicBlock{
-					{
-						"type":         "tool_result",
-						"tool_use_id": callID,
-						"content":     content,
-					},
-				},
+				Role:    "user",
+				Content: []anthropicBlock{trBlock},
 			})
 		case "assistant":
 			var blocks []anthropicBlock
@@ -212,6 +225,9 @@ func MarshalClaudeMessagesRequest(req *types.ChatRequest, model string) ([]byte,
 				callID := tc.ID
 				if callID == "" {
 					callID = tc.Name
+				}
+				if callID == "" {
+					callID = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
 				}
 				args := json.RawMessage(`{}`)
 				if strings.TrimSpace(tc.Arguments) != "" && json.Valid([]byte(tc.Arguments)) {

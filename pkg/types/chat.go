@@ -95,6 +95,7 @@ type ChatMessage struct {
 	ToolCallID   string     `json:"tool_call_id,omitempty"`
 	Name         string     `json:"name,omitempty"`
 	CacheControl bool       `json:"cache_control,omitempty"`
+	IsError      bool       `json:"is_error,omitempty"`
 }
 
 // ChatRequest is provider-agnostic; each adapter translates it into
@@ -110,6 +111,8 @@ type ChatRequest struct {
 	// ToolChoice mirrors OpenAI/Anthropic tool_choice when set ("auto",
 	// "none", or a named tool). Adapters that don't support it ignore it.
 	ToolChoice any `json:"tool_choice,omitempty"`
+	// Stop specifies optional custom stop sequences.
+	Stop []string `json:"stop,omitempty"`
 	// FullContext tells web backends to flatten the entire client history
 	// into one prompt (Claude Code / Codex send full turns every request)
 	// instead of only the last user message on a server-side thread.

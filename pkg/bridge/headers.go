@@ -159,12 +159,29 @@ func poolSendStreamingLazy(r *http.Request, pool *router.AccountPoolRouter, req 
 // Claude Code and the SDKs retry, so the session recovers by itself once
 // the network is back.
 func gatewayFailureStatus(err error) (status, retryAfterSec int) {
+	if err == nil {
+		return http.StatusOK, 0
+	}
+	var rle *types.RateLimitError
+	if errors.As(err, &rle) || errors.Is(err, types.ErrRateLimitReached) {
+		ra := 60
+		if rle != nil && rle.RetryAfter > 0 {
+			ra = int(rle.RetryAfter.Seconds())
+		}
+		return http.StatusTooManyRequests, ra
+	}
 	msg := err.Error()
 	if strings.Contains(msg, "Cloudflare challenge") {
 		return http.StatusServiceUnavailable, 30
 	}
 	if errors.Is(err, types.ErrUpstreamUnreachable) || strings.Contains(msg, "network unreachable") {
 		return http.StatusServiceUnavailable, 10
+	}
+	if errors.Is(err, types.ErrAuthentication) || strings.Contains(msg, "authentication failed") || strings.Contains(msg, "unauthorized") {
+		return http.StatusUnauthorized, 0
+	}
+	if strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") {
+		return http.StatusTooManyRequests, 60
 	}
 	return http.StatusBadGateway, 0
 }

@@ -27,6 +27,14 @@ type ExecutionResult struct {
 	Error      error         `json:"error,omitempty"`
 }
 
+// IsSuccess returns true if the tool completed with exit code 0 and no error.
+func (r *ExecutionResult) IsSuccess() bool {
+	if r == nil {
+		return false
+	}
+	return r.ExitCode == 0 && r.Error == nil
+}
+
 // NativeExecutor defines the interface for running native runtime operations.
 type NativeExecutor interface {
 	CanExecute(toolName string) bool

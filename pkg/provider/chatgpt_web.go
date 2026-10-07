@@ -128,10 +128,18 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			if toolName == "" && m.ToolCallID != "" {
 				toolName = m.ToolCallID
 			}
-			if toolName != "" {
-				sb.WriteString(fmt.Sprintf("User: [Tool result (%s)]:\n", toolName))
+			if m.IsError {
+				if toolName != "" {
+					sb.WriteString(fmt.Sprintf("User: [Tool error (%s)]:\n", toolName))
+				} else {
+					sb.WriteString("User: [Tool error — CLI failed]:\n")
+				}
 			} else {
-				sb.WriteString("User: [Tool result — CLI ran]:\n")
+				if toolName != "" {
+					sb.WriteString(fmt.Sprintf("User: [Tool result (%s)]:\n", toolName))
+				} else {
+					sb.WriteString("User: [Tool result — CLI ran]:\n")
+				}
 			}
 			toolContent := tools.PruneToolResult(m.Content)
 			// If this is an older tool result and exceeds limit, keep essential head & tail to avoid HTTP 413 while preserving exit codes/errors

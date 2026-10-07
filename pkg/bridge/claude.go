@@ -37,14 +37,15 @@ func poolAccountLabel(pool *router.AccountPoolRouter) string {
 
 // AnthropicMessageRequest represents the request body sent to /v1/messages by Claude Code.
 type AnthropicMessageRequest struct {
-	Model       string            `json:"model"`
-	Messages    []json.RawMessage `json:"messages"`
-	System      json.RawMessage   `json:"system,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	ToolChoice  any               `json:"tool_choice,omitempty"`
-	Thinking    *struct {
+	Model         string            `json:"model"`
+	Messages      []json.RawMessage `json:"messages"`
+	System        json.RawMessage   `json:"system,omitempty"`
+	MaxTokens     int               `json:"max_tokens,omitempty"`
+	Stream        bool              `json:"stream,omitempty"`
+	Temperature   *float64          `json:"temperature,omitempty"`
+	ToolChoice    any               `json:"tool_choice,omitempty"`
+	StopSequences []string          `json:"stop_sequences,omitempty"`
+	Thinking      *struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking,omitempty"`
@@ -74,12 +75,13 @@ func ToChatRequest(body []byte) (*types.ChatRequest, error) {
 		ExplicitTemperature: explicitTemp,
 		MaxTokens:           aReq.MaxTokens,
 		ToolChoice:          aReq.ToolChoice,
+		Stop:                aReq.StopSequences,
 		Messages:            []types.ChatMessage{},
 		FullContext:         true,
 		ClientDialect:       tools.DialectClaude,
 	}
 
-	if aReq.Thinking != nil && aReq.Thinking.Type == "enabled" {
+	if aReq.Thinking != nil && (aReq.Thinking.Type == "enabled" || aReq.Thinking.Type == "adaptive") {
 		req.Thinking = true
 		req.ThinkingBudget = aReq.Thinking.BudgetTokens
 	}
@@ -254,12 +256,17 @@ func expandAnthropicMessage(role string, raw json.RawMessage) []types.ChatMessag
 			}
 			var toolUseID string
 			_ = json.Unmarshal(b["tool_use_id"], &toolUseID)
+			var isErr bool
+			if len(b["is_error"]) > 0 {
+				_ = json.Unmarshal(b["is_error"], &isErr)
+			}
 			trCache := len(b["cache_control"]) > 0 && string(b["cache_control"]) != "null"
 			out = append(out, types.ChatMessage{
 				Role:         "tool",
 				ToolCallID:   toolUseID,
 				Content:      toolResultBody(b["content"]),
 				CacheControl: trCache,
+				IsError:      isErr,
 			})
 		default:
 			var t string
@@ -437,7 +444,22 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		if retryAfter > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		}
-		writeAnthropicJSONError(w, status, "api_error", fmt.Sprintf("amux gateway: all providers failed: %v", err))
+		errType := "api_error"
+		switch status {
+		case http.StatusTooManyRequests:
+			errType = "rate_limit_error"
+		case http.StatusServiceUnavailable:
+			errType = "overloaded_error"
+		case http.StatusUnauthorized:
+			errType = "authentication_error"
+		case http.StatusForbidden:
+			errType = "permission_error"
+		case http.StatusBadRequest:
+			errType = "invalid_request_error"
+		case http.StatusNotFound:
+			errType = "not_found_error"
+		}
+		writeAnthropicJSONError(w, status, errType, fmt.Sprintf("amux gateway: all providers failed: %v", err))
 		return err
 	}
 	if req.Stream {
@@ -505,12 +527,13 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		seen := map[string]bool{}
 		var unique []types.ToolCall
 		for _, tc := range toolCalls {
-			if tc.ID != "" && seen[tc.ID] {
+			if tc.ID == "" {
+				tc.ID = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			}
+			if seen[tc.ID] {
 				continue
 			}
-			if tc.ID != "" {
-				seen[tc.ID] = true
-			}
+			seen[tc.ID] = true
 			unique = append(unique, tc)
 		}
 		toolCalls = unique
@@ -719,10 +742,24 @@ func beginAnthropicSSE(w http.ResponseWriter, req *types.ChatRequest, msgID stri
 }
 
 func writeAnthropicSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
+	errType := "api_error"
+	status, _ := gatewayFailureStatus(err)
+	switch status {
+	case http.StatusTooManyRequests:
+		errType = "rate_limit_error"
+	case http.StatusServiceUnavailable:
+		errType = "overloaded_error"
+	case http.StatusUnauthorized:
+		errType = "authentication_error"
+	case http.StatusForbidden:
+		errType = "permission_error"
+	case http.StatusBadRequest:
+		errType = "invalid_request_error"
+	}
 	errJSON, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]string{
-			"type":    "api_error",
+			"type":    errType,
 			"message": withRequestRef(w, err.Error()),
 		},
 	})
@@ -946,12 +983,13 @@ loop:
 		seen := map[string]bool{}
 		var unique []types.ToolCall
 		for _, tc := range toolCalls {
-			if tc.ID != "" && seen[tc.ID] {
+			if tc.ID == "" {
+				tc.ID = fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+			}
+			if seen[tc.ID] {
 				continue
 			}
-			if tc.ID != "" {
-				seen[tc.ID] = true
-			}
+			seen[tc.ID] = true
 			unique = append(unique, tc)
 		}
 		toolCalls = unique
@@ -1044,6 +1082,8 @@ func mapFinishReasonAnthropic(fr string) string {
 		return "tool_use"
 	case "length", "max_tokens":
 		return "max_tokens"
+	case "stop_sequence":
+		return "stop_sequence"
 	default:
 		return "end_turn"
 	}

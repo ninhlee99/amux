@@ -68,6 +68,9 @@ func RunAgentLoop(
 			cfg.WorkspaceDir = "."
 		}
 	}
+	if cfg.ClientDialect == "" {
+		cfg.ClientDialect = tools.DialectClaude
+	}
 
 	loopCtx := ctx
 	var cancel context.CancelFunc
@@ -193,9 +196,11 @@ func RunAgentLoop(
 		}
 
 		// 5. Tool calls present: execute tools deterministically and resume conversation
+		cleanProse := tools.StripWebToolMarkup(rawText)
+		cleanProse = tools.StripInternalThoughtAndToolTags(cleanProse)
 		history = append(history, types.ChatMessage{
 			Role:      "assistant",
-			Content:   rawText,
+			Content:   strings.TrimSpace(cleanProse),
 			ToolCalls: calls,
 		})
 
@@ -222,13 +227,18 @@ func RunAgentLoop(
 			// Format tool result message into conversation state
 			toolCallID := tc.ID
 			if toolCallID == "" {
-				toolCallID = fmt.Sprintf("call_%d_%s", turn, tc.Name)
+				toolCallID = fmt.Sprintf("toolu_%d_%s", turn, tc.Name)
+			} else if !strings.HasPrefix(toolCallID, "toolu_") {
+				toolCallID = "toolu_" + toolCallID
 			}
 
+			isErr := execErr != nil || (execRes != nil && !execRes.IsSuccess())
 			history = append(history, types.ChatMessage{
 				Role:       "tool",
 				ToolCallID: toolCallID,
+				Name:       tc.Name,
 				Content:    output,
+				IsError:    isErr,
 			})
 		}
 
