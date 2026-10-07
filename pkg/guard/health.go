@@ -298,7 +298,13 @@ func (h *HealthTracker) IsQuarantined(id string) (bool, time.Duration, string) {
 func (h *HealthTracker) GetReport(id string) HealthReport {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.reportLocked(id)
+}
 
+// reportLocked builds a report; caller holds h.mu (read or write). Kept
+// separate so GetAllReports never re-acquires the RLock it already holds —
+// a recursive RLock deadlocks once a writer queues between the two.
+func (h *HealthTracker) reportLocked(id string) HealthReport {
 	e, exists := h.accounts[id]
 	if !exists {
 		return HealthReport{
@@ -339,7 +345,7 @@ func (h *HealthTracker) GetAllReports() map[string]HealthReport {
 
 	out := make(map[string]HealthReport, len(h.accounts))
 	for id := range h.accounts {
-		out[id] = h.GetReport(id)
+		out[id] = h.reportLocked(id)
 	}
 	return out
 }

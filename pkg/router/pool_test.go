@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/types"
 )
@@ -391,6 +392,35 @@ func TestAccountPoolRouter_AutoRotateCountAndStatusInPool(t *testing.T) {
 	for _, entry := range r.Status() {
 		if !entry["in_pool"].(bool) {
 			t.Fatalf("expected all in_pool=true after pool add, got false for %v", entry["id"])
+		}
+	}
+}
+
+// A degraded account (health < 80) is tried after healthy ones in the same
+// tier instead of taking its round-robin turn.
+func TestAccountPoolRouter_DegradedAccountTriedLast(t *testing.T) {
+	guard.ResetAll()
+	t.Cleanup(guard.ResetAll)
+	flaky := &mockAdapter{id: "web:flaky", priority: 1, content: "flaky"}
+	solid := &mockAdapter{id: "web:solid", priority: 2, content: "solid"}
+	for i := 0; i < 3; i++ {
+		guard.GlobalHealth().RecordServerError(flaky.id, 502, "bad gateway")
+	}
+
+	r := router.NewAccountPoolRouter([]types.ProviderAdapter{flaky, solid})
+	for turn := 0; turn < 2; turn++ {
+		ch, err := r.Send(context.Background(), &types.ChatRequest{
+			Messages: []types.ChatMessage{{Role: "user", Content: "hi"}},
+		})
+		if err != nil {
+			t.Fatalf("turn %d: %v", turn, err)
+		}
+		var text string
+		for chunk := range ch {
+			text += chunk.Content
+		}
+		if text != "solid" {
+			t.Fatalf("turn %d served by %q, want the healthy account", turn, text)
 		}
 	}
 }

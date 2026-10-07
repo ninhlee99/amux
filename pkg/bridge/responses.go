@@ -779,7 +779,7 @@ func parseResponsesInput(raw json.RawMessage) ([]types.ChatMessage, error) {
 func writeResponsesStreamError(w http.ResponseWriter, flusher http.Flusher, err error, respID string) {
 	resp := map[string]any{
 		"status": "failed",
-		"error":  map[string]string{"message": err.Error()},
+		"error":  map[string]string{"message": withRequestRef(w, err.Error())},
 	}
 	if respID != "" {
 		resp["id"] = respID
@@ -795,7 +795,7 @@ func writeResponsesJSONError(w http.ResponseWriter, status int, code, message st
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
-			"message": message,
+			"message": withRequestRef(w, message),
 			"type":    "server_error",
 			"code":    code,
 		},

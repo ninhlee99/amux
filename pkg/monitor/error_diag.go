@@ -23,6 +23,7 @@ func statsPath() string     { return filepath.Join(types.BaseDir(), "log_stats.j
 // and for creating privacy-sanitized GitHub issues.
 type ErrorDiagnostic struct {
 	Time       time.Time
+	RequestID  string
 	Account    string
 	Dialect    string
 	Model      string
@@ -367,8 +368,8 @@ func fileExists(p string) bool {
 func formatDiagnosticBlock(e ErrorDiagnostic) string {
 	var b strings.Builder
 	b.WriteString("================================================================================\n")
-	fmt.Fprintf(&b, "t=%s  account=%s  dialect=%s  model=%s  path=%s  stop=%s  ms=%d\n",
-		e.Time.Format(time.RFC3339Nano),
+	fmt.Fprintf(&b, "t=%s  req=%s  account=%s  dialect=%s  model=%s  path=%s  stop=%s  ms=%d\n",
+		e.Time.Format(time.RFC3339Nano), dash(e.RequestID),
 		dash(e.Account), dash(e.Dialect), dash(e.Model), dash(e.Path), dash(e.Stop), e.DurationMs)
 	if e.Error != "" {
 		fmt.Fprintf(&b, "error=%s\n", e.Error)

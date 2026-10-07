@@ -25,6 +25,7 @@ type EventEntry struct {
 // RequestEntry captures one chat turn's input/output for logging and error diagnosis.
 type RequestEntry struct {
 	Time       time.Time `json:"t"`
+	RequestID  string    `json:"req_id,omitempty"` // gateway trace id (X-Amux-Request-Id)
 	Dialect    string    `json:"dialect,omitempty"` // claude|cursor|codex|…
 	Path       string    `json:"path,omitempty"`
 	Account    string    `json:"account,omitempty"`

@@ -300,10 +300,18 @@ Usage:
   amux doctor [options]
 
 Options:
-  -h, --help          Show this help message
+  --fix                       Repair permissions and PATH while checking
+  --live [--provider <id>]    Send real turns through the gateway (Anthropic,
+                              OpenAI streaming, tool call) and name the layer
+                              that fails; spends a few tokens
+  providers                   Probe each account directly, bypassing the gateway
+  --security                  Run the security audit
+  -h, --help                  Show this help message
 
 Examples:
   amux doctor                 # Run complete system diagnostics
+  amux doctor --live          # End-to-end check of the running gateway
+  amux doctor --live --provider chatgpt:01
 `)
 }
 

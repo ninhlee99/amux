@@ -39,6 +39,7 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 	if r != nil {
 		path = r.URL.Path
 	}
+	reqID := types.RequestIDFrom(r)
 	account := poolAccountLabel(pool)
 	if req != nil && req.ServingAccount != "" {
 		account = req.ServingAccount
@@ -75,9 +76,9 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 		displayModel = fmt.Sprintf("%s (%s)", model, servingModel)
 	}
 	if errStr != "" {
-		term.LogWarn("[req] %s · %s · %s · error=%s (%dms)", account, apiLabel, displayModel, errStr, ms)
+		term.LogWarn("[req] %s · %s · %s · %s · error=%s (%dms)", dash(reqID), account, apiLabel, displayModel, errStr, ms)
 	} else {
-		term.LogProxy("[req] %s · %s · %s · in=%d out=%d (%dms)", account, apiLabel, displayModel, inTok, outTok, ms)
+		term.LogProxy("[req] %s · %s · %s · %s · in=%d out=%d (%dms)", dash(reqID), account, apiLabel, displayModel, inTok, outTok, ms)
 	}
 
 	if inTok > 0 || outTok > 0 || cacheRead > 0 || cacheCreation > 0 {
@@ -106,6 +107,7 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 
 	monitor.AppendRequest(types.RequestEntry{
 		Time:       now,
+		RequestID:  reqID,
 		Dialect:    dialect,
 		Path:       path,
 		Account:    account,
@@ -126,6 +128,7 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 	}
 	monitor.RecordErrorDiagnostic(monitor.ErrorDiagnostic{
 		Time:       now,
+		RequestID:  reqID,
 		Account:    account,
 		Dialect:    dialect,
 		Model:      model,
@@ -144,6 +147,27 @@ func pickLogOutput(streamed, logText string) string {
 		return logText
 	}
 	return streamed
+}
+
+// withRequestRef appends the gateway request id to a client-facing error so
+// the user can find the matching gateway.log / errors.log entry. IDEs show
+// the message but not response headers.
+func withRequestRef(w http.ResponseWriter, msg string) string {
+	if w == nil {
+		return msg
+	}
+	id := w.Header().Get(types.RequestIDHeader)
+	if id == "" || strings.Contains(msg, id) {
+		return msg
+	}
+	return msg + " [amux request " + id + "]"
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func looksWebAccount(account string) bool {

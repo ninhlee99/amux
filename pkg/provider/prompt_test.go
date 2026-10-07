@@ -195,3 +195,33 @@ func TestWebBackendPrompt_ContinuingThreadWithoutFullContextPreservesToolResults
 }
 
 
+
+// A fresh web thread given a transcript that already holds tool turns must be
+// told to continue the task; without the cue ChatGPT answers "Ready. Send the
+// repo task" and the client's tool loop stalls.
+func TestWebBackendPrompt_FreshThreadWithToolHistoryAsksForNextTurn(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "run pwd then ls go.mod"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "toolu_a", Name: "Bash", Arguments: `{"command":"pwd"}`}}},
+			{Role: "tool", ToolCallID: "toolu_a", Content: "/repo"},
+		},
+	}
+	got := WebBackendPrompt(req, false)
+	cue := strings.LastIndex(got, "[next]")
+	if cue < 0 || cue < strings.LastIndex(got, "/repo") {
+		t.Fatalf("missing next-turn cue after transcript: %q", got)
+	}
+	if !strings.Contains(got[cue:], "Task: run pwd then ls go.mod") {
+		t.Fatalf("cue must restate the task: %q", got[cue:])
+	}
+
+	noTools := WebBackendPrompt(&types.ChatRequest{
+		Tools:    req.Tools,
+		Messages: []types.ChatMessage{{Role: "user", Content: "hi"}},
+	}, false)
+	if strings.Contains(noTools, "[next]") {
+		t.Fatalf("cue only belongs after tool turns: %q", noTools)
+	}
+}

@@ -627,7 +627,7 @@ func writeGeminiStreamError(w http.ResponseWriter, flusher http.Flusher, err err
 	payload, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
 			"code":    502,
-			"message": err.Error(),
+			"message": withRequestRef(w, err.Error()),
 			"status":  "UNAVAILABLE",
 		},
 	})
@@ -641,7 +641,7 @@ func writeGeminiJSONError(w http.ResponseWriter, status int, errStatus, message 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"code":    status,
-			"message": message,
+			"message": withRequestRef(w, message),
 			"status":  errStatus,
 		},
 	})

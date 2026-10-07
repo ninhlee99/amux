@@ -655,8 +655,9 @@ call:default_api:view_file{AbsolutePath: "/workspace/main.go", StartLine: 1, End
 	if calls[0].Name != "view_file" {
 		t.Errorf("expected view_file, got %s", calls[0].Name)
 	}
-	if !strings.Contains(calls[0].Arguments, "/workspace/main.go") {
-		t.Errorf("expected args to have path, got %s", calls[0].Arguments)
+	var args map[string]any
+	if err := json.Unmarshal([]byte(calls[0].Arguments), &args); err != nil || args["AbsolutePath"] != "/workspace/main.go" {
+		t.Errorf("expected AbsolutePath key, got %s", calls[0].Arguments)
 	}
 }
 
@@ -815,5 +816,37 @@ func TestWebPreambles_SteerAwayFromBuiltinSandbox(t *testing.T) {
 		if !strings.Contains(p, "python/container") || !strings.Contains(p, "[Tool result]") {
 			t.Errorf("%s does not warn off built-in sandbox / explain turn-taking:\n%s", name, p)
 		}
+	}
+}
+
+// Claude Code drops a tool_use whose id already appears earlier in the
+// transcript and sends "(no content)" in place of its result, so every web
+// tool call must get an id the history has not used yet.
+func TestFinalizeWebToolCalls_IDsUniqueAcrossTurns(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Bash"}}
+	text := `<tool_call>
+{"name":"Bash","arguments":{"command":"ls"}}
+</tool_call>`
+	first, _ := FinalizeWebToolCalls(text, defs, nil)
+	if len(first) != 1 || first[0].ID == "" {
+		t.Fatalf("first turn: %+v", first)
+	}
+	hist := []types.ChatMessage{
+		{Role: "user", Content: "list files"},
+		{Role: "assistant", ToolCalls: first},
+		{Role: "tool", ToolCallID: first[0].ID, Content: "main.go"},
+	}
+	second, _ := FinalizeWebToolCalls(text, defs, hist)
+	if len(second) != 1 || second[0].ID == "" || second[0].ID == first[0].ID {
+		t.Fatalf("second turn reused id %q: %+v", first[0].ID, second)
+	}
+
+	// The model may copy an id it saw in the transcript.
+	copied := `<tool_call name="Bash" id="` + first[0].ID + `">
+{"command":"pwd"}
+</tool_call>`
+	third, _ := FinalizeWebToolCalls(copied, defs, hist)
+	if len(third) != 1 || third[0].ID == first[0].ID {
+		t.Fatalf("copied history id kept: %+v", third)
 	}
 }

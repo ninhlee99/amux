@@ -356,6 +356,26 @@ func (r *AccountPoolRouter) FamilyMembers(family string) []types.ProviderAdapter
 	return out
 }
 
+// healthOrder returns tier indices in round-robin order starting at start,
+// with degraded accounts (health score < 80) moved behind healthy ones.
+// Accounts of equal health keep their round-robin order, so load still
+// spreads evenly; a flaky account is only tried once the healthy ones fail.
+func healthOrder(tier []types.ProviderAdapter, start int) []int {
+	n := len(tier)
+	order := make([]int, n)
+	for step := range order {
+		order[step] = (start + step) % n
+	}
+	degraded := make([]bool, n)
+	for i, a := range tier {
+		degraded[i] = guard.GlobalHealth().GetReport(a.ID()).Status == guard.StatusDegraded
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return !degraded[order[i]] && degraded[order[j]]
+	})
+	return order
+}
+
 func containsAdapter(list []types.ProviderAdapter, id string) bool {
 	if id == "" {
 		return false
@@ -622,8 +642,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 		startIdx := r.tierIndices[tier]
 		r.mu.Unlock()
 
-		for step := 0; step < len(tierAdapters); step++ {
-			currIdx := (startIdx + step) % len(tierAdapters)
+		for _, currIdx := range healthOrder(tierAdapters, startIdx) {
 			a := tierAdapters[currIdx]
 
 			// Never retry the adapter already attempted in the preferred

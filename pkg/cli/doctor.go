@@ -25,6 +25,10 @@ func CmdDoctor(args []string) {
 		ui.CmdDoctorProviders()
 		return
 	}
+	if len(args) > 0 && (args[0] == "--live" || args[0] == "live") {
+		CmdDoctorLive(args[1:])
+		return
+	}
 	if len(args) > 0 && (args[0] == "--security" || args[0] == "security") {
 		CmdAudit(args[1:])
 		return

@@ -25,6 +25,7 @@ var proxyInternalHeaders = []string{
 	"x-amux-auth",
 	"x-amux-token",
 	"x-amux-route",
+	"x-amux-request-id",
 	"x-forwarded-for",
 	"x-forwarded-proto",
 	"x-forwarded-host",

@@ -65,6 +65,11 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloser()
+	if !continuingThread || req.FullContext {
+		if historyHasToolTurns(msgs) {
+			closer = midTaskCue(msgs) + closer
+		}
+	}
 	var preamble string
 	if continuingThread {
 		preamble = tools.WebCatalogOnly(req.Tools)
@@ -93,6 +98,39 @@ func enforceWebPromptLimit(s string, maxRunes int) string {
 	return string(r[:head]) + "\n\n... [history truncated to fit web payload limit] ...\n\n" + string(r[len(r)-tail:])
 }
 
+// midTaskCue follows a full transcript that already holds tool turns. Sent on
+// a fresh web thread, such a transcript reads to ChatGPT like setup text and it
+// replies "Ready. Send the task" instead of continuing; naming the task and
+// asking for the next turn keeps it working.
+func midTaskCue(msgs []types.ChatMessage) string {
+	cue := "\n[next] You are the Assistant above, mid-task."
+	if task := firstUserTask(msgs); task != "" {
+		cue += " Task: " + truncateRunes(task, 500)
+	}
+	return cue + "\nWrite your next turn now: the next <tool_call>, or the final answer if the [Tool result]s suffice. Do not wait for a new task.\n"
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// firstUserTask is the first non-empty user turn: the task the client started.
+func firstUserTask(messages []types.ChatMessage) string {
+	for _, m := range messages {
+		if strings.EqualFold(m.Role, "user") {
+			c := strings.TrimSpace(m.Content)
+			if c != "" && !strings.EqualFold(c, "(no content)") {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
 // historyHasToolTurns is true when the client already ran tools this session.
 func historyHasToolTurns(msgs []types.ChatMessage) bool {
 	for _, m := range msgs {
@@ -110,16 +148,7 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 		return ""
 	}
 	// Extract the original user task so multi-turn tool continuing threads never lose context
-	firstUser := ""
-	for _, m := range messages {
-		if strings.EqualFold(m.Role, "user") {
-			c := strings.TrimSpace(m.Content)
-			if c != "" && !strings.EqualFold(c, "(no content)") {
-				firstUser = c
-				break
-			}
-		}
-	}
+	firstUser := firstUserTask(messages)
 
 	// In a multi-turn tool conversation, locate the last assistant turn.
 	// The delta turns since the last assistant response are all subsequent tool

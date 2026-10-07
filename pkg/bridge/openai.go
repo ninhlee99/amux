@@ -610,7 +610,7 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeOpenAIStreamError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", err.Error())
+	fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", withRequestRef(w, err.Error()))
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
@@ -620,7 +620,7 @@ func writeOpenAIJSONError(w http.ResponseWriter, status int, code, message strin
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
-			"message": message,
+			"message": withRequestRef(w, message),
 			"type":    "server_error",
 			"code":    code,
 		},

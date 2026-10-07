@@ -704,7 +704,7 @@ func writeAnthropicSSEError(w http.ResponseWriter, flusher http.Flusher, err err
 		"type": "error",
 		"error": map[string]string{
 			"type":    "api_error",
-			"message": err.Error(),
+			"message": withRequestRef(w, err.Error()),
 		},
 	})
 	fmt.Fprintf(w, "event: error\ndata: %s\n\n", errJSON)
@@ -718,7 +718,7 @@ func writeAnthropicJSONError(w http.ResponseWriter, status int, errType, message
 		"type": "error",
 		"error": map[string]string{
 			"type":    errType,
-			"message": message,
+			"message": withRequestRef(w, message),
 		},
 	})
 }

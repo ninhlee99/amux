@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -59,6 +61,7 @@ var (
 	reAMUXTool         = regexp.MustCompile(`(?si)<<<AMUX_TOOL\s+name="([^"]+)"(?:\s+id="([^"]*)")?\s*>>>\s*(.*?)\s*<<<END_AMUX_TOOL>>>`)
 	reToolJSON         = regexp.MustCompile("(?si)```(?:tool_call|json|tool)?\\s*\\n?\\s*(\\{[\\s\\S]*?\\})\\s*```")
 	reBashFence        = regexp.MustCompile("(?si)```(?:bash|sh|zsh|shell)\\s*\n(.*?)\\s*```")
+	reBareJSONKey      = regexp.MustCompile(`([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:`)
 	reGeminiCall       = regexp.MustCompile(`(?si)\b(?:call:(?:default_api:)?([A-Za-z0-9_-]+))\s*(\{[\s\S]*?\})`)
 	reActionTool       = regexp.MustCompile(`(?im)^Action:\s*([A-Za-z0-9_-]+)\s*\n(?:Action\s+Input|Input|Arguments|Args):\s*(\{[\s\S]*?\}|"[^"\n]*"|[^\n]+)`)
 	reToolCallFence    = regexp.MustCompile("(?si)```(?:tool_call|tool)\\s*\\n?[\\s\\S]*?```")
@@ -508,7 +511,40 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 	// When prior tool history exists or explicit markup is present, avoid interpreting plain markdown bash codeblocks as tool executions.
 	allowBashFence := !historyHasTools(hist) && !hasExplicitWebToolMarkup(text)
 	calls = parseWebTools(text, defs, allowBashFence)
+	calls = uniqueWebToolIDs(calls, hist)
 	return coerceAllToolArgs(calls, defs, projectRoot...), false
+}
+
+// newWebToolID mints a tool_use id for a call parsed from web text.
+func newWebToolID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "toolu_web_" + hex.EncodeToString(b[:])
+}
+
+// uniqueWebToolIDs gives each call an id unused in hist and in the batch.
+// Claude Code drops a tool_use whose id already appears in the transcript and
+// sends "(no content)" as its result, so the model never sees the output and
+// ends up claiming it has no tools.
+func uniqueWebToolIDs(calls []types.ToolCall, hist []types.ChatMessage) []types.ToolCall {
+	used := map[string]bool{}
+	for _, m := range hist {
+		if m.ToolCallID != "" {
+			used[m.ToolCallID] = true
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				used[tc.ID] = true
+			}
+		}
+	}
+	for i := range calls {
+		if calls[i].ID == "" || used[calls[i].ID] {
+			calls[i].ID = newWebToolID()
+		}
+		used[calls[i].ID] = true
+	}
+	return calls
 }
 
 func historyHasTools(hist []types.ChatMessage) bool {
@@ -771,12 +807,14 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 		if args == "" {
 			args = "{}"
 		}
-		if !json.Valid([]byte(args)) {
+		if !json.Valid([]byte(args)) && len(by) == 0 {
+			// No catalog to check against; with one, objectToolArgs maps
+			// the bare value onto the tool's own required key.
 			b, _ := json.Marshal(map[string]string{"command": args})
 			args = string(b)
 		}
 		if id == "" {
-			id = fmt.Sprintf("toolu_web_%d", len(out)+1)
+			id = newWebToolID()
 		}
 		key := canon + "\n" + args
 		if seen[key] {
@@ -895,6 +933,9 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 				n = name
 			}
 			add(n, i, a)
+		} else if quoted := reBareJSONKey.ReplaceAllString(raw, `$1"$2":`); json.Valid([]byte(quoted)) {
+			// Gemini's native syntax: call:default_api:view_file{AbsolutePath: "/a.go"}
+			add(name, "", quoted)
 		} else {
 			add(name, "", raw)
 		}
@@ -937,12 +978,74 @@ func coerceAllToolArgs(calls []types.ToolCall, defs []types.ToolDef, projectRoot
 	for _, d := range defs {
 		by[strings.ToLower(d.Name)] = d
 	}
+	out := calls[:0]
 	for i := range calls {
 		if d, ok := by[strings.ToLower(calls[i].Name)]; ok {
-			calls[i].Arguments = coerceToolArgs(calls[i].Arguments, d, projectRoot...)
+			args, ok := objectToolArgs(calls[i].Arguments, d)
+			if !ok {
+				continue
+			}
+			calls[i].Arguments = coerceToolArgs(args, d, projectRoot...)
 		}
+		out = append(out, calls[i])
 	}
-	return calls
+	return out
+}
+
+// objectToolArgs makes sure a call's arguments are a JSON object, which every
+// IDE requires for tool_use input. Web models sometimes answer with a bare
+// value (ReAct "Input: ls -la"): it becomes {"<key>": value} when the tool
+// has exactly one required string parameter. A tool without required
+// parameters gets {}. Anything else cannot be run and reports false.
+func objectToolArgs(args string, def types.ToolDef) (string, bool) {
+	trimmed := strings.TrimSpace(args)
+	var obj map[string]any
+	if json.Unmarshal([]byte(trimmed), &obj) == nil && obj != nil {
+		return trimmed, true
+	}
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Type any `json:"type"`
+		} `json:"properties"`
+	}
+	if len(def.InputSchema) == 0 {
+		// Schema-less catalog entry (older clients): keep the historical
+		// shell-style fallback.
+		if trimmed == "" || trimmed == "null" {
+			return "{}", true
+		}
+		var str string
+		if json.Unmarshal([]byte(trimmed), &str) == nil {
+			trimmed = str
+		}
+		b, _ := json.Marshal(map[string]string{"command": trimmed})
+		return string(b), true
+	}
+	_ = json.Unmarshal(def.InputSchema, &schema)
+	if len(schema.Required) == 0 {
+		if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+			return "{}", true
+		}
+		return "", false
+	}
+	if len(schema.Required) != 1 {
+		return "", false
+	}
+	key := schema.Required[0]
+	if t, ok := schema.Properties[key].Type.(string); ok && t != "string" {
+		return "", false
+	}
+	val := trimmed
+	var str string
+	if json.Unmarshal([]byte(trimmed), &str) == nil {
+		val = str
+	}
+	if strings.TrimSpace(val) == "" {
+		return "", false
+	}
+	b, _ := json.Marshal(map[string]string{key: val})
+	return string(b), true
 }
 
 // coerceToolArgs remaps common aliases (path↔file_path, cmd↔command, content↔CodeContent,

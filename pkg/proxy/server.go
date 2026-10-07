@@ -542,6 +542,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			handleConnectTunnel(w, r)
 			return
 		}
+		types.EnsureRequestID(w, r)
 
 		path := r.URL.Path
 
@@ -1096,7 +1097,7 @@ func serveWithResilience(
 			if parsedReq != nil {
 				model = parsedReq.Model
 			}
-			term.LogProxy("[req] claude/%s · anthropic · %s", active, model)
+			term.LogProxy("[req] %s · claude/%s · anthropic · %s", types.RequestIDFrom(r), active, model)
 			return
 		}
 

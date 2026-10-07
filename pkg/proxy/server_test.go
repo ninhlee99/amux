@@ -727,8 +727,10 @@ func TestHandler_ClaudeDirectPassthroughPreservesBodyAndSSE(t *testing.T) {
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"<merchant_data>ok</merchant_data>\"}}\n\n"
 
 	var gotBody []byte
+	var upstreamReqID string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
+		upstreamReqID = r.Header.Get(types.RequestIDHeader)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Upstream-Marker", "anthropic-direct")
 		w.WriteHeader(http.StatusOK)
@@ -780,6 +782,25 @@ func TestHandler_ClaudeDirectPassthroughPreservesBodyAndSSE(t *testing.T) {
 	if rec.Header().Get("X-Upstream-Marker") != "anthropic-direct" {
 		t.Fatalf("upstream response header lost: %v", rec.Header())
 	}
+	if id := rec.Header().Get(types.RequestIDHeader); !strings.HasPrefix(id, "ax_") {
+		t.Fatalf("client got no request id: %v", rec.Header())
+	}
+	if upstreamReqID != "" {
+		t.Fatalf("request id leaked to upstream: %q", upstreamReqID)
+	}
+}
+
+// Every gateway reply carries X-Amux-Request-Id so a client-side failure can
+// be matched to gateway.log / errors.log.
+func TestHandler_PoolReplyCarriesRequestID(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set(types.RequestIDHeader, "doctor-live-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get(types.RequestIDHeader); got != "doctor-live-1" {
+		t.Fatalf("request id = %q, want the caller's id echoed", got)
+	}
 }
 
 func TestHandler_PathAndQueryProviderRouting(t *testing.T) {
@@ -802,3 +823,30 @@ func TestHandler_PathAndQueryProviderRouting(t *testing.T) {
 	}
 }
 
+
+type failingAdapter struct{ id string }
+
+func (f *failingAdapter) ID() string    { return f.id }
+func (f *failingAdapter) Priority() int { return 1 }
+func (f *failingAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+
+// A failed turn names its request id in the error text, since IDEs show the
+// message but not the response headers.
+func TestHandler_ErrorMessageNamesRequestID(t *testing.T) {
+	// The bridge's last-resort fallback reads ~/.codex/auth.json for
+	// OpenAI-dialect callers; an empty HOME keeps it off the real account.
+	t.Setenv("HOME", t.TempDir())
+	h, _ := newHandlerWithRotator(t, NewRotator("claude"), []types.ProviderAdapter{&failingAdapter{id: "web:down"}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set(types.RequestIDHeader, "ax_trace01")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected an error status, got 200: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "[amux request ax_trace01]") {
+		t.Fatalf("error body lacks request id: %s", rec.Body.String())
+	}
+}

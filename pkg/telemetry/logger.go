@@ -27,9 +27,11 @@ func InitLogging(filePath string) error {
 	}
 
 	if filePath != "" {
-		_ = os.MkdirAll(filepath.Dir(filePath), 0o755)
-		f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		// Owner-only, like errors.log: lines name accounts and models.
+		_ = os.MkdirAll(filepath.Dir(filePath), 0o700)
+		f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err == nil {
+			_ = f.Chmod(0o600) // tighten a log created by an older build
 			logFile = f
 			logOut = io.MultiWriter(os.Stdout, f)
 		}
