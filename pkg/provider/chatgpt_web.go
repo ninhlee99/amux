@@ -240,7 +240,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		return nil, fmt.Errorf("%s: sentinel: %w", a.AdapterID, err)
 	}
 
-	project := req.Project()
+	project := ThreadKey(req)
 	cm := a.convs()
 	rotatedConv := false
 	authRetried := false

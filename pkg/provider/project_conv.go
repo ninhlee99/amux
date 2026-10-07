@@ -1,8 +1,9 @@
 package provider
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -80,15 +81,69 @@ func NormalizeProjectKey(project string) string {
 	return filepathClean(project)
 }
 
+// threadSep joins a project key and its per-session thread hash.
+const threadSep = "#"
+
+// ThreadKey scopes a web thread to one project, client session and system
+// prompt. A live thread holds the system prompt from its first turn and later
+// turns send only the delta, so a new Claude Code session, a side request
+// with its own system prompt (title generation) or a changed system prompt
+// must open its own thread instead of continuing another one.
+func ThreadKey(req *types.ChatRequest) string {
+	project := NormalizeProjectKey(req.Project())
+	if req == nil {
+		return project
+	}
+	h := sha256.New()
+	h.Write([]byte(strings.TrimSpace(req.SessionID)))
+	h.Write([]byte{0})
+	for _, m := range req.Messages {
+		if strings.EqualFold(m.Role, "system") {
+			h.Write([]byte(stripBillingHeader(m.Content)))
+			h.Write([]byte{0})
+		}
+	}
+	return project + threadSep + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// stripBillingHeader drops Claude Code's billing header lines, which can
+// change on every request without changing the instructions.
+func stripBillingHeader(s string) string {
+	lines := strings.Split(s, "\n")
+	out := lines[:0]
+	for _, l := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(l), "x-anthropic-billing-header:") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// splitThreadKey returns the project part of a thread key and its thread
+// hash ("" for a plain project key).
+func splitThreadKey(key string) (project, thread string) {
+	if i := strings.LastIndex(key, threadSep); i >= 0 {
+		return key[:i], key[i+len(threadSep):]
+	}
+	return key, ""
+}
+
 func filepathClean(p string) string {
 	return strings.TrimRight(strings.ReplaceAll(p, "\\", "/"), "/")
 }
 
 func (m *ProjectConversationManager) snapshotPath(projectKey string) string {
-	dir := types.ProjectCacheDir(projectKey)
+	project, thread := splitThreadKey(projectKey)
+	name := "conv_" + m.snapshotID()
+	if thread != "" {
+		name += "_" + thread
+	}
+	return filepath.Join(types.ProjectCacheDir(project), name+".json")
+}
+
+func (m *ProjectConversationManager) snapshotID() string {
 	sanitizedID := strings.ReplaceAll(m.adapterID, ":", "_")
-	sanitizedID = strings.ReplaceAll(sanitizedID, "/", "_")
-	return filepath.Join(dir, fmt.Sprintf("conv_%s.json", sanitizedID))
+	return strings.ReplaceAll(sanitizedID, "/", "_")
 }
 
 func (m *ProjectConversationManager) saveProjectSnapshotLocked(projectKey string) {
@@ -252,13 +307,28 @@ func (m *ProjectConversationManager) RecordTokens(project string, tokens int) {
 	}
 }
 
-// ResetProject removes the conversation thread for a specific project.
+// ResetProject removes a conversation thread. Given a thread key it clears
+// that thread; given a plain project it clears every session thread of the
+// project, including snapshots not loaded since the gateway started.
 func (m *ProjectConversationManager) ResetProject(project string) {
 	key := NormalizeProjectKey(project)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.convs, key)
 	m.saveProjectSnapshotLocked(key)
+	if _, thread := splitThreadKey(key); thread == "" {
+		for k := range m.convs {
+			if strings.HasPrefix(k, key+threadSep) {
+				delete(m.convs, k)
+			}
+		}
+		pattern := filepath.Join(types.ProjectCacheDir(key), "conv_"+m.snapshotID()+"_*.json")
+		if files, err := filepath.Glob(pattern); err == nil {
+			for _, f := range files {
+				_ = os.Remove(f)
+			}
+		}
+	}
 	log.Printf("%s: cleared conversation for project %s", m.adapterID, key)
 }
 

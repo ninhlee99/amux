@@ -88,7 +88,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 		return nil, err
 	}
 
-	project := req.Project()
+	project := ThreadKey(req)
 	cm := a.convs()
 	out := make(chan types.StreamChunk, 16)
 	go func() {

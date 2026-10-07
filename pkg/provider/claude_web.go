@@ -202,7 +202,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 
 	model := a.model()
 	const maxAttempts = 4
-	project := req.Project()
+	project := ThreadKey(req)
 	cm := a.convs()
 	var resp *http.Response
 	refreshedFor429 := false
