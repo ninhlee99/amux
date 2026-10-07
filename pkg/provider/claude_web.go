@@ -327,7 +327,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	}
 
 	out := make(chan types.StreamChunk)
-	go streamClaudeWeb(ctx, a.AdapterID, resp, out)
+	go streamClaudeWeb(ctx, a, project, resp, out)
 	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 }
 
@@ -636,13 +636,15 @@ func (a *ClaudeWebAdapter) createConversation(ctx context.Context, orgID, model 
 	return conv.UUID, nil
 }
 
-func streamClaudeWeb(ctx context.Context, id string, resp *http.Response, out chan<- types.StreamChunk) {
+func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project string, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
 
+	id := a.AdapterID
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 2<<20)
 
+	var fullCompletion strings.Builder
 	doneSent := false
 	for sc.Scan() {
 		line := sc.Text()
@@ -654,6 +656,10 @@ func streamClaudeWeb(ctx context.Context, id string, resp *http.Response, out ch
 			continue
 		}
 		if payload == "[DONE]" {
+			if tools.IsToolRefusal(fullCompletion.String()) {
+				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+				a.convs().ResetProject(project)
+			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
 			return
@@ -688,11 +694,16 @@ func streamClaudeWeb(ctx context.Context, id string, resp *http.Response, out ch
 			}
 		}
 		if chunk.Completion != "" {
+			fullCompletion.WriteString(chunk.Completion)
 			if !sendChunk(ctx, out, types.StreamChunk{ID: id, Content: chunk.Completion}) {
 				return
 			}
 		}
 		if chunk.StopReason != "" {
+			if tools.IsToolRefusal(fullCompletion.String()) {
+				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+				a.convs().ResetProject(project)
+			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
 			return
@@ -703,6 +714,10 @@ func streamClaudeWeb(ctx context.Context, id string, resp *http.Response, out ch
 		return
 	}
 	if !doneSent && ctx.Err() == nil {
+		if tools.IsToolRefusal(fullCompletion.String()) {
+			log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+			a.convs().ResetProject(project)
+		}
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 	}
 }

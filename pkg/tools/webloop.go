@@ -44,6 +44,11 @@ Multiple blocks OK. CATALOG
 // full preamble on their first turn; without restating that tools exist and
 // how to call them, ChatGPT drifts into "I have no tool access" a few turns in.
 const webToolReminder = `TOOLS LIVE: client runs them on the real repo. Call: <tool_call>{"name":"TOOL","arguments":{...}}</tool_call>. Never claim you lack tools. Built-in python/container cannot see the repo — use <tool_call>, then stop for [Tool result].
+Never claim you lack tools or only have a text catalog. To inspect, read, edit, or run commands, emit <tool_call> now:
+Example:
+<tool_call>
+{"name":"Bash","arguments":{"command":"git status"}}
+</tool_call>
 `
 
 const webToolCloser = `
@@ -495,7 +500,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 
 			if !toolMarkupDetected {
 				currAll := buf.String()
-				if hasExplicitWebToolMarkup(currAll) || (allowBashFence && strings.Contains(currAll, "```bash")) {
+				if hasExplicitWebToolMarkup(currAll) || (allowBashFence && strings.Contains(currAll, "```bash")) || IsToolRefusal(currAll) {
 					toolMarkupDetected = true
 				} else if co != "" {
 					out <- types.StreamChunk{ID: id, Content: co}
@@ -551,6 +556,30 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 	return out
 }
 
+// IsToolRefusal detects when a web model hallucinates that it lacks tool access
+// despite tools being live and available in the catalog.
+func IsToolRefusal(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "không có quyền truy cập công cụ") ||
+		strings.Contains(lower, "không có quyền truy cập repo") ||
+		strings.Contains(lower, "không có quyền truy cập vào repo") ||
+		strings.Contains(lower, "chưa nhận được tool runtime") ||
+		strings.Contains(lower, "chỉ có catalog dạng văn bản") ||
+		strings.Contains(lower, "không thể gọi <tool_call>") ||
+		strings.Contains(lower, "khi tool repo được bật lại") ||
+		strings.Contains(lower, "không có tool runtime") ||
+		strings.Contains(lower, "don't have access to tools") ||
+		strings.Contains(lower, "do not have access to tools") ||
+		strings.Contains(lower, "no access to the repository") ||
+		strings.Contains(lower, "cannot execute commands on the repository") ||
+		strings.Contains(lower, "i lack tool access") ||
+		strings.Contains(lower, "only text catalog") ||
+		strings.Contains(lower, "i cannot run bash") ||
+		strings.Contains(lower, "i cannot edit files directly") ||
+		strings.Contains(lower, "không thể tự `git init`") ||
+		strings.Contains(lower, "không thể tự git init")
+}
+
 // FinalizeWebToolCalls parses web text into tool calls and coerces arg keys to the client dialect schema.
 func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMessage, projectRoot ...string) (calls []types.ToolCall, forced bool) {
 	if strings.TrimSpace(text) == "" || len(defs) == 0 {
@@ -559,8 +588,35 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 	// When prior tool history exists or explicit markup is present, avoid interpreting plain markdown bash codeblocks as tool executions.
 	allowBashFence := !historyHasTools(hist) && !hasExplicitWebToolMarkup(text)
 	calls = parseWebTools(text, defs, allowBashFence)
+	if len(calls) == 0 && IsToolRefusal(text) {
+		by := make(map[string]types.ToolDef, len(defs))
+		for _, d := range defs {
+			by[strings.ToLower(d.Name)] = d
+		}
+		if bashDef, ok := findToolDef(by, "bash", "run_terminal_command", "run_command"); ok {
+			reBacktickCmd := regexp.MustCompile("`((?:git|ls|find|cat|head|tail|grep|cargo|go|npm|pnpm|yarn|make|python|pytest|sh|bash)\\s+[^`]+)`")
+			if match := reBacktickCmd.FindStringSubmatch(text); len(match) > 1 {
+				cmd := strings.TrimSpace(match[1])
+				b, _ := json.Marshal(map[string]string{"command": cmd})
+				calls = append(calls, types.ToolCall{
+					ID:        newWebToolID(),
+					Name:      bashDef.Name,
+					Arguments: string(b),
+				})
+				forced = true
+			} else {
+				b, _ := json.Marshal(map[string]string{"command": "git status"})
+				calls = append(calls, types.ToolCall{
+					ID:        newWebToolID(),
+					Name:      bashDef.Name,
+					Arguments: string(b),
+				})
+				forced = true
+			}
+		}
+	}
 	calls = uniqueWebToolIDs(calls, hist)
-	return coerceAllToolArgs(calls, defs, projectRoot...), false
+	return coerceAllToolArgs(calls, defs, projectRoot...), forced
 }
 
 // newWebToolID mints a tool_use id for a call parsed from web text.

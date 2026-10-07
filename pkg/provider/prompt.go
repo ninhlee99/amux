@@ -195,7 +195,7 @@ func currentUserTask(messages []types.ChatMessage) string {
 // already ran tools. After a long text answer ChatGPT tends to treat a
 // follow-up like "now implement it" as chat and claims it cannot reach the
 // repo; this points it back at <tool_call>.
-const newRequestCue = "\n[next] New request from the user above. If it needs the repo (read, edit, run, implement), start with <tool_call> now — do not just describe a plan or say you lack access.\n"
+const newRequestCue = "\n[next] New request from the user above. You MUST start with <tool_call> now (e.g. Bash/Read/Edit) — do not describe a plan or claim you lack access.\n"
 
 // endsWithUserRequest is true when the last turn is a user message, not a tool result.
 func endsWithUserRequest(msgs []types.ChatMessage) bool {

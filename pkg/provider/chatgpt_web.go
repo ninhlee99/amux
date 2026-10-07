@@ -425,7 +425,12 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		}
 		if payload == "[DONE]" {
 			if convID != "" && msgID != "" {
-				a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+				if tools.IsToolRefusal(lastText) {
+					log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+					a.convs().ResetProject(project)
+				} else {
+					a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+				}
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -532,7 +537,12 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 
 		if chunk.Message.Status == "finished_successfully" && lastText != "" {
 			if convID != "" && msgID != "" {
-				a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+				if tools.IsToolRefusal(lastText) {
+					log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+					a.convs().ResetProject(project)
+				} else {
+					a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+				}
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -544,7 +554,12 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		return
 	}
 	if convID != "" && msgID != "" {
-		a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+		if tools.IsToolRefusal(lastText) {
+			log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
+			a.convs().ResetProject(project)
+		} else {
+			a.convs().RegisterTurn(project, sessionID, convID, msgID, nil, mark)
+		}
 	}
 	if !doneSent && ctx.Err() == nil {
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
