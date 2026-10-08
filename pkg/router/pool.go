@@ -515,7 +515,11 @@ func isRateLimitError(err error) bool {
 		strings.Contains(s, "429") ||
 		strings.Contains(s, "too many requests") ||
 		strings.Contains(s, "tpm") ||
-		strings.Contains(s, "quota exceeded")
+		strings.Contains(s, "quota exceeded") ||
+		strings.Contains(s, "405 method not allowed") ||
+		strings.Contains(s, "status 405") ||
+		strings.Contains(s, "google.com/sorry") ||
+		strings.Contains(s, "stopped after 10 redirects")
 }
 
 // Send tries adapters in strict cost/quota priority order.

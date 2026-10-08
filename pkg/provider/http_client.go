@@ -1,8 +1,13 @@
 package provider
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"amux-accounts/pkg/types"
 )
 
 // defaultHTTPClient is the fallback client used by every adapter's client()
@@ -23,6 +28,15 @@ var defaultHTTPClient = &http.Client{
 	// lifetime is governed only by request context.
 	Timeout:   0,
 	Transport: newDefaultTransport(),
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if strings.Contains(req.URL.Host, "google.com") && strings.Contains(req.URL.Path, "/sorry") {
+			return fmt.Errorf("%w: redirected to Google anti-bot CAPTCHA", types.ErrRateLimitReached)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	},
 }
 
 func newDefaultTransport() *http.Transport {

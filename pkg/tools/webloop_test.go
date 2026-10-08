@@ -167,7 +167,7 @@ func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
 	}
 	// Continuing threads must still restate that tools exist and how to call
 	// them, or ChatGPT web answers "I have no tool access" a few turns in.
-	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, "Never claim you lack tools") {
+	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, "TOOLS LIVE:") {
 		t.Fatal("catalog-only must keep the call format reminder:", got)
 	}
 	if strings.Contains(StripWebToolMarkup("TOOLS LIVE: x\nok"), "TOOLS LIVE") {
@@ -175,9 +175,9 @@ func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
 	}
 }
 
-func TestWebCloser_ForbidsLackOfTools(t *testing.T) {
+func TestWebCloser_HasToolCallNotice(t *testing.T) {
 	c := WebCloser()
-	if !strings.Contains(c, "<tool_call>") || !strings.Contains(c, "paste") {
+	if !strings.Contains(c, "<tool_call>") || !strings.Contains(c, "[end]") {
 		t.Fatal(c)
 	}
 }

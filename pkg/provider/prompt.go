@@ -8,19 +8,12 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output. Emit <tool_call> if you need files/commands; else answer.
+const contextHandoffPreamble = `[xfer] Continue previous task. [Tool result] contains workspace outputs. Emit <tool_call> if you need files or commands; else answer.
 
 `
 
-// WebBackendPrompt builds the single string web UIs accept.
-//
-// A live thread (continuingThread without FullContext) already holds the
-// client's system prompt and earlier turns, so it gets only what it has not
-// seen: the new user request, or the tool results since the last reply.
-// A fresh thread or a handoff gets the full transcript, shrunk to the web
-// token budget (~20k tokens) while keeping the system prompt, first user
-// goal and recent tail.
-func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
+// WebBackendPromptForProvider builds the single string web UIs accept, tailored for the specific provider.
+func WebBackendPromptForProvider(provider string, req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
 	}
@@ -43,18 +36,22 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 			msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
 		}
 		body = BuildConcatenatedPrompt(msgs)
-		if req.FullContext {
+		if req.FullContext && (ranTools || len(msgs) > 1) {
 			if body == "" {
 				return ""
 			}
-			body = contextHandoffPreamble + body
+			if tools.NormalizeWebProvider(provider) == "claude" {
+				body = "Continue previous task with tool results shown above.\n\n" + body
+			} else {
+				body = contextHandoffPreamble + body
+			}
 		}
 	}
 
 	if len(req.Tools) == 0 {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
-	closer := tools.WebCloser()
+	closer := tools.WebCloserForProvider(provider)
 	if !liveThread {
 		if ranTools {
 			closer = midTaskCue(req.Messages) + closer
@@ -63,14 +60,14 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		if endsWithUserRequest(req.Messages) {
 			closer = newRequestCue + closer
 		} else {
-			closer = "\n[next] Continuing task with tool results above. If you need to make code edits, write files, run tests, or commit: emit the next <tool_call> now (e.g. Bash/Edit/Write) — do NOT stop or describe a plan.\n" + closer
+			closer = "\n[next] Continuing task with tool results above. To inspect code, edit files, run tests, or commit changes, emit the next <tool_call> now (e.g. Bash/Edit/Write).\n" + closer
 		}
 	}
 	var preamble string
 	if continuingThread {
-		preamble = tools.WebCatalogOnly(req.Tools)
+		preamble = tools.WebCatalogOnlyForProvider(provider, req.Tools)
 	} else {
-		preamble = tools.WebPreambleForRequest(req)
+		preamble = tools.WebPreambleForProvider(provider, req.Tools)
 	}
 	trimmedBody := strings.TrimSpace(body)
 	var finalPrompt string
@@ -82,6 +79,15 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		finalPrompt = preamble + strings.TrimSpace(body) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
 	}
 	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
+}
+
+// WebBackendPrompt builds the single string web UIs accept.
+func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
+	provider := ""
+	if req != nil && req.ServingAccount != "" {
+		provider = req.ServingAccount
+	}
+	return WebBackendPromptForProvider(provider, req, continuingThread)
 }
 
 func enforceWebPromptLimit(s string, maxRunes int) string {
@@ -170,8 +176,8 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 func hasUserTurn(msgs []types.ChatMessage) bool {
 	for _, m := range msgs {
 		if strings.EqualFold(m.Role, "user") {
-			c := strings.TrimSpace(m.Content)
-			if c != "" && !strings.EqualFold(c, "(no content)") {
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" {
 				return true
 			}
 		}
@@ -185,9 +191,22 @@ func currentUserTask(messages []types.ChatMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		if strings.EqualFold(m.Role, "user") {
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" {
+				return c
+			}
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if strings.EqualFold(m.Role, "user") {
 			c := strings.TrimSpace(m.Content)
 			if c != "" && !strings.EqualFold(c, "(no content)") {
-				return c
+				c = strings.TrimSuffix(c, "(no content)")
+				c = strings.TrimSpace(c)
+				if c != "" {
+					return c
+				}
 			}
 		}
 	}
@@ -198,7 +217,7 @@ func currentUserTask(messages []types.ChatMessage) string {
 // already ran tools. After a long text answer ChatGPT tends to treat a
 // follow-up like "now implement it" as chat and claims it cannot reach the
 // repo; this points it back at <tool_call>.
-const newRequestCue = "\n[next] New request from the user above. You MUST start with <tool_call> now (e.g. Bash/Read/Edit) — do not describe a plan or claim you lack access.\n"
+const newRequestCue = "\n[next] New request from the user above. Start with <tool_call> now (e.g. Bash/Read/Edit) to inspect files, execute commands, or apply changes directly.\n"
 
 // endsWithUserRequest is true when the latest conversational turn is a user message,
 // scanning backwards past trailing system reminders or hooks that IDE clients (e.g. Claude Code) attach.
@@ -210,8 +229,12 @@ func endsWithUserRequest(msgs []types.ChatMessage) bool {
 			return false
 		}
 		if role == "user" {
-			c := strings.TrimSpace(m.Content)
-			return c != "" && !strings.EqualFold(c, "(no content)")
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" {
+				return true
+			}
+			// Metadata-only user turn (e.g. system reminder or (no content)), continue scanning backwards!
+			continue
 		}
 		// If role == "system", continue scanning backwards past client reminders.
 	}

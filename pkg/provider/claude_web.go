@@ -241,7 +241,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			promptReq = &cloned
 		}
 
-		prompt := WebBackendPrompt(promptReq, hasValidThread)
+		prompt := WebBackendPromptForProvider("claude", promptReq, hasValidThread)
 
 		payloadMap := map[string]any{
 			"prompt":      prompt,
@@ -390,8 +390,10 @@ func lastUserPrompt(messages []types.ChatMessage) string {
 		return BuildDeltaWebPrompt(messages)
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if strings.EqualFold(messages[i].Role, "user") && messages[i].Content != "" {
-			return messages[i].Content
+		if strings.EqualFold(messages[i].Role, "user") {
+			if cleaned := tools.CleanUserTurnContent(messages[i].Content); cleaned != "" {
+				return cleaned
+			}
 		}
 	}
 	return BuildConcatenatedPrompt(messages)

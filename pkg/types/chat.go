@@ -215,6 +215,8 @@ type StreamChunk struct {
 	Error        error
 	// LogText is the raw provider reply for request logging and error diagnosis (not sent to the client).
 	LogText string
+	// ForcedTools indicates whether tool calls were auto-kickstarted or extracted from non-standard markup.
+	ForcedTools bool
 	// Usage carries token counts including cache read/creation stats from the upstream provider.
 	Usage *UsageStats
 }

@@ -486,6 +486,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	var fullContent strings.Builder
 	var thinkingContent strings.Builder
 	var toolCalls []types.ToolCall
+	var forcedTools bool
 	var logText string
 	finishReason := "end_turn"
 	var finalUsage *types.UsageStats
@@ -507,6 +508,9 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		if len(chunk.ToolCalls) > 0 {
 			toolCalls = append(toolCalls, chunk.ToolCalls...)
 		}
+		if chunk.ForcedTools {
+			forcedTools = true
+		}
 		if chunk.FinishReason != "" {
 			finishReason = mapFinishReasonAnthropic(chunk.FinishReason)
 		}
@@ -515,8 +519,9 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 		}
 	}
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+		if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
+			forcedTools = forced
 		}
 	}
 	if len(toolCalls) > 0 {
@@ -577,7 +582,7 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 	}
 	if len(toolCalls) > 0 {
 		cleanProse := tools.StripWebToolMarkup(fullContent.String())
-		if !tools.IsToolRefusal(fullContent.String()) && strings.TrimSpace(cleanProse) != "" {
+		if !forcedTools && !tools.IsToolRefusal(fullContent.String()) && strings.TrimSpace(cleanProse) != "" {
 			content = append(content, map[string]string{"type": "text", "text": cleanProse})
 		}
 	} else if fullContent.Len() > 0 {
@@ -832,6 +837,7 @@ func writeAnthropicSSE(w http.ResponseWriter, flusher http.Flusher, r *http.Requ
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 
+	var forcedTools bool
 loop:
 	for {
 		var chunk types.StreamChunk
@@ -921,6 +927,9 @@ loop:
 		if len(chunk.ToolCalls) > 0 {
 			toolCalls = append(toolCalls, chunk.ToolCalls...)
 		}
+		if chunk.ForcedTools {
+			forcedTools = true
+		}
 		if chunk.FinishReason != "" {
 			finishReason = mapFinishReasonAnthropic(chunk.FinishReason)
 		}
@@ -930,14 +939,15 @@ loop:
 	}
 
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+		if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
+			forcedTools = forced
 		}
 	}
 	if len(toolCalls) > 0 {
 		toolCalls = tools.NormalizeToolCalls(toolCalls, req.Tools, tools.DialectClaude)
 		cleanProse := tools.StripWebToolMarkup(fullContent.String())
-		if !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
+		if !forcedTools && !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
 			remaining := cleanProse[flushedContentLen:]
 			if strings.TrimSpace(remaining) != "" {
 				ensureTextBlock()

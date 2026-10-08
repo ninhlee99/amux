@@ -388,14 +388,16 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 				finishReason = chunk.FinishReason
 			}
 			if chunk.Done {
+				var forcedTools bool
 				if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-					if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+					if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 						toolCalls = parsed
+						forcedTools = forced
 					}
 				}
 				if len(toolCalls) > 0 {
 					cleanProse := tools.StripWebToolMarkup(fullContent.String())
-					if len(cleanProse) > flushedContentLen {
+					if !forcedTools && !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
 						remaining := cleanProse[flushedContentLen:]
 						if strings.TrimSpace(remaining) != "" {
 							chunkResp := geminiGenerateResponse{
@@ -498,9 +500,11 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 	if thinkingContent.Len() > 0 {
 		parts = append(parts, geminiPart{Text: thinkingContent.String(), Thought: true})
 	}
+	var forcedTools bool
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+		if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
+			forcedTools = forced
 		}
 	}
 	if len(toolCalls) > 0 {
@@ -509,7 +513,11 @@ func HandleGeminiGenerateContent(w http.ResponseWriter, r *http.Request, pool *r
 	if fullContent.Len() > 0 {
 		text := fullContent.String()
 		if len(toolCalls) > 0 {
-			text = tools.StripWebToolMarkup(text)
+			if forcedTools || tools.IsToolRefusal(text) {
+				text = ""
+			} else {
+				text = tools.StripWebToolMarkup(text)
+			}
 		}
 		if strings.TrimSpace(text) != "" {
 			parts = append(parts, geminiPart{Text: text})

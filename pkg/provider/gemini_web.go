@@ -123,7 +123,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				cloned.FullContext = false
 				promptReq = &cloned
 			}
-			prompt := WebBackendPrompt(promptReq, continuing)
+			prompt := WebBackendPromptForProvider("gemini", promptReq, continuing)
 			var streamedDelta bool
 			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, func(delta string) {
 				streamedDelta = true
@@ -305,18 +305,28 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 
 	resp, err := a.client().Do(httpReq)
 	if err != nil {
+		if errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "google.com/sorry") || strings.Contains(err.Error(), "stopped after 10 redirects") {
+			return "", nil, fmt.Errorf("%s: %w: Google anti-bot rate limit (sorry/index)", a.AdapterID, types.ErrRateLimitReached)
+		}
 		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", nil, types.ErrRateLimitReached
 	}
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return "", nil, fmt.Errorf("%s: %w: Google 405 Method Not Allowed (anti-bot challenge / rate limit)", a.AdapterID, types.ErrRateLimitReached)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return "", nil, types.ErrAuthentication
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return "", nil, fmt.Errorf("StreamGenerate status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
+		bodyStr := string(bytes.TrimSpace(b))
+		if strings.Contains(bodyStr, "google.com/sorry") || strings.Contains(bodyStr, "Error 405") {
+			return "", nil, fmt.Errorf("%s: %w: Google anti-bot rate limit (405): %s", a.AdapterID, types.ErrRateLimitReached, bodyStr)
+		}
+		return "", nil, fmt.Errorf("StreamGenerate status %d: %s", resp.StatusCode, bodyStr)
 	}
 
 	bestText := ""

@@ -205,14 +205,16 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 				finishReason = chunk.FinishReason
 			}
 			if chunk.Done {
+				var forcedTools bool
 				if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-					if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+					if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 						toolCalls = parsed
+						forcedTools = forced
 					}
 				}
 				if len(toolCalls) > 0 {
 					cleanProse := tools.StripWebToolMarkup(fullContent.String())
-					if len(cleanProse) > flushedContentLen {
+					if !forcedTools && !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
 						remaining := cleanProse[flushedContentLen:]
 						if strings.TrimSpace(remaining) != "" {
 							chunkJSON, _ := json.Marshal(map[string]any{
@@ -376,9 +378,11 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 	}
 
+	var forcedTools bool
 	if len(toolCalls) == 0 && full.Len() > 0 && len(req.Tools) > 0 {
-		if parsed, _ := tools.FinalizeWebToolCalls(full.String(), req.Tools, req.Messages); len(parsed) > 0 {
+		if parsed, forced := tools.FinalizeWebToolCalls(full.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
+			forcedTools = forced
 		}
 	}
 	if len(toolCalls) > 0 {
@@ -399,7 +403,11 @@ func HandleChatCompletions(w http.ResponseWriter, r *http.Request, pool *router.
 	}
 	contentStr := full.String()
 	if len(toolCalls) > 0 {
-		contentStr = tools.StripWebToolMarkup(contentStr)
+		if forcedTools || tools.IsToolRefusal(full.String()) {
+			contentStr = ""
+		} else {
+			contentStr = tools.StripWebToolMarkup(contentStr)
+		}
 	}
 	msg := map[string]any{
 		"role":    "assistant",

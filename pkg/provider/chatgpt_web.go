@@ -290,7 +290,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			promptReq = &cloned
 		}
 
-		prompt := WebBackendPrompt(promptReq, convID != "" && parentID != "")
+		prompt := WebBackendPromptForProvider("chatgpt", promptReq, convID != "" && parentID != "")
 		if parentID == "" {
 			parentID = nilParentMessageID
 		}
