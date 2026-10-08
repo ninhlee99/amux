@@ -8,22 +8,28 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-func TestWebloop_OpenPRReviewRefusal_NoForcedHallucination(t *testing.T) {
-	refusalText := `I can’t complete the /open-pr:review run in this chat because the required open-pr runtime is not available to me here.
-Alternatively, provide the PR diff/context here and I can do a normal read-only code review without posting to GitHub.`
+func TestWebloop_OpenPRReviewRefusal_AutoKickstart(t *testing.T) {
+	refusalText := `I can’t complete the /open-pr:review workflow in this chat instance because the workspace tool runtime described in the prompt (for example the open-pr command wrapper, repo checkout/context tools, and posting tools) is not available to me here.
+If you run this in the Claude Code workspace session that has those tools enabled, /open-pr:review https://github.com/ninhlee99/amux/pull/47 can proceed with the required read-only PR review flow.`
 
 	defs := []types.ToolDef{
-		{Name: "Bash"},
-		{Name: "Read"},
+		{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+		{Name: "Read", InputSchema: []byte(`{"required":["file_path"],"properties":{"file_path":{"type":"string"}}}`)},
 	}
 
 	hist := []types.ChatMessage{
-		{Role: "user", Content: "/open-pr:review please review PR #42"},
+		{Role: "user", Content: "/open-pr:review https://github.com/ninhlee99/amux/pull/47"},
 	}
 
 	calls, forced := tools.FinalizeWebToolCalls(refusalText, defs, hist)
-	if forced || len(calls) != 0 {
-		t.Fatalf("expected no forced tool calls on natural language refusal, got forced=%v, calls=%d (%+v)", forced, len(calls), calls)
+	if !forced || len(calls) != 1 || calls[0].Name != "Bash" {
+		t.Fatalf("expected auto-kickstart Bash call on open-pr:review refusal, got forced=%v, calls=%d (%+v)", forced, len(calls), calls)
+	}
+	if !strings.Contains(calls[0].Arguments, "git status") {
+		t.Fatalf("expected git status in kickstart call, got: %s", calls[0].Arguments)
+	}
+	if !strings.Contains(calls[0].Arguments, "git branch --show-current") {
+		t.Fatalf("expected branch check in kickstart call, got: %s", calls[0].Arguments)
 	}
 }
 
