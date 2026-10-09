@@ -66,3 +66,10 @@ The Gemini Web adapter SHALL replace markdown links whose label equals their URL
 #### Scenario: Self-linked path in a tool call
 - **WHEN** Gemini returns `{"file_path":"~/x/[github.com/o/r/p.json](https://github.com/o/r/p.json)"}` inside a `<tool_call>`
 - **THEN** the tool call carries `~/x/github.com/o/r/p.json`
+
+### Requirement: Gemini mid-stream rewrites
+The Gemini Web adapter SHALL take the latest non-empty response snapshot as the answer. For requests with client tools it SHALL send only that final text. For requests without tools it SHALL stream text only while each snapshot extends what was already sent, and SHALL send the final answer after a blank line when a rewrite diverged from it.
+
+#### Scenario: Draft abandoned for a rewrite
+- **WHEN** Gemini streams `<tool_call> {"name":"Ba…` and then restarts with `## Review\nAll good.`
+- **THEN** the answer is `## Review\nAll good.` with no part of the draft spliced into it

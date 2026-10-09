@@ -129,10 +129,17 @@ func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest)
 			}
 			prompt := WebBackendPromptForProvider("gemini", promptReq, continuing)
 			var streamedDelta bool
-			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, func(delta string) {
-				streamedDelta = true
-				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: delta})
-			})
+			var onDelta func(string)
+			// With tools the turn is parsed whole (and held by
+			// sendWithWebNudge), so only the final snapshot is sent: a
+			// mid-stream rewrite would otherwise glue draft and answer.
+			if len(req.Tools) == 0 {
+				onDelta = func(delta string) {
+					streamedDelta = true
+					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: delta})
+				}
+			}
+			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, onDelta)
 			if err != nil {
 				if isGeminiUsageLimit(err) && !streamedDelta {
 					if !rotated {
@@ -367,7 +374,9 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 					bestMeta = meta
 				}
 			}
-			if len(t) > len(bestText) {
+			// Gemini can restart an answer mid-stream: a later snapshot
+			// may shrink and diverge. The latest snapshot is the answer.
+			if t != "" {
 				bestText = t
 				// Emit the unlinked text up to any link still being
 				// written: an unfinished "[x](http…" may yet collapse.
@@ -393,8 +402,17 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		return "", nil, fmt.Errorf("empty Gemini response%s", bodyHint)
 	}
 	final := unlinkGeminiAutolinks(bestText)
-	if len(onDelta) > 0 && onDelta[0] != nil && len(final) > len(emitted) && strings.HasPrefix(final, emitted) {
-		onDelta[0](final[len(emitted):])
+	if len(onDelta) > 0 && onDelta[0] != nil {
+		switch {
+		case strings.HasPrefix(final, emitted):
+			if rest := final[len(emitted):]; rest != "" {
+				onDelta[0](rest)
+			}
+		default:
+			// Rewritten after part of the draft was streamed: deltas cannot
+			// be retracted, so give the final answer whole after the draft.
+			onDelta[0]("\n\n" + final)
+		}
 	}
 	return final, bestMeta, nil
 }
