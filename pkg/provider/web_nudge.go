@@ -69,6 +69,8 @@ func sendWithWebNudge(ctx context.Context, req *types.ChatRequest, send func(con
 				kind = "refusal"
 			case tools.IsToolStall(raw):
 				kind = "stall"
+			case midToolLoop(req.Messages) && tools.IsLostTask(raw):
+				kind = "lost-task"
 			}
 			if kind != "" {
 				log.Printf("%s: web reply was a tool %s without <tool_call> — re-sending once with a nudge", req.ServingAccount, kind)
@@ -93,6 +95,12 @@ func sendWithWebNudge(ctx context.Context, req *types.ChatRequest, send func(con
 	return out, nil
 }
 
+// midToolLoop is true when the client is feeding tool results back (its last
+// turn is not a new user request) in a session that already ran tools.
+func midToolLoop(msgs []types.ChatMessage) bool {
+	return historyHasToolTurns(msgs) && !endsWithUserRequest(msgs)
+}
+
 // nudgedRequest appends the nudge turn. A stall stays on the live thread (its
 // text is kept as the assistant turn); a refusal's thread was reset by the
 // adapter, and replaying the refusal would only argue for it, so it is dropped.
@@ -104,7 +112,7 @@ func nudgedRequest(req *types.ChatRequest, reply, kind string) *types.ChatReques
 	}
 	msgs := make([]types.ChatMessage, 0, n+2)
 	msgs = append(msgs, req.Messages[:n]...)
-	if kind == "stall" {
+	if kind == "stall" || kind == "lost-task" {
 		if visible := strings.TrimSpace(tools.StripWebToolMarkup(reply)); visible != "" {
 			msgs = append(msgs, types.ChatMessage{Role: "assistant", Content: visible})
 		}

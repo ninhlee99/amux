@@ -90,3 +90,29 @@ func TestSendWithWebNudge_DropsSpeculativeNarration(t *testing.T) {
 		t.Fatalf("want only the tool call, got text=%q calls=%d", text, calls)
 	}
 }
+
+func TestSendWithWebNudge_LostTaskOnlyMidLoop(t *testing.T) {
+	greeting := "Understood. I am ready to assist you while adhering to policies. How can I help you today?"
+	run := func(msgs []types.ChatMessage) int {
+		calls := 0
+		send := func(_ context.Context, r *types.ChatRequest) (<-chan types.StreamChunk, error) {
+			calls++
+			return chunks(types.StreamChunk{Content: greeting}, types.StreamChunk{Done: true}), nil
+		}
+		out, _ := sendWithWebNudge(context.Background(), &types.ChatRequest{Tools: []types.ToolDef{{Name: "Bash"}}, Messages: msgs}, send)
+		for range out {
+		}
+		return calls
+	}
+	if n := run([]types.ChatMessage{{Role: "user", Content: "hi"}}); n != 1 {
+		t.Fatalf("a greeting answering 'hi' must pass through, sent %d", n)
+	}
+	mid := []types.ChatMessage{
+		{Role: "user", Content: "/open-pr:review 47"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Bash", Arguments: `{"command":"git diff"}`}}},
+		{Role: "tool", ToolCallID: "t1", Content: "diff --git a/x b/x"},
+	}
+	if n := run(mid); n != 2 {
+		t.Fatalf("lost task mid tool loop must be nudged once, sent %d", n)
+	}
+}

@@ -943,6 +943,21 @@ var (
 	reStallOffer     = regexp.MustCompile(`(?i)\b(?:if\s+you(?:'d)?\s+(?:want|like)|would\s+you\s+like|let\s+me\s+know|shall\s+i|do\s+you\s+want)\b`)
 )
 
+var reLostTask = regexp.MustCompile(`(?i)\b(?:how\s+can\s+i\s+(?:help|assist)(?:\s+you)?|what\s+would\s+you\s+like\s+(?:me\s+)?to\s+do|(?:i\s+am|i'm)\s+ready\s+to\s+(?:help|assist)|please\s+(?:provide|share|tell\s+me)\s+(?:the\s+|your\s+)?(?:task|request|instructions))\b`)
+
+// IsLostTask detects a reply that forgot the task it was working on — a
+// greeting or "how can I help you today?" — which Gemini Web gives after a
+// tool result full of prompt-like text (e.g. reviewing a diff of prompts).
+// Only meaningful mid tool loop: as a first reply to "hi" it is an answer.
+func IsLostTask(text string) bool {
+	if hasExplicitWebToolMarkup(text) {
+		return false
+	}
+	t := strings.TrimSpace(StripInternalThoughtAndToolTags(text))
+	t = strings.ReplaceAll(t, "’", "'")
+	return t != "" && len([]rune(t)) <= 800 && reLostTask.MatchString(t)
+}
+
 // IsToolStall detects a short web reply that announces the next action
 // ("I need to continue by running the remaining required tool steps.") but
 // carries no <tool_call>, so nothing runs and the client's turn ends.

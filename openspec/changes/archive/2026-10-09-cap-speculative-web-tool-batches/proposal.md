@@ -5,6 +5,7 @@
 ## What Changes
 
 - Web tool prompts allow several `<tool_call>` blocks only for independent calls (at most 5) and forbid writing results, ids or conclusions before the `[Tool result]`.
+- Mid tool loop, a reply that forgot the task ("How can I help you today?") is nudged once, like a stall.
 - A web reply with more than 5 tool calls keeps the first 5; the turn is marked speculative and the text streamed before the calls is discarded by the buffering consumer.
 
 ## Capabilities
