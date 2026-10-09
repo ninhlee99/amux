@@ -1056,3 +1056,10 @@ func TestWrapWebStream_CapsSpeculativeBatch(t *testing.T) {
 		t.Fatalf("narration of a speculative batch must be dropped, got %q", text)
 	}
 }
+
+func TestStripWebToolMarkup_DropsProtocolEcho(t *testing.T) {
+	in := "Wait for [Tool result] before continuing.\n<tool_call>{\"name\":\"Bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
+	if got := StripWebToolMarkup(in); got != "" {
+		t.Fatalf("protocol echo must be stripped, got %q", got)
+	}
+}
