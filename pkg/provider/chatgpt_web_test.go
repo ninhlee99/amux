@@ -123,3 +123,51 @@ func TestStreamChatGPTWeb_ContainerExecIgnoredWithoutClientTools(t *testing.T) {
 		t.Fatalf("got %q, want plain text reply", text.String())
 	}
 }
+
+// ChatGPT's python tool ("advanced data analysis") is unavailable on many
+// accounts; its code must run in the client's shell instead of ending the
+// turn with "I can't do more advanced data analysis right now".
+func TestStreamChatGPTWeb_PythonToolBecomesClientToolCall(t *testing.T) {
+	resp := chatgptSSE(t,
+		map[string]any{
+			"id": "m1", "author": map[string]string{"role": "assistant"}, "recipient": "python",
+			"status":  "finished_successfully",
+			"content": map[string]any{"content_type": "code", "language": "unknown", "text": "print(sum(range(4)))"},
+		},
+		map[string]any{
+			"id": "m2", "author": map[string]string{"role": "tool", "name": "python"}, "recipient": "all",
+			"status":  "finished_successfully",
+			"content": map[string]any{"content_type": "system_error", "text": "ChatGPTAgentToolException"},
+		},
+		map[string]any{
+			"id": "m3", "author": map[string]string{"role": "assistant"}, "recipient": "all",
+			"status":  "finished_successfully",
+			"content": map[string]any{"content_type": "text", "parts": []string{"It seems like I can’t do more advanced data analysis right now. Please try again later."}},
+		},
+	)
+	a := &ChatGPTWebAdapter{AdapterID: "chatgpt:test"}
+	req := &types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "count"}},
+		Tools:    []types.ToolDef{{Name: "Bash", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`)}},
+	}
+	raw := make(chan types.StreamChunk)
+	go streamChatGPTWeb(context.Background(), a, "/proj", "s1", HistoryMark{}, true, resp, raw)
+	var calls []types.ToolCall
+	var text strings.Builder
+	for c := range tools.MaybeWrapWebStream(a.AdapterID, req, raw) {
+		calls = append(calls, c.ToolCalls...)
+		text.WriteString(c.Content)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("want one Bash call, got %+v (text %q)", calls, text.String())
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(calls[0].Arguments), &args); err != nil || args.Command != "python3 - <<'AMUX_PY'\nprint(sum(range(4)))\nAMUX_PY" {
+		t.Fatalf("bad args %q: %v", calls[0].Arguments, err)
+	}
+	if !tools.IsToolRefusal("It seems like I can’t do more advanced data analysis right now. Please try again later.") {
+		t.Fatal("canned python-unavailable reply must count as a refusal")
+	}
+}

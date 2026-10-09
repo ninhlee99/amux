@@ -513,6 +513,19 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 				return
 			}
 		}
+		// Same for its python tool ("advanced data analysis"): unavailable on
+		// many accounts, it answers "I can't do more advanced data analysis
+		// right now" and the turn dies. Run the code in the client's shell.
+		if clientTools && chunk.Message.Recipient == "python" && ctype == "code" &&
+			chunk.Message.Status == "finished_successfully" {
+			if cmd := chatgptPythonCommand(chunk.Message.Content.Text); cmd != "" {
+				log.Printf("%s: redirected ChatGPT sandbox %s to client shell tool", id, chunk.Message.Recipient)
+				a.convs().ResetProject(project)
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Content: chatgptShellToolCall(cmd)})
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
+				return
+			}
+		}
 		if ctype == "thought" {
 			if len(chunk.Message.Content.Parts) > 0 {
 				fullThought := chunk.Message.Content.Parts[0]
@@ -634,6 +647,16 @@ func isShellBinary(s string) bool {
 
 // chatgptShellToolCall renders cmd in the webloop <tool_call> dialect; the
 // web tool parser maps "Bash" onto whatever shell tool the client declared.
+// chatgptPythonCommand wraps code ChatGPT addressed to its python tool as a
+// shell command for the client's Bash tool.
+func chatgptPythonCommand(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	return "python3 - <<'AMUX_PY'\n" + code + "\nAMUX_PY"
+}
+
 func chatgptShellToolCall(cmd string) string {
 	b, _ := json.Marshal(map[string]any{
 		"name":      "Bash",

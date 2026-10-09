@@ -936,6 +936,8 @@ var refusalRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)if\s+you\s+run\s+this\s+in\s+the\s+claude\s+code\s+workspace\s+session`),
 	regexp.MustCompile(`(?i)in\s+this\s+chat\s+instance\s+because\s+the\s+[\w/.-]+\s+tool`),
 	regexp.MustCompile(`(?i)open-pr\s+runtime\s+is\s+not\s+available`),
+	// ChatGPT's canned reply when its own python tool is unavailable.
+	regexp.MustCompile(`(?i)can'?t\s+do\s+more\s+advanced\s+data\s+analysis`),
 	regexp.MustCompile(`(?i)(?:không\s+thể|chưa\s+thể|không\s+có\s+quyền)\s+(?:[\w/.-]+\s+){0,4}(?:truy\s+cập|thao\s+tác|chạy|thực\s+thi)\s+(?:[\w/.-]+\s+){0,4}(?:repo|repository|workspace|hệ\s+thống|lệnh|công\s+cụ)`),
 }
 
