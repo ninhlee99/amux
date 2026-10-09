@@ -25,13 +25,13 @@ fi
 TARGET_ID=""
 case "$PROVIDER_ARG" in
     claude|claude-web|claude_web)
-        TARGET_ID="claude:web:bi117ute"
+        TARGET_ID="${TEST_CLAUDE_ACCOUNT:-claude:web:bi117ute}"
         ;;
     gemini|gemini-web|gemini_web)
-        TARGET_ID="gemini:web:bi117ute"
+        TARGET_ID="${TEST_GEMINI_ACCOUNT:-gemini:web:bi117ute}"
         ;;
     chatgpt|chatgpt-web|chatgpt_web)
-        TARGET_ID="chatgpt:ninhle21199"
+        TARGET_ID="${TEST_CHATGPT_ACCOUNT:-chatgpt:ninhle21199}"
         ;;
     "")
         echo "=== CHỌN PROVIDER ĐỂ TEST ==="
@@ -42,13 +42,13 @@ case "$PROVIDER_ARG" in
         read -p "Nhập lựa chọn (1/2/3 hoặc tên provider): " CHOICE
         case "$CHOICE" in
             1|claude|claude-web)
-                TARGET_ID="claude:web:bi117ute"
+                TARGET_ID="${TEST_CLAUDE_ACCOUNT:-claude:web:bi117ute}"
                 ;;
             2|gemini|gemini-web)
-                TARGET_ID="gemini:web:bi117ute"
+                TARGET_ID="${TEST_GEMINI_ACCOUNT:-gemini:web:bi117ute}"
                 ;;
             3|chatgpt|chatgpt-web)
-                TARGET_ID="chatgpt:ninhle21199"
+                TARGET_ID="${TEST_CHATGPT_ACCOUNT:-chatgpt:ninhle21199}"
                 ;;
             *)
                 TARGET_ID="$CHOICE"
@@ -91,7 +91,8 @@ printf 'l1\nl2\nl3\n' > "$TEST_DIR/work/data.txt"
 cleanup() {
     echo ""
     echo "Đang dọn dẹp test gateway trên cổng $TEST_PORT..."
-    lsof -ti :"$TEST_PORT" | xargs kill -9 2>/dev/null || true
+    [ -n "$GATEWAY_PID" ] && kill "$GATEWAY_PID" 2>/dev/null || true
+    lsof -ti :"$TEST_PORT" | xargs -r kill -9 2>/dev/null || true
     rm -rf "$TEST_DIR"
     echo "✓ Hoàn tất dọn dẹp. Cổng 8787 vẫn hoạt động bình thường."
 }

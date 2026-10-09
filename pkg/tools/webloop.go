@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1574,11 +1575,15 @@ func autoKickstartMatchingTool(userGoal string, defs []types.ToolDef) (types.Too
 // (e.g. "Bash", "Edit") as a word, so a goal that merely also mentions MCP
 // still gets the Bash fallbacks.
 func goalNamesNonMCPTool(userGoal string, defs []types.ToolDef) bool {
+	patterns := make([]*regexp.Regexp, 0, len(defs))
 	for _, d := range defs {
 		if strings.HasPrefix(strings.ToLower(d.Name), "mcp__") || len(d.Name) < 3 {
 			continue
 		}
-		if regexp.MustCompile(`\b` + regexp.QuoteMeta(d.Name) + `\b`).MatchString(userGoal) {
+		patterns = append(patterns, regexp.MustCompile(`\b`+regexp.QuoteMeta(d.Name)+`\b`))
+	}
+	for _, re := range patterns {
+		if re.MatchString(userGoal) {
 			return true
 		}
 	}
@@ -2865,7 +2870,7 @@ func dropInvalidOptionalArgs(m map[string]any, schemaRaw json.RawMessage) bool {
 		}
 		allowed := false
 		for _, e := range prop.Enum {
-			if fmt.Sprint(e) == fmt.Sprint(v) {
+			if reflect.DeepEqual(e, v) || fmt.Sprint(e) == fmt.Sprint(v) {
 				allowed = true
 				break
 			}
