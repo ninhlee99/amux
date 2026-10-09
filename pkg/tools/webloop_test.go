@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1029,5 +1030,29 @@ func TestCoerceToolArgs_DropsInvalidOptionalEnum(t *testing.T) {
 	}
 	if m["model"] != "haiku" || m["prompt"] != "count lines" {
 		t.Fatalf("valid args must be kept: %s", got)
+	}
+}
+
+func TestWrapWebStream_CapsSpeculativeBatch(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Read"}}
+	var b strings.Builder
+	b.WriteString("Review published successfully, 0 findings.\n")
+	for i := 0; i < 12; i++ {
+		b.WriteString(`<tool_call>{"name":"Read","arguments":{"file_path":"/f` + strconv.Itoa(i) + `"}}</tool_call>` + "\n")
+	}
+	in := make(chan types.StreamChunk, 2)
+	in <- types.StreamChunk{Content: b.String()}
+	close(in)
+	var calls []types.ToolCall
+	var text string
+	for ch := range wrapWebStream("gemini:web:x", defs, nil, in) {
+		calls = append(calls, ch.ToolCalls...)
+		text += ch.Content
+	}
+	if len(calls) != maxWebToolCallsPerTurn {
+		t.Fatalf("want %d calls, got %d", maxWebToolCallsPerTurn, len(calls))
+	}
+	if strings.Contains(text, "published successfully") {
+		t.Fatalf("narration of a speculative batch must be dropped, got %q", text)
 	}
 }

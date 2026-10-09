@@ -70,3 +70,23 @@ func TestSendWithWebNudge_PassesAnswersThrough(t *testing.T) {
 		t.Fatalf("answer must pass through unchanged: calls=%d text=%q", calls, text)
 	}
 }
+
+func TestSendWithWebNudge_DropsSpeculativeNarration(t *testing.T) {
+	req := &types.ChatRequest{Tools: []types.ToolDef{{Name: "Read"}}, Messages: []types.ChatMessage{{Role: "user", Content: "review the PR"}}}
+	send := func(_ context.Context, r *types.ChatRequest) (<-chan types.StreamChunk, error) {
+		return chunks(
+			types.StreamChunk{Content: "Review published successfully."},
+			types.StreamChunk{ToolCalls: []types.ToolCall{{ID: "t1", Name: "Read", Arguments: `{"file_path":"/a"}`}}, Done: true, SpeculativeTools: true},
+		), nil
+	}
+	out, _ := sendWithWebNudge(context.Background(), req, send)
+	var text string
+	calls := 0
+	for c := range out {
+		text += c.Content
+		calls += len(c.ToolCalls)
+	}
+	if text != "" || calls != 1 {
+		t.Fatalf("want only the tool call, got text=%q calls=%d", text, calls)
+	}
+}

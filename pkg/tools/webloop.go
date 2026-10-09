@@ -32,7 +32,7 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 `
 
@@ -69,7 +69,7 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG (tool names the client runs, with argument keys)
 `
 
@@ -107,7 +107,7 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 `
 
@@ -411,7 +411,7 @@ To invoke a tool, emit a <tool_call> block:
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+` + example + `Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 ` + catalogBlock(defs)
 	case "gemini":
@@ -426,7 +426,7 @@ Reasoning / thinking step (optional)
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+` + example + `Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 ` + catalogBlock(defs)
 	default:
@@ -440,7 +440,7 @@ To invoke a tool, emit a <tool_call> block:
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+` + example + `Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 ` + catalogBlock(defs)
 	}
@@ -783,6 +783,11 @@ func (e *streamThoughtExtractor) Feed(chunk string) (string, string) {
 	return emittedThought.String(), emittedContent.String()
 }
 
+// maxWebToolCallsPerTurn caps the tool calls taken from one web reply.
+// Independent batches (a few Reads, Agent+Skill+MCP) fit; Gemini has replied
+// with ~55 calls plus a "review published" summary before any of them ran.
+const maxWebToolCallsPerTurn = 5
+
 func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage, inner <-chan types.StreamChunk, projectRoot ...string) <-chan types.StreamChunk {
 	out := make(chan types.StreamChunk, 8)
 	go func() {
@@ -852,6 +857,15 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			}
 		}
 		calls, forced := FinalizeWebToolCalls(text, defs, hist, projectRoot...)
+		speculative := false
+		if len(calls) > maxWebToolCallsPerTurn {
+			// A reply scripting the whole task at once guesses every later
+			// argument (commit sha, worktree, review id) and narrates results
+			// no tool produced. Run the head only; the narration is fiction.
+			monitor.AppendEvent("TOOLS", fmt.Sprintf("%s: %d tool calls in one reply — keeping the first %d", source, len(calls), maxWebToolCallsPerTurn))
+			calls = calls[:maxWebToolCallsPerTurn]
+			speculative = true
+		}
 		logWebTools(source, calls, text)
 		if len(calls) == 0 {
 			cleanText := text
@@ -870,7 +884,7 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			return
 		}
 		// API-key style: tool_use only. Drop "please paste" prose.
-		if !forced {
+		if !forced && !speculative {
 			if visible := StripWebToolMarkup(text); strings.TrimSpace(visible) != "" {
 				if streamedContentLen < len(visible) {
 					rem := visible[streamedContentLen:]
@@ -881,12 +895,13 @@ func wrapWebStream(source string, defs []types.ToolDef, hist []types.ChatMessage
 			}
 		}
 		out <- types.StreamChunk{
-			ID:           id,
-			ToolCalls:    calls,
-			FinishReason: "tool_calls",
-			Done:         true,
-			LogText:      text,
-			ForcedTools:  forced,
+			ID:               id,
+			ToolCalls:        calls,
+			FinishReason:     "tool_calls",
+			Done:             true,
+			LogText:          text,
+			ForcedTools:      forced,
+			SpeculativeTools: speculative,
 		}
 	}()
 	return out

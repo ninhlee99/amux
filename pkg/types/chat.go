@@ -221,6 +221,10 @@ type StreamChunk struct {
 	LogText string
 	// ForcedTools indicates whether tool calls were auto-kickstarted or extracted from non-standard markup.
 	ForcedTools bool
+	// SpeculativeTools marks tool calls cut from a reply that scripted many
+	// calls at once; text streamed earlier in the turn narrated results no
+	// tool produced and should be discarded by a buffering consumer.
+	SpeculativeTools bool
 	// Usage carries token counts including cache read/creation stats from the upstream provider.
 	Usage *UsageStats
 }

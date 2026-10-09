@@ -82,7 +82,11 @@ func sendWithWebNudge(ctx context.Context, req *types.ChatRequest, send func(con
 				}
 			}
 		}
+		speculative := len(held) > 0 && held[len(held)-1].SpeculativeTools
 		for _, h := range held {
+			if speculative && len(h.ToolCalls) == 0 && !h.Done {
+				continue // narration written before any tool ran
+			}
 			out <- h
 		}
 	}()
