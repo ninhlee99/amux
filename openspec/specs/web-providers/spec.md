@@ -80,3 +80,10 @@ Web provider HTTP responses SHALL fail with an "upstream stream idle" error when
 #### Scenario: claude.ai goes silent mid-completion
 - **WHEN** a Claude Web completion stream sends headers and then no data for 3 minutes
 - **THEN** the adapter's read fails with the idle error and the request returns an error instead of hanging
+
+### Requirement: Dead web connections are detected quickly
+Web provider transports SHALL health-check idle HTTP/2 connections with pings so a silently dropped connection is discarded within about 45 seconds, and the ChatGPT sentinel request SHALL fail after 60 seconds instead of waiting for the operating system's TCP timeout.
+
+#### Scenario: Pooled connection dropped by the network
+- **WHEN** the HTTP/2 connection to chatgpt.com stops answering while idle
+- **THEN** the next request uses a new connection rather than hanging for many minutes

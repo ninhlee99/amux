@@ -48,7 +48,16 @@ func newDefaultTransport() *http.Transport {
 	t.IdleConnTimeout = 90 * time.Second
 	t.ResponseHeaderTimeout = 5 * time.Minute
 	t.ExpectContinueTimeout = 1 * time.Second
+	t.HTTP2 = webHTTP2Config()
 	return t
+}
+
+// webHTTP2Config health-checks idle HTTP/2 connections. A silently dropped
+// connection (IPv6/NAT) otherwise keeps taking new requests, each waiting out
+// the OS TCP timeout: ChatGPT sentinel calls hung ~16 min before
+// "read: operation timed out".
+func webHTTP2Config() *http.HTTP2Config {
+	return &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second}
 }
 
 // WarmUpConnections sends lightweight concurrent HEAD/OPTIONS requests to
