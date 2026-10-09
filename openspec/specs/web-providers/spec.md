@@ -73,3 +73,10 @@ The Gemini Web adapter SHALL take the latest non-empty response snapshot as the 
 #### Scenario: Draft abandoned for a rewrite
 - **WHEN** Gemini streams `<tool_call> {"name":"Ba…` and then restarts with `## Review\nAll good.`
 - **THEN** the answer is `## Review\nAll good.` with no part of the draft spliced into it
+
+### Requirement: Web streams have an idle timeout
+Web provider HTTP responses SHALL fail with an "upstream stream idle" error when no bytes arrive for 3 minutes, so a silent upstream does not hold the client's request open indefinitely. Streams that keep delivering bytes SHALL NOT be limited in total duration.
+
+#### Scenario: claude.ai goes silent mid-completion
+- **WHEN** a Claude Web completion stream sends headers and then no data for 3 minutes
+- **THEN** the adapter's read fails with the idle error and the request returns an error instead of hanging

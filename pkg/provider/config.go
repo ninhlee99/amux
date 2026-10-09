@@ -420,8 +420,10 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 		c, err := guard.GetClientForProxy(p.Proxy)
 		if err != nil {
 			log.Printf("provider %s: configure proxy %q failed: %v", p.ID, p.Proxy, err)
-		} else {
-			proxyClient = c
+		} else if c != nil {
+			wrapped := *c
+			wrapped.Transport = idleStreamTransport{base: c.Transport, idle: streamIdleTimeout}
+			proxyClient = &wrapped
 		}
 	}
 
