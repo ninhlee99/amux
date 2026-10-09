@@ -2,7 +2,9 @@
 
 ## Purpose
 Web chat accounts (ChatGPT, Claude.ai, Gemini web) serve as free-quota backends using the user's own browser sessions.
+
 ## Requirements
+
 ### Requirement: Dedicated login profiles
 Web logins SHALL happen in a dedicated Chromium profile under `~/.amux/browser-profiles/<name>`, never the user's system browser profile, with the session cookie captured over the DevTools Protocol.
 
@@ -58,3 +60,9 @@ Gemini web login SHALL extract the user's account email and subscription tier fr
 - **WHEN** the user completes login to Gemini Web
 - **THEN** amux loads `https://gemini.google.com/app` with the session cookies, extracts the user's email, and saves the account under `gemini:web:<email_prefix>`
 
+### Requirement: Gemini Web self-links are collapsed
+The Gemini Web adapter SHALL replace markdown links whose label equals their URL, with or without the `http(s)://` scheme, by the label, in both streamed deltas and the final text, so tool-call arguments keep the literal path or URL the model wrote.
+
+#### Scenario: Self-linked path in a tool call
+- **WHEN** Gemini returns `{"file_path":"~/x/[github.com/o/r/p.json](https://github.com/o/r/p.json)"}` inside a `<tool_call>`
+- **THEN** the tool call carries `~/x/github.com/o/r/p.json`
