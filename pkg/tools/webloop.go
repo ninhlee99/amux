@@ -940,7 +940,7 @@ var refusalRegexes = []*regexp.Regexp{
 }
 
 var (
-	reStallIntent    = regexp.MustCompile(`(?i)(?:^|[.!:\n]\s*)(?:i\s+need\s+to|i(?:'ll|\s+will)|let\s+me|now\s+i(?:'ll|\s+will)|next,?\s+i(?:'ll|\s+will)|i'm\s+going\s+to|i\s+am\s+going\s+to)\s+(?:now\s+)?(?:continue|proceed|run|execute|call|use|launch|invoke|check|read|inspect|fix|edit|write|create|start|try|retry)\b`)
+	reStallIntent    = regexp.MustCompile(`(?i)(?:^|[.!:\n]\s*)(?:i\s+need\s+to|i(?:'ll|\s+will)|let\s+me|let's|let\s+us|now\s+i(?:'ll|\s+will)|next,?\s+i(?:'ll|\s+will)|i'm\s+going\s+to|i\s+am\s+going\s+to)\s+(?:now\s+)?(?:continue|proceed|run|execute|call|use|launch|invoke|check|read|inspect|fix|edit|write|create|start|try|retry)\b`)
 	reStallRemaining = regexp.MustCompile(`(?i)\bremaining\s+(?:required\s+)?(?:tool\s+)?steps\b`)
 	reStallOffer     = regexp.MustCompile(`(?i)\b(?:if\s+you(?:'d)?\s+(?:want|like)|would\s+you\s+like|let\s+me\s+know|shall\s+i|do\s+you\s+want)\b`)
 )
@@ -1368,6 +1368,50 @@ func containsSuspiciousRefusalPrefix(text string) bool {
 	return false
 }
 
+var (
+	reBacktickCmd   = regexp.MustCompile("`((?:git|ls|find|cat|head|tail|grep|cargo|go|npm|pnpm|yarn|make|python|pytest|sh|bash)\\s+[^`]+)`")
+	reCommandSplit  = regexp.MustCompile(`&&|\|\||;|\|`)
+	readOnlyGitSubs = map[string]bool{"status": true, "diff": true, "log": true, "show": true, "branch": true, "remote": true, "rev-parse": true, "ls-files": true, "grep": true, "blame": true}
+	readOnlyCmds    = map[string]bool{"ls": true, "cat": true, "head": true, "tail": true, "grep": true, "rg": true, "find": true, "wc": true, "pwd": true, "echo": true}
+)
+
+// isReadOnlyCommand reports whether every segment of a shell command only
+// reads: git status/diff/log/…, ls, cat, grep, find without -delete/-exec, no
+// redirection. Commands lifted from prose run without the model asking, so
+// nothing that writes (git add/commit/push, rm, >) may pass.
+func isReadOnlyCommand(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" || strings.ContainsAny(cmd, "><`$") || strings.Contains(cmd, "\n") {
+		return false
+	}
+	for _, seg := range reCommandSplit.Split(cmd, -1) {
+		f := strings.Fields(seg)
+		if len(f) == 0 {
+			return false
+		}
+		switch {
+		case f[0] == "git":
+			if len(f) < 2 || !readOnlyGitSubs[f[1]] {
+				return false
+			}
+			for _, a := range f[2:] {
+				if a == "-d" || a == "-D" || a == "-m" || a == "-M" || a == "--delete" || a == "add" || a == "remove" || a == "set-url" {
+					return false
+				}
+			}
+		case readOnlyCmds[f[0]]:
+			for _, a := range f[1:] {
+				if a == "-delete" || a == "-exec" || a == "-execdir" || a == "-ok" {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // isAgenticSkillTask reports whether the user prompt contains an explicit skill command or repo action task.
 func isAgenticSkillTask(task string) bool {
 	p := strings.ToLower(CleanUserTurnContent(task))
@@ -1411,11 +1455,16 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 				(len(defs) == 1 && strings.HasPrefix(strings.ToLower(defs[0].Name), "mcp__"))
 
 			if hasBash && !isExplicitMCPRequest {
+				// Commands are lifted from prose only when the reply refused or
+				// stalled ("I will start by running `git status`"), and only
+				// read-only ones: prose that merely mentions "`git add -A` is
+				// forbidden" was run as `git add`, again and again.
+				liftFromProse := isRefusal || IsToolStall(text)
 				// Tier 1: Check markdown codeblocks (reBashFence)
-				if reBashFence.MatchString(text) {
+				if liftFromProse && reBashFence.MatchString(text) {
 					for _, m := range reBashFence.FindAllStringSubmatch(text, -1) {
 						cmd := strings.TrimSpace(m[1])
-						if cmd == "" {
+						if cmd == "" || !isReadOnlyCommand(cmd) {
 							continue
 						}
 						b, _ := json.Marshal(map[string]string{"command": cmd})
@@ -1428,9 +1477,8 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 					}
 				}
 				// Tier 2: Check inline backtick commands (reBacktickCmd)
-				if len(calls) == 0 {
-					reBacktickCmd := regexp.MustCompile("`((?:git|ls|find|cat|head|tail|grep|cargo|go|npm|pnpm|yarn|make|python|pytest|sh|bash)\\s+[^`]+)`")
-					if match := reBacktickCmd.FindStringSubmatch(text); len(match) > 1 {
+				if len(calls) == 0 && liftFromProse {
+					if match := reBacktickCmd.FindStringSubmatch(text); len(match) > 1 && isReadOnlyCommand(match[1]) {
 						cmd := strings.TrimSpace(match[1])
 						b, _ := json.Marshal(map[string]string{"command": cmd})
 						calls = append(calls, types.ToolCall{
@@ -2094,7 +2142,9 @@ func parseWebTools(text string, defs []types.ToolDef, allowBashFence bool) []typ
 			}
 			for _, m := range reBashFence.FindAllStringSubmatch(text, -1) {
 				cmd := strings.TrimSpace(m[1])
-				if cmd == "" {
+				// A fence is an example as often as an action: only
+				// read-only commands run without an explicit <tool_call>.
+				if cmd == "" || !isReadOnlyCommand(cmd) {
 					continue
 				}
 				b, _ := json.Marshal(map[string]string{"command": cmd})

@@ -348,3 +348,19 @@ func TestIsToolStall(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalizeWebToolCalls_ProseMentionIsNotRun(t *testing.T) {
+	defs := []types.ToolDef{
+		{Name: "Bash", InputSchema: []byte(`{"required":["command"],"properties":{"command":{"type":"string"}}}`)},
+	}
+	hist := []types.ChatMessage{{Role: "user", Content: "/open-pr:fix https://github.com/ninhlee99/amux/pull/47"}}
+	for _, text := range []string{
+		"Per the guardrails, `git add -A` / `git add .` is forbidden; Step 8 names the exact files.",
+		"The fix is ready. Let me run it:\n```bash\ngit commit -am fix && git push\n```",
+		"Let me check the build output: `cat out.log > /tmp/x`",
+	} {
+		if calls, _ := tools.FinalizeWebToolCalls(text, defs, hist); len(calls) != 0 {
+			t.Fatalf("prose must not become a command: %q -> %+v", text, calls)
+		}
+	}
+}
