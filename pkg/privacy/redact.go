@@ -562,9 +562,10 @@ func init() {
 
 		// ── Identity / harassment / stalking vectors ───────────────────
 		{
-			kind:   "email",
-			sample: "sample@example.com",
-			re:     regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`),
+			kind:    "email",
+			sample:  "sample@example.com",
+			re:      regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`),
+			replace: redactEmail,
 		},
 		{
 			kind:   "phone_vn",
@@ -845,6 +846,36 @@ func isProtectedCandidate(s string) bool {
 }
 
 // RedactString replaces sensitive spans with sample placeholders.
+// fileExtTLDs are "TLDs" that are really file extensions: "page@3f9a.webm"
+// (Playwright's raw capture) and "logo@2x.png" are file names, and rewriting
+// them sends the web model a path that does not exist.
+var fileExtTLDs = map[string]bool{
+	"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true, "svg": true, "ico": true,
+	"webm": true, "mp4": true, "mov": true, "mkv": true, "mp3": true, "wav": true, "pdf": true,
+	"js": true, "mjs": true, "cjs": true, "ts": true, "tsx": true, "jsx": true, "json": true,
+	"css": true, "html": true, "md": true, "txt": true, "log": true, "go": true, "py": true,
+	"rb": true, "rs": true, "java": true, "yaml": true, "yml": true, "toml": true, "lock": true,
+	"zip": true, "tar": true, "gz": true, "tgz": true, "sh": true, "jsonl": true, "csv": true,
+}
+
+// redactEmail replaces a personal address with the sample. File names and
+// no-reply bot addresses (commit trailers such as
+// "Co-Authored-By: … <noreply@anthropic.com>") identify nobody and are kept.
+func redactEmail(m string) string {
+	at := strings.LastIndex(m, "@")
+	if at < 0 {
+		return "sample@example.com"
+	}
+	local, domain := strings.ToLower(m[:at]), strings.ToLower(m[at+1:])
+	if dot := strings.LastIndex(domain, "."); dot >= 0 && fileExtTLDs[domain[dot+1:]] {
+		return m
+	}
+	if local == "noreply" || local == "no-reply" || strings.HasSuffix(domain, "users.noreply.github.com") {
+		return m
+	}
+	return "sample@example.com"
+}
+
 func RedactString(in string) (string, Result) {
 	if in == "" {
 		return in, Result{}

@@ -41,4 +41,8 @@ func TestUnlinkGeminiAutolinks(t *testing.T) {
 	if got := unlinkGeminiAutolinks(in); got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
+	call := `{"name":"Write","arguments":{"file_path":"~/.local/share/open-pr/[github.com/o/r/p.json](https://github.com/o/r/p.json)"}}`
+	if got := unlinkGeminiAutolinks(call); got != `{"name":"Write","arguments":{"file_path":"~/.local/share/open-pr/github.com/o/r/p.json"}}` {
+		t.Fatalf("scheme-less autolink in tool args not undone: %s", got)
+	}
 }

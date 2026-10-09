@@ -495,3 +495,20 @@ func TestRedactChatRequest_LeavesMerchantAndDomainContext(t *testing.T) {
 	}
 	_ = before
 }
+
+func TestRedactEmail_KeepsFileNamesAndNoReply(t *testing.T) {
+	keep := []string{
+		"mv /tmp/out/page@3f9a1c2e.webm dashboard.webm",
+		"cp logo@2x.png public/",
+		"Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+		"1234+bot@users.noreply.github.com",
+	}
+	for _, in := range keep {
+		if out, _ := RedactString(in); out != in {
+			t.Errorf("must keep %q, got %q", in, out)
+		}
+	}
+	if out, _ := RedactString("mail jane.doe@gmail.com now"); out != "mail sample@example.com now" {
+		t.Errorf("personal email must be redacted, got %q", out)
+	}
+}

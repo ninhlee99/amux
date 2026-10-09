@@ -334,6 +334,7 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 	}
 
 	bestText := ""
+	emitted := ""
 	var bestMeta []string
 	errCode := 0
 	sc := bufio.NewScanner(resp.Body)
@@ -367,10 +368,16 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 				}
 			}
 			if len(t) > len(bestText) {
-				delta := t[len(bestText):]
 				bestText = t
-				if len(onDelta) > 0 && onDelta[0] != nil && delta != "" {
-					onDelta[0](delta)
+				// Emit the unlinked text up to any link still being
+				// written: an unfinished "[x](http…" may yet collapse.
+				safe := unlinkGeminiAutolinks(t)
+				if i := strings.LastIndex(safe, "["); i >= 0 && !strings.Contains(safe[i:], ")") {
+					safe = safe[:i]
+				}
+				if len(onDelta) > 0 && onDelta[0] != nil && len(safe) > len(emitted) && strings.HasPrefix(safe, emitted) {
+					onDelta[0](safe[len(emitted):])
+					emitted = safe
 				}
 			}
 		}
@@ -385,7 +392,11 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		bodyHint := ""
 		return "", nil, fmt.Errorf("empty Gemini response%s", bodyHint)
 	}
-	return bestText, bestMeta, nil
+	final := unlinkGeminiAutolinks(bestText)
+	if len(onDelta) > 0 && onDelta[0] != nil && len(final) > len(emitted) && strings.HasPrefix(final, emitted) {
+		onDelta[0](final[len(emitted):])
+	}
+	return final, bestMeta, nil
 }
 
 func buildGeminiStreamInner(prompt string, metadata []string) []any {
@@ -530,7 +541,7 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 							}
 						}
 						if sb.Len() > 0 {
-							text = unlinkGeminiAutolinks(html.UnescapeString(sb.String()))
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}
@@ -543,7 +554,7 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 							}
 						}
 						if sb.Len() > 0 {
-							text = unlinkGeminiAutolinks(html.UnescapeString(sb.String()))
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}
@@ -561,19 +572,23 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 	return text, meta
 }
 
-var reGeminiAutolink = regexp.MustCompile(`\[(https?://[^\]\s]+)\]\((https?://[^)\s]+)\)`)
+var reGeminiAutolink = regexp.MustCompile(`\[([^\[\]\s]+)\]\((https?://[^()\s]+)\)`)
 
-// unlinkGeminiAutolinks undoes the markdown links Gemini Web wraps around bare
-// URLs ("[http://x](http://x)"), which reach the client as literal brackets.
-// Only links whose label is the URL itself are touched.
+// unlinkGeminiAutolinks undoes the markdown links Gemini Web wraps around
+// bare URLs and domain-like paths — "[http://x](http://x)",
+// "[github.com/o/r](https://github.com/o/r)" — inside its text, including
+// <tool_call> JSON, where they corrupt arguments (a Write to
+// "[github.com/…](https://…)" creates that literal directory). Only links whose
+// label is the URL, with or without its scheme, are touched.
 func unlinkGeminiAutolinks(text string) string {
 	if !strings.Contains(text, "](http") {
 		return text
 	}
 	return reGeminiAutolink.ReplaceAllStringFunc(text, func(m string) string {
 		sub := reGeminiAutolink.FindStringSubmatch(m)
-		if sub[1] == sub[2] {
-			return sub[1]
+		label, url := sub[1], sub[2]
+		if label == url || "https://"+label == url || "http://"+label == url {
+			return label
 		}
 		return m
 	})
