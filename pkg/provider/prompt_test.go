@@ -434,3 +434,32 @@ func TestSkillTask_ExtractionWithMetadataOnly(t *testing.T) {
 	}
 }
 
+
+func TestCurrentUserTask_SkipsSkillExpansion(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "1) write calc.py 2) run the skill-probe skill 3) call the MCP tool"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Skill", Arguments: `{"skill":"skill-probe"}`}}},
+		{Role: "tool", ToolCallID: "t1", Content: "Launching skill: skill-probe"},
+		{Role: "user", Content: "Base directory for this skill: /tmp/x/.claude/skills/skill-probe\n\nRun this exact Bash command"},
+	}
+	if got := currentUserTask(msgs); !strings.HasPrefix(got, "1) write calc.py") {
+		t.Fatalf("task must stay the user's request, got %q", got)
+	}
+}
+
+func TestBuildConcatenatedPrompt_MarksSkillBody(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "run the skill-probe skill"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Skill", Arguments: `{"skill":"skill-probe"}`}}},
+		{Role: "tool", ToolCallID: "t1", Name: "Skill", Content: "Launching skill: skill-probe"},
+		{Role: "user", Content: "Base directory for this skill: /tmp/s\n\nRun this exact Bash command: `echo hi`"},
+	}
+	got := BuildConcatenatedPrompt(msgs)
+	i := strings.Index(got, skillLoadedNote)
+	if i < 0 || i > strings.Index(got, "Base directory for this skill") {
+		t.Fatalf("skill body must be headed by the loaded-skill note:\n%s", got)
+	}
+	if strings.Count(got, skillLoadedNote) != 1 {
+		t.Fatal("only the skill turn gets the note")
+	}
+}

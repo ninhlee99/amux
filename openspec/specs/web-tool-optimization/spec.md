@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change upgrade-tier2-web-gateway. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Smart tool result pruning
 The gateway SHALL prune overly long tool results (exceeding 4KB or 100 lines) when flattening multi-turn message history for Web providers, preserving the leading 30 lines and trailing 40 lines with a truncation summary indicator.
 
@@ -101,4 +103,16 @@ The gateway prompt engine SHALL filter IDE metadata blocks such as `<system-remi
 - **WHEN** an IDE client appends a user message with `<system-reminder>15000000 tokens left</system-reminder>\n\n(no content)` following a tool execution
 - **THEN** the prompt engine treats the session as an ongoing tool loop, does not inject new-request cues, and maintains the active task goal
 
+### Requirement: Web catalog marks optional and enumerated arguments
+The web tool catalog SHALL list required arguments as `name:type`, optional arguments as `name?:type`, and enumerated arguments by their allowed values joined with `|`. Before a parsed web tool call is returned to the client, optional arguments whose value is null or outside the schema enum SHALL be removed.
 
+#### Scenario: ChatGPT fills Agent isolation with an invalid value
+- **WHEN** a web reply calls `Agent` with `{"prompt":"count lines","description":"d","isolation":"none"}` and `isolation` is an optional enum of `worktree|remote`
+- **THEN** the tool call returned to the client has no `isolation` argument and keeps `prompt` and `description`
+
+### Requirement: Task cue ignores skill bodies
+When the gateway restates the current task for a web model, it SHALL use the latest user turn that is not a skill expansion (a turn starting with `Base directory for this skill:`).
+
+#### Scenario: Skill loaded mid-task
+- **WHEN** the history is a user request, a `Skill` tool call, and the injected skill body
+- **THEN** the restated task is the user request

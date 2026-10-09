@@ -2,6 +2,8 @@ package tools
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -102,8 +104,18 @@ func TestSchemaKeyTypes_RequiredNeverTruncated(t *testing.T) {
 func TestCatalogLine_ExpandedOptionalProps(t *testing.T) {
 	raw := []byte(`{"properties":{"opt1":{"type":"string"},"opt2":{"type":"string"},"opt3":{"type":"string"},"opt4":{"type":"string"},"opt5":{"type":"string"},"opt6":{"type":"string"},"opt7":{"type":"string"},"opt8":{"type":"string"}}}`)
 	line := catalogLine(types.ToolDef{Name: "ComplexTool", InputSchema: raw})
-	if !strings.Contains(line, "opt7:string") || !strings.Contains(line, "opt8:string") {
+	if !strings.Contains(line, "opt7?:string") || !strings.Contains(line, "opt8?:string") {
 		t.Fatalf("expected catalogLine to retain optional properties beyond 6, got: %s", line)
+	}
+}
+
+func TestCatalogLine_MarksOptionalAndEnums(t *testing.T) {
+	raw := []byte(`{"required":["prompt"],"properties":{"prompt":{"type":"string"},"isolation":{"type":"string","enum":["worktree","remote"]},"run_in_background":{"type":"boolean"}}}`)
+	line := catalogLine(types.ToolDef{Name: "Agent", InputSchema: raw})
+	for _, want := range []string{"prompt:string", "isolation?:worktree|remote", "run_in_background?:boolean"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("catalog line %q missing %q", line, want)
+		}
 	}
 }
 
@@ -796,6 +808,17 @@ Action Input: {"command": "go build ./..."}
 }
 
 func TestSplitMCPServerTool(t *testing.T) {
+	// Server names come from the MCP configs under $HOME; pin them so the
+	// result does not depend on what the machine running the test has set up.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"mcpServers":{"StitchMCP":{},"supabase-mcp-server":{}}}`
+	if err := os.WriteFile(filepath.Join(home, ".cursor", "mcp.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		input      string
 		wantServer string
@@ -991,5 +1014,20 @@ func TestStreamThoughtExtractor_ReflectionTag(t *testing.T) {
 	}
 	if !strings.Contains(co, "Here is the answer.") {
 		t.Errorf("expected content to contain 'Here is the answer.', got: %q", co)
+	}
+}
+
+func TestCoerceToolArgs_DropsInvalidOptionalEnum(t *testing.T) {
+	def := types.ToolDef{Name: "Agent", InputSchema: json.RawMessage(`{"required":["prompt","description"],"properties":{"prompt":{"type":"string"},"description":{"type":"string"},"isolation":{"type":"string","enum":["worktree","remote"]},"model":{"type":"string","enum":["sonnet","opus","haiku"]}}}`)}
+	got := coerceToolArgs(`{"prompt":"count lines","description":"d","isolation":"none","model":"haiku"}`, def)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := m["isolation"]; has {
+		t.Fatalf("isolation outside enum must be dropped: %s", got)
+	}
+	if m["model"] != "haiku" || m["prompt"] != "count lines" {
+		t.Fatalf("valid args must be kept: %s", got)
 	}
 }

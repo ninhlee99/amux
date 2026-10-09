@@ -192,6 +192,10 @@ func (a *ClaudeWebAdapter) refreshPlanAndModel() {
 }
 
 func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *ClaudeWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if a.SessionKey == "" && strings.TrimSpace(a.Cookies) == "" {
 		return nil, fmt.Errorf("%s: %w: no sessionKey configured", a.AdapterID, types.ErrAuthentication)
 	}
@@ -341,7 +345,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	}
 
 	out := make(chan types.StreamChunk)
-	go streamClaudeWeb(ctx, a, project, req.SessionID, convUUID, HistoryMarkOf(req.Messages), resp, out)
+	go streamClaudeWeb(ctx, a, project, req.SessionID, convUUID, ClientHistoryMark(req), resp, out)
 	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 }
 

@@ -144,6 +144,10 @@ type ChatRequest struct {
 	ServingAPI string `json:"-"`
 	// ServingModel tracks the underlying model invoked.
 	ServingModel string `json:"-"`
+	// ClientMessages, when > 0, is how many leading Messages came from the
+	// client; turns after it were added by the gateway (a web nudge retry).
+	// Thread checkpoints fingerprint only the client's part.
+	ClientMessages int `json:"-"`
 }
 
 // Project returns the project directory / root if present in Metadata.

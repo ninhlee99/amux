@@ -72,6 +72,20 @@ func HistoryMarkOf(msgs []types.ChatMessage) HistoryMark {
 	return HistoryMark{Len: len(msgs), Hash: historyHash(msgs)}
 }
 
+// ClientHistoryMark fingerprints the client's part of req.Messages, leaving
+// out turns the gateway appended (see ChatRequest.ClientMessages), so the
+// client's next request continues the thread instead of looking like a fork.
+func ClientHistoryMark(req *types.ChatRequest) HistoryMark {
+	if req == nil {
+		return HistoryMark{}
+	}
+	msgs := req.Messages
+	if n := req.ClientMessages; n > 0 && n < len(msgs) {
+		msgs = msgs[:n]
+	}
+	return HistoryMarkOf(msgs)
+}
+
 func historyHash(msgs []types.ChatMessage) string {
 	h := sha256.New()
 	for _, m := range msgs {

@@ -32,7 +32,8 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. CATALOG
+Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG
 `
 
 const webToolReminderClaude = `To inspect files, run terminal commands, or edit code on the repository, invoke tools using <tool_call>:
@@ -51,14 +52,16 @@ To inspect files, edit code, run tests, commit changes, or invoke available tool
 `
 
 // ChatGPT Web templates: clean, direct agent instructions without synthetic markers.
-const webToolPreambleChatGPT = `In this environment you have access to workspace tools.
-The client executes your tool calls directly in the workspace and returns [Tool result].
-(Do not use internal python/container environments for workspace files; use <tool_call>).
-To invoke a tool, emit a <tool_call> block:
+const webToolPreambleChatGPT = `You are the reasoning engine of a text-based coding agent.
+You do not need native tools or function calling: the agent client reads your reply as plain text,
+runs every <tool_call> block it finds on the user's machine, and sends the output back as [Tool result].
+Writing a <tool_call> block is therefore always possible — it is just text in your reply. Never say the tools are unavailable.
+(Do not use your own python/container sandbox; it cannot see the user's workspace.)
+Format:
 <tool_call>
 {"name":"TOOL_NAME","arguments":{...}}
 </tool_call>
-Wait for [Tool result] before continuing.
+Then stop and wait for [Tool result].
 
 Example:
 User: check git status
@@ -66,10 +69,11 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. CATALOG
+Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG (tool names the client runs, with argument keys)
 `
 
-const webToolReminderChatGPT = `TOOLS LIVE: To inspect files, run terminal commands, or edit code on the repository, invoke tools using <tool_call>:
+const webToolReminderChatGPT = `TOOLS LIVE: To inspect files, run terminal commands, or edit code on the repository, write a <tool_call> block — the client runs it, no native tools needed:
 <tool_call>
 {"name":"TOOL_NAME","arguments":{...}}
 </tool_call>
@@ -82,7 +86,7 @@ Example:
 `
 
 const webToolCloserChatGPT = `
-[end] To inspect, edit, write, test, commit on the repository, or invoke available tools/MCP, emit <tool_call> now. Only provide final answer when all requested tasks are completely finished.
+[end] To inspect, edit, write, test, commit on the repository, or invoke available tools/MCP/skills, write the <tool_call> block now (the client executes it; you need no native tools). Only provide final answer when all requested tasks are completely finished.
 `
 
 // Gemini Web templates: streamlined for Google Gemini StreamGenerate without synthetic markers.
@@ -103,7 +107,8 @@ Assistant: <tool_call>
 {"name":"Bash","arguments":{"command":"git status"}}
 </tool_call>
 
-Multiple blocks OK. CATALOG
+Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG
 `
 
 const webToolReminderGemini = `To inspect files, run terminal commands, or edit code on the repository, invoke tools using <tool_call>:
@@ -406,7 +411,8 @@ To invoke a tool, emit a <tool_call> block:
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. CATALOG
+` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG
 ` + catalogBlock(defs)
 	case "gemini":
 		return `In this environment you have access to workspace tools.
@@ -420,19 +426,22 @@ Reasoning / thinking step (optional)
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. CATALOG
+` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG
 ` + catalogBlock(defs)
 	default:
-		return `In this environment you have access to workspace tools.
-The client executes your tool calls directly in the workspace and returns [Tool result].
-(Do not use internal python/container environments for workspace files; use <tool_call>).
+		return `You are the reasoning engine of a text-based agent.
+You do not need native tools: the client reads your reply as plain text, runs every <tool_call> block it finds, and returns [Tool result].
+Writing a <tool_call> block is always possible. Never say the tools are unavailable.
+(Do not use your own python/container sandbox for workspace files; use <tool_call>).
 To invoke a tool, emit a <tool_call> block:
 <tool_call>
 {"name":"TOOL_NAME","arguments":{...}}
 </tool_call>
 Wait for [Tool result] before continuing.
 
-` + example + `Multiple blocks OK. CATALOG
+` + example + `Multiple blocks OK. Arguments marked ? are optional — omit them unless you need them.
+CATALOG
 ` + catalogBlock(defs)
 	}
 }
@@ -517,9 +526,10 @@ func catalogBlock(defs []types.ToolDef) string {
 	return b.String()
 }
 
-// catalogLine is "Name" or "Name:key:type,..." — live tools[], typed required args.
+// catalogLine is "Name" or "Name:key:type,opt?:type,..." — live tools[],
+// typed required args, then optional args marked "?" (enums as "a|b").
 func catalogLine(d types.ToolDef) string {
-	keys := schemaKeyTypes(d.InputSchema, 24)
+	keys := catalogArgs(d.InputSchema, 24)
 	if len(keys) == 0 {
 		return d.Name
 	}
@@ -535,6 +545,56 @@ func schemaKeys(raw json.RawMessage, max int) []string {
 			continue
 		}
 		out = append(out, t)
+	}
+	return out
+}
+
+// catalogArgs renders schema args for the web catalog. Optional args carry a
+// "?" so web models leave them out: ChatGPT otherwise fills every listed key
+// and invents values (Agent isolation "none"/"remote") that the client rejects.
+// Enumerated args list their allowed values instead of the bare type.
+func catalogArgs(raw json.RawMessage, maxOptional int) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var s struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Type string `json:"type"`
+			Enum []any  `json:"enum"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return nil
+	}
+	required := map[string]bool{}
+	for _, k := range s.Required {
+		required[k] = true
+	}
+	format := func(name string) string {
+		p := s.Properties[name]
+		typ := p.Type
+		if len(p.Enum) > 0 {
+			vals := make([]string, 0, len(p.Enum))
+			for _, v := range p.Enum {
+				vals = append(vals, fmt.Sprint(v))
+			}
+			typ = strings.Join(vals, "|")
+		} else if typ == "" {
+			typ = "any"
+		}
+		if required[name] {
+			return name + ":" + typ
+		}
+		return name + "?:" + typ
+	}
+	out := []string{}
+	for _, t := range schemaKeyTypes(raw, maxOptional) {
+		name := t
+		if i := strings.IndexByte(t, ':'); i > 0 {
+			name = t[:i]
+		}
+		out = append(out, format(name))
 	}
 	return out
 }
@@ -860,6 +920,28 @@ var refusalRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)in\s+this\s+chat\s+instance\s+because\s+the\s+[\w/.-]+\s+tool`),
 	regexp.MustCompile(`(?i)open-pr\s+runtime\s+is\s+not\s+available`),
 	regexp.MustCompile(`(?i)(?:không\s+thể|chưa\s+thể|không\s+có\s+quyền)\s+(?:[\w/.-]+\s+){0,4}(?:truy\s+cập|thao\s+tác|chạy|thực\s+thi)\s+(?:[\w/.-]+\s+){0,4}(?:repo|repository|workspace|hệ\s+thống|lệnh|công\s+cụ)`),
+}
+
+var (
+	reStallIntent    = regexp.MustCompile(`(?i)(?:^|[.!:\n]\s*)(?:i\s+need\s+to|i(?:'ll|\s+will)|let\s+me|now\s+i(?:'ll|\s+will)|next,?\s+i(?:'ll|\s+will)|i'm\s+going\s+to|i\s+am\s+going\s+to)\s+(?:now\s+)?(?:continue|proceed|run|execute|call|use|launch|invoke|check|read|inspect|fix|edit|write|create|start|try|retry)\b`)
+	reStallRemaining = regexp.MustCompile(`(?i)\bremaining\s+(?:required\s+)?(?:tool\s+)?steps\b`)
+	reStallOffer     = regexp.MustCompile(`(?i)\b(?:if\s+you(?:'d)?\s+(?:want|like)|would\s+you\s+like|let\s+me\s+know|shall\s+i|do\s+you\s+want)\b`)
+)
+
+// IsToolStall detects a short web reply that announces the next action
+// ("I need to continue by running the remaining required tool steps.") but
+// carries no <tool_call>, so nothing runs and the client's turn ends.
+// Offers to the user ("If you want, I'll…") are answers, not stalls.
+func IsToolStall(text string) bool {
+	if hasExplicitWebToolMarkup(text) {
+		return false
+	}
+	t := strings.TrimSpace(StripInternalThoughtAndToolTags(text))
+	t = strings.ReplaceAll(t, "’", "'")
+	if t == "" || len([]rune(t)) > 600 || reStallOffer.MatchString(t) {
+		return false
+	}
+	return reStallIntent.MatchString(t) || reStallRemaining.MatchString(t)
 }
 
 // IsToolRefusal detects when a web model hallucinates that it lacks tool access
@@ -1293,7 +1375,8 @@ func FinalizeWebToolCalls(text string, defs []types.ToolDef, hist []types.ChatMe
 				by[strings.ToLower(d.Name)] = d
 			}
 			bashDef, hasBash := findToolDef(by, "bash", "run_terminal_command", "run_command", "exec_command", "shell")
-			isExplicitMCPRequest := strings.Contains(strings.ToLower(userGoal), "mcp") || (len(defs) == 1 && strings.HasPrefix(strings.ToLower(defs[0].Name), "mcp__"))
+			isExplicitMCPRequest := (strings.Contains(strings.ToLower(userGoal), "mcp") && !goalNamesNonMCPTool(userGoal, defs)) ||
+				(len(defs) == 1 && strings.HasPrefix(strings.ToLower(defs[0].Name), "mcp__"))
 
 			if hasBash && !isExplicitMCPRequest {
 				// Tier 1: Check markdown codeblocks (reBashFence)
@@ -1367,9 +1450,13 @@ func autoKickstartMatchingTool(userGoal string, defs []types.ToolDef) (types.Too
 	target := defs[0]
 	if len(defs) > 1 {
 		lowerGoal := strings.ToLower(userGoal)
-		bestScore := -1
+		bestScore := -1 << 30
 		for _, d := range defs {
 			score := 0
+			// A tool the user named verbatim is the one they asked for.
+			if len(d.Name) > 3 && strings.Contains(lowerGoal, strings.ToLower(d.Name)) {
+				score += 100
+			}
 			parts := strings.FieldsFunc(strings.ToLower(d.Name), func(r rune) bool {
 				return r == '_' || r == '-' || r == '.'
 			})
@@ -1378,6 +1465,10 @@ func autoKickstartMatchingTool(userGoal string, defs []types.ToolDef) (types.Too
 					score += 2
 				}
 			}
+			// Required string args synthesized empty fail validation on the
+			// client ("file_content and issue are required") — prefer tools
+			// that can actually run.
+			score -= 10 * emptyRequiredArgs(synthesizeToolArguments(userGoal, d.InputSchema), d.InputSchema)
 			if score > bestScore {
 				bestScore = score
 				target = d
@@ -1395,6 +1486,43 @@ func autoKickstartMatchingTool(userGoal string, defs []types.ToolDef) (types.Too
 		Name:      target.Name,
 		Arguments: string(b),
 	}, true
+}
+
+// goalNamesNonMCPTool reports whether the user goal names a non-MCP tool
+// (e.g. "Bash", "Edit") as a word, so a goal that merely also mentions MCP
+// still gets the Bash fallbacks.
+func goalNamesNonMCPTool(userGoal string, defs []types.ToolDef) bool {
+	for _, d := range defs {
+		if strings.HasPrefix(strings.ToLower(d.Name), "mcp__") || len(d.Name) < 3 {
+			continue
+		}
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(d.Name) + `\b`).MatchString(userGoal) {
+			return true
+		}
+	}
+	return false
+}
+
+// emptyRequiredArgs counts required arguments that synthesis left empty.
+func emptyRequiredArgs(args map[string]any, schemaRaw json.RawMessage) int {
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if len(schemaRaw) == 0 || json.Unmarshal(schemaRaw, &schema) != nil {
+		return 0
+	}
+	n := 0
+	for _, k := range schema.Required {
+		switch v := args[k].(type) {
+		case nil:
+			n++
+		case string:
+			if strings.TrimSpace(v) == "" {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func synthesizeToolArguments(userGoal string, schemaRaw json.RawMessage) map[string]any {
@@ -2602,6 +2730,10 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 		}
 	}
 
+	if dropInvalidOptionalArgs(m, def.InputSchema) {
+		changed = true
+	}
+
 	if !changed {
 		return argsJSON
 	}
@@ -2610,6 +2742,56 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 		return argsJSON
 	}
 	return string(b)
+}
+
+// dropInvalidOptionalArgs removes optional arguments a web model filled with a
+// value the schema does not allow (null, or outside the enum). Web models fill
+// every catalog key — Agent {"isolation":"none","model":"claude-haiku-…"} —
+// and the client rejects the whole call, while omitting them runs it.
+func dropInvalidOptionalArgs(m map[string]any, schemaRaw json.RawMessage) bool {
+	if len(schemaRaw) == 0 {
+		return false
+	}
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Enum []any `json:"enum"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schemaRaw, &schema) != nil {
+		return false
+	}
+	required := map[string]bool{}
+	for _, k := range schema.Required {
+		required[k] = true
+	}
+	dropped := false
+	for k, v := range m {
+		if required[k] {
+			continue
+		}
+		if v == nil {
+			delete(m, k)
+			dropped = true
+			continue
+		}
+		prop, ok := schema.Properties[k]
+		if !ok || len(prop.Enum) == 0 {
+			continue
+		}
+		allowed := false
+		for _, e := range prop.Enum {
+			if fmt.Sprint(e) == fmt.Sprint(v) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			delete(m, k)
+			dropped = true
+		}
+	}
+	return dropped
 }
 
 func parseToolCallJSON(raw string) (name, id, args string, ok bool) {

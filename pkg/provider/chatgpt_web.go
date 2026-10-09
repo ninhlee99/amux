@@ -89,6 +89,11 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 // is intentional — it still gives the web adapter's chat UI a prompt to
 // respond to instead of an empty string. See TestBuildConcatenatedPrompt_
 // SystemOnly in config_test.go for the locked-in behavior.
+// skillLoadedNote heads a skill body in the flattened transcript. Shown as a
+// bare user turn after "Launching skill: X", ChatGPT took the skill as done
+// and reported output of commands it never ran.
+const skillLoadedNote = "[Skill loaded — these instructions are now your next steps. Loading a skill does not perform it: carry them out with <tool_call>s (run the commands it names) and report only real [Tool result]s.]\n"
+
 func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 	if len(messages) == 0 {
 		return ""
@@ -109,6 +114,9 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sys.WriteString(m.Content)
 		case "user":
 			sb.WriteString("User: ")
+			if isSkillExpansion(tools.CleanUserTurnContent(m.Content)) {
+				sb.WriteString(skillLoadedNote)
+			}
 			sb.WriteString(m.Content)
 			sb.WriteString("\n\n")
 		case "assistant":
@@ -238,6 +246,10 @@ func (a *ChatGPTWebAdapter) refreshSession() error {
 }
 
 func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if a.SessionToken == "" && a.RefreshToken != "" {
 		_ = a.refreshSession()
 	}
@@ -398,7 +410,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		out := make(chan types.StreamChunk)
-		go streamChatGPTWeb(ctx, a, project, req.SessionID, HistoryMarkOf(req.Messages), len(req.Tools) > 0, resp, out)
+		go streamChatGPTWeb(ctx, a, project, req.SessionID, ClientHistoryMark(req), len(req.Tools) > 0, resp, out)
 		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 	}
 }

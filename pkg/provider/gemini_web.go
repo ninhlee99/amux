@@ -81,6 +81,10 @@ func (a *GeminiWebAdapter) client() *http.Client {
 }
 
 func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if strings.TrimSpace(a.Cookies) == "" {
 		return nil, fmt.Errorf("%s: %w: no Gemini web cookies", a.AdapterID, types.ErrAuthentication)
 	}
@@ -160,7 +164,7 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", a.AdapterID, project)
 				cm.ResetProject(project)
 			} else if len(newMeta) > 0 && newMeta[0] != "" {
-				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, HistoryMarkOf(req.Messages))
+				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, ClientHistoryMark(req))
 			}
 			if !streamedDelta && text != "" {
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: text})
@@ -526,7 +530,7 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 							}
 						}
 						if sb.Len() > 0 {
-							text = html.UnescapeString(sb.String())
+							text = unlinkGeminiAutolinks(html.UnescapeString(sb.String()))
 						}
 					}
 				}
@@ -539,7 +543,7 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 							}
 						}
 						if sb.Len() > 0 {
-							text = html.UnescapeString(sb.String())
+							text = unlinkGeminiAutolinks(html.UnescapeString(sb.String()))
 						}
 					}
 				}
@@ -555,6 +559,24 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 		}
 	}
 	return text, meta
+}
+
+var reGeminiAutolink = regexp.MustCompile(`\[(https?://[^\]\s]+)\]\((https?://[^)\s]+)\)`)
+
+// unlinkGeminiAutolinks undoes the markdown links Gemini Web wraps around bare
+// URLs ("[http://x](http://x)"), which reach the client as literal brackets.
+// Only links whose label is the URL itself are touched.
+func unlinkGeminiAutolinks(text string) string {
+	if !strings.Contains(text, "](http") {
+		return text
+	}
+	return reGeminiAutolink.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reGeminiAutolink.FindStringSubmatch(m)
+		if sub[1] == sub[2] {
+			return sub[1]
+		}
+		return m
+	})
 }
 
 func isGeminiUsageLimit(err error) bool {

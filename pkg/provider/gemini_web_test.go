@@ -34,3 +34,11 @@ func TestGeminiDrillInt_ShortEnvelope(t *testing.T) {
 		t.Fatalf("short envelope error=%d", got)
 	}
 }
+
+func TestUnlinkGeminiAutolinks(t *testing.T) {
+	in := "base [http://127.0.0.1:18789](http://127.0.0.1:18789) and [docs](https://example.com)"
+	want := "base http://127.0.0.1:18789 and [docs](https://example.com)"
+	if got := unlinkGeminiAutolinks(in); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

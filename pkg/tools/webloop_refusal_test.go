@@ -324,3 +324,27 @@ func TestFinalizeWebToolCalls_MCPToolRefusalKickstart(t *testing.T) {
 }
 
 
+
+func TestIsToolStall(t *testing.T) {
+	stalls := []string{
+		"I need to continue by running the remaining required tool steps.",
+		"Let me run the tests now.",
+		"Now I'll fix the bug in calc.py.",
+	}
+	for _, s := range stalls {
+		if !tools.IsToolStall(s) {
+			t.Errorf("want stall: %q", s)
+		}
+	}
+	answers := []string{
+		"1) -1 2) 5 3) data.txt has 3 lines. If you want, I'll fix the other file too.",
+		"<tool_call>\n{\"name\":\"Bash\",\"arguments\":{\"command\":\"ls\"}}\n</tool_call>",
+		"The bug was that add returned a-b; it now returns a+b and prints 5.",
+		"",
+	}
+	for _, s := range answers {
+		if tools.IsToolStall(s) {
+			t.Errorf("not a stall: %q", s)
+		}
+	}
+}

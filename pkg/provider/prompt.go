@@ -36,7 +36,7 @@ func WebBackendPromptForProvider(provider string, req *types.ChatRequest, contin
 			msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
 		}
 		body = BuildConcatenatedPrompt(msgs)
-		if req.FullContext && (ranTools || len(msgs) > 1) {
+		if req.FullContext && (ranTools || conversationalTurns(msgs) > 1) {
 			if body == "" {
 				return ""
 			}
@@ -120,6 +120,20 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// conversationalTurns counts non-system turns. Claude Code always sends a
+// system prompt, so a first request is system+user — that is not a prior
+// conversation, and the [xfer] "continue previous task" handoff would make the
+// model treat a fresh task as someone else's transcript.
+func conversationalTurns(msgs []types.ChatMessage) int {
+	n := 0
+	for _, m := range msgs {
+		if !strings.EqualFold(m.Role, "system") {
+			n++
+		}
+	}
+	return n
+}
+
 // historyHasToolTurns is true when the client already ran tools this session.
 func historyHasToolTurns(msgs []types.ChatMessage) bool {
 	for _, m := range msgs {
@@ -192,7 +206,7 @@ func currentUserTask(messages []types.ChatMessage) string {
 		m := messages[i]
 		if strings.EqualFold(m.Role, "user") {
 			c := tools.CleanUserTurnContent(m.Content)
-			if c != "" {
+			if c != "" && !isSkillExpansion(c) {
 				return c
 			}
 		}
@@ -211,6 +225,13 @@ func currentUserTask(messages []types.ChatMessage) string {
 		}
 	}
 	return ""
+}
+
+// isSkillExpansion is true for the user turn Claude Code injects when a Skill
+// tool call loads a skill body. It is instructions for the task, not the task:
+// naming it as "Task:" made ChatGPT drop the user's remaining steps.
+func isSkillExpansion(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "Base directory for this skill:")
 }
 
 // newRequestCue follows a new user request on a live thread whose session
