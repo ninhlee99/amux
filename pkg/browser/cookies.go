@@ -365,24 +365,39 @@ func FetchChatGPTSession(sessionTokenOrCookie string) (*ChatGPTSession, error) {
 		cookie = "__Secure-next-auth.session-token=" + cookie
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/api/auth/session", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Cookie", cookie)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json")
-
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	var status int
+	var body []byte
+	// Cloudflare often answers the first request from a fresh process with a
+	// 403 challenge page and lets the next one through, so retry those.
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 800 * time.Millisecond)
+		}
+		req, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/api/auth/session", nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "application/json")
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("session endpoint status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		status = resp.StatusCode
+		if !(status == http.StatusForbidden && isCloudflareChallengeBody(resp.Header, body)) {
+			break
+		}
+	}
+	if status != http.StatusOK {
+		if isCloudflareChallengeBody(nil, body) {
+			return nil, fmt.Errorf("session endpoint status %d: Cloudflare challenge — chatgpt.com is blocking this network for now; retry shortly", status)
+		}
+		return nil, fmt.Errorf("session endpoint status %d: %s", status, bytes.TrimSpace(body))
 	}
 
 	var data struct {
@@ -406,6 +421,21 @@ func FetchChatGPTSession(sessionTokenOrCookie string) (*ChatGPTSession, error) {
 		Expires:      data.Expires,
 		Email:        data.User.Email,
 	}, nil
+}
+
+// isCloudflareChallengeBody reports whether a response is a Cloudflare
+// challenge page rather than an answer from chatgpt.com itself.
+func isCloudflareChallengeBody(h http.Header, body []byte) bool {
+	if h != nil && h.Get("cf-mitigated") == "challenge" {
+		return true
+	}
+	lower := bytes.ToLower(body)
+	for _, m := range []string{"challenge-platform", "cf_chl", "just a moment...", "cf-turnstile"} {
+		if bytes.Contains(lower, []byte(m)) {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikeNamedCookie reports whether raw appears to be a "name=value" pair

@@ -381,7 +381,12 @@ func loginChatGPT(f loginFlags) {
 	if sessionCookie == "" && access == "" && !wantBrowser {
 		if tok, bName, err := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); err == nil && tok != "" {
 			fmt.Printf("✓ Auto-extracted ChatGPT session token from %s!\n", bName)
-			sessionCookie = tok
+			sessionCookie = "__Secure-next-auth.session-token=" + tok
+			// Without cf_clearance, Cloudflare answers /api/auth/session with a
+			// 403 challenge page (same pairing refreshSession uses).
+			if cf, _, cfErr := browser.ExtractCookie("chatgpt.com", "cf_clearance"); cfErr == nil && cf != "" {
+				sessionCookie += "; cf_clearance=" + cf
+			}
 		}
 	}
 
@@ -416,6 +421,10 @@ func loginChatGPT(f loginFlags) {
 			access = sess.AccessToken
 			if refresh == "" {
 				refresh = sess.RefreshToken
+			}
+			// refreshSession re-exchanges RefreshToken as the cookie.
+			if refresh == "" {
+				refresh = sessionCookie
 			}
 			accountEmail = sess.Email
 			if sess.Email != "" {
