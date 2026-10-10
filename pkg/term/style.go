@@ -41,7 +41,6 @@ var (
 	cOK     = "\x1b[38;5;34m"  // green
 	cWarn   = "\x1b[38;5;178m" // amber
 	cErr    = "\x1b[38;5;167m" // soft red
-	cBright = "\x1b[38;5;231m" // near-white (dark mode text)
 	cInk    = "\x1b[38;5;232m" // near-black (light mode on badges)
 )
 
@@ -80,20 +79,18 @@ func detectDark() bool {
 
 func applyTheme(dark bool) {
 	if dark {
-		cAccent = "\x1b[38;5;80m"  // soft cyan
-		cMuted = "\x1b[38;5;246m"  // readable gray on black
+		cAccent = "\x1b[38;5;80m" // soft cyan
+		cMuted = "\x1b[38;5;246m" // readable gray on black
 		cOK = "\x1b[38;5;114m"
 		cWarn = "\x1b[38;5;221m"
 		cErr = "\x1b[38;5;203m"
-		cBright = "\x1b[38;5;255m"
 		cInk = "\x1b[38;5;16m"
 	} else {
-		cAccent = "\x1b[38;5;30m"  // deep teal on white
-		cMuted = "\x1b[38;5;240m"  // dark gray on white
+		cAccent = "\x1b[38;5;30m" // deep teal on white
+		cMuted = "\x1b[38;5;240m" // dark gray on white
 		cOK = "\x1b[38;5;28m"
 		cWarn = "\x1b[38;5;130m"
 		cErr = "\x1b[38;5;160m"
-		cBright = "\x1b[38;5;16m"
 		cInk = "\x1b[38;5;16m"
 	}
 }
@@ -171,51 +168,19 @@ func paint(enabled bool, code, s string) string {
 }
 
 // Bold / Dim / Cyan / … paint for stdout.
-func Bold(s string) string    { return paint(outOK(), bold, s) }
-func Dim(s string) string     { return paint(outOK(), cMuted, s) }
-func Cyan(s string) string    { return paint(outOK(), cAccent, s) }
-func Green(s string) string   { return paint(outOK(), cOK, s) }
-func Yellow(s string) string  { return paint(outOK(), cWarn, s) }
-func Red(s string) string     { return paint(outOK(), cErr, s) }
-func Magenta(s string) string { return paint(outOK(), fgMagenta, s) }
-func Blue(s string) string    { return paint(outOK(), fgBlue, s) }
-func White(s string) string   { return paint(outOK(), cBright, s) }
-func Gray(s string) string    { return paint(outOK(), cMuted, s) }
+func Bold(s string) string   { return paint(outOK(), bold, s) }
+func Dim(s string) string    { return paint(outOK(), cMuted, s) }
+func Cyan(s string) string   { return paint(outOK(), cAccent, s) }
+func Green(s string) string  { return paint(outOK(), cOK, s) }
+func Yellow(s string) string { return paint(outOK(), cWarn, s) }
+func Red(s string) string    { return paint(outOK(), cErr, s) }
 
-// BoldErr paints for stderr (proxy logs).
-func BoldErr(s string) string    { return paint(errOK(), bold, s) }
 func CyanErr(s string) string    { return paint(errOK(), cAccent, s) }
 func GreenErr(s string) string   { return paint(errOK(), cOK, s) }
 func YellowErr(s string) string  { return paint(errOK(), cWarn, s) }
 func RedErr(s string) string     { return paint(errOK(), cErr, s) }
 func DimErr(s string) string     { return paint(errOK(), cMuted, s) }
 func MagentaErr(s string) string { return paint(errOK(), fgMagenta, s) }
-
-// Dot serving / idle / off.
-func DotLive() string {
-	if outOK() {
-		return cOK + "●" + reset
-	}
-	return "●"
-}
-func DotIdle() string {
-	if outOK() {
-		return cMuted + "○" + reset
-	}
-	return "○"
-}
-func DotWarn() string {
-	if outOK() {
-		return cWarn + "●" + reset
-	}
-	return "●"
-}
-func DotDead() string {
-	if outOK() {
-		return cErr + "●" + reset
-	}
-	return "●"
-}
 
 // Badge renders a status chip. Short labels (<=4) are padded so columns align.
 func Badge(kind, text string) string {
@@ -304,13 +269,6 @@ func renderBar(pct float64, width int, usedSemantics bool) string {
 	return col + bar + reset
 }
 
-const (
-	kvLabelW = 10
-)
-
-// VisibleLen counts printable runes, ignoring ANSI escapes.
-func VisibleLen(s string) int { return visibleLen(s) }
-
 // visibleLen counts runes ignoring ANSI CSI sequences.
 func visibleLen(s string) int {
 	n := 0
@@ -339,43 +297,6 @@ func padVisible(s string, width int) string {
 	return s + strings.Repeat(" ", width-n)
 }
 
-func truncateVisible(s string, width int) string {
-	if visibleLen(s) <= width {
-		return s
-	}
-	var b strings.Builder
-	n := 0
-	inEsc := false
-	for _, r := range s {
-		if inEsc {
-			b.WriteRune(r)
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				inEsc = false
-			}
-			continue
-		}
-		if r == '\x1b' {
-			inEsc = true
-			b.WriteRune(r)
-			continue
-		}
-		if n >= width-3 {
-			b.WriteString("...")
-			break
-		}
-		b.WriteRune(r)
-		n++
-	}
-	return b.String()
-}
-
-// Section prints a clean, bold uppercase section label.
-func Section(title string) {
-	fmt.Println()
-	t := strings.ToUpper(strings.TrimSpace(title))
-	fmt.Printf("  %s %s\n", Cyan(Bold("■")), White(Bold(t)))
-}
-
 // PanelEnd closes the section cleanly.
 func PanelEnd() {}
 
@@ -388,29 +309,6 @@ func Header(title, subtitle string) {
 	} else {
 		fmt.Printf("  %s %s\n", Cyan(Bold("●")), Bold(t))
 	}
-}
-
-// KV prints indented key/value pairs with clean label alignment.
-func KV(key, value string) {
-	label := fmt.Sprintf("%-*s", kvLabelW, strings.ToLower(key)+":")
-	fmt.Printf("    %s  %s\n", Dim(label), value)
-}
-
-// Row prints an indented content line without arbitrary clipping.
-func Row(s string) {
-	fmt.Printf("    %s\n", s)
-}
-
-// BlankRow prints an empty line.
-func BlankRow() {
-	fmt.Println()
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Success / Warn / Error / Info one-liners for CLI.
@@ -426,10 +324,3 @@ func Error(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Println(Red("x ") + msg)
 }
-func Info(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	fmt.Println(Cyan("> ") + msg)
-}
-
-// Printf is fmt.Printf with no styling (helper for consistency).
-func Printf(format string, args ...any) { fmt.Printf(format, args...) }

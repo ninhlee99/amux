@@ -2,7 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -102,8 +105,18 @@ func TestSchemaKeyTypes_RequiredNeverTruncated(t *testing.T) {
 func TestCatalogLine_ExpandedOptionalProps(t *testing.T) {
 	raw := []byte(`{"properties":{"opt1":{"type":"string"},"opt2":{"type":"string"},"opt3":{"type":"string"},"opt4":{"type":"string"},"opt5":{"type":"string"},"opt6":{"type":"string"},"opt7":{"type":"string"},"opt8":{"type":"string"}}}`)
 	line := catalogLine(types.ToolDef{Name: "ComplexTool", InputSchema: raw})
-	if !strings.Contains(line, "opt7:string") || !strings.Contains(line, "opt8:string") {
+	if !strings.Contains(line, "opt7?:string") || !strings.Contains(line, "opt8?:string") {
 		t.Fatalf("expected catalogLine to retain optional properties beyond 6, got: %s", line)
+	}
+}
+
+func TestCatalogLine_MarksOptionalAndEnums(t *testing.T) {
+	raw := []byte(`{"required":["prompt"],"properties":{"prompt":{"type":"string"},"isolation":{"type":"string","enum":["worktree","remote"]},"run_in_background":{"type":"boolean"}}}`)
+	line := catalogLine(types.ToolDef{Name: "Agent", InputSchema: raw})
+	for _, want := range []string{"prompt:string", "isolation?:worktree|remote", "run_in_background?:boolean"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("catalog line %q missing %q", line, want)
+		}
 	}
 }
 
@@ -167,7 +180,7 @@ func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
 	}
 	// Continuing threads must still restate that tools exist and how to call
 	// them, or ChatGPT web answers "I have no tool access" a few turns in.
-	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, "Never claim you lack tools") {
+	if !strings.Contains(got, "<tool_call>") || !strings.Contains(got, "TOOLS LIVE:") {
 		t.Fatal("catalog-only must keep the call format reminder:", got)
 	}
 	if strings.Contains(StripWebToolMarkup("TOOLS LIVE: x\nok"), "TOOLS LIVE") {
@@ -175,9 +188,9 @@ func TestWebCatalogOnly_NoRulesEssay(t *testing.T) {
 	}
 }
 
-func TestWebCloser_ForbidsLackOfTools(t *testing.T) {
+func TestWebCloser_HasToolCallNotice(t *testing.T) {
 	c := WebCloser()
-	if !strings.Contains(c, "<tool_call>") || !strings.Contains(c, "paste") {
+	if !strings.Contains(c, "<tool_call>") || !strings.Contains(c, "[end]") {
 		t.Fatal(c)
 	}
 }
@@ -213,7 +226,6 @@ func TestStripWebToolMarkup(t *testing.T) {
 		t.Fatalf("lost prose: %q", got)
 	}
 }
-
 
 // TestParseWebTools_DynamicSchemaArbitraryNestedParams verifies the web
 // tool-call emulator does not hardcode tool names or argument shapes: an
@@ -797,6 +809,17 @@ Action Input: {"command": "go build ./..."}
 }
 
 func TestSplitMCPServerTool(t *testing.T) {
+	// Server names come from the MCP configs under $HOME; pin them so the
+	// result does not depend on what the machine running the test has set up.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"mcpServers":{"StitchMCP":{},"supabase-mcp-server":{}}}`
+	if err := os.WriteFile(filepath.Join(home, ".cursor", "mcp.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		input      string
 		wantServer string
@@ -880,5 +903,163 @@ func TestFinalizeWebToolCalls_IDsUniqueAcrossTurns(t *testing.T) {
 	third, _ := FinalizeWebToolCalls(copied, defs, hist)
 	if len(third) != 1 || third[0].ID == first[0].ID {
 		t.Fatalf("copied history id kept: %+v", third)
+	}
+}
+
+func TestIsToolRefusal_VietnameseAndEnglishPhrases(t *testing.T) {
+	refusals := []string{
+		"Tôi không có quyền truy cập repo của bạn.",
+		"Tôi không thể chạy lệnh trực tiếp trên terminal.",
+		"mình không thể thực hiện lệnh này được.",
+		"Hiện tại không thể thực thi lệnh trong môi trường này.",
+		"As an AI, I cannot execute terminal commands.",
+		"I am unable to run commands directly on your local machine.",
+		"Please run the following command in your terminal:\ngit status",
+		"Vui lòng chạy lệnh sau trên terminal của bạn:\ngo test ./...",
+	}
+	for _, r := range refusals {
+		if !IsToolRefusal(r) {
+			t.Errorf("expected IsToolRefusal(%q) to be true, got false", r)
+		}
+	}
+
+	nonRefusals := []string{
+		"I will check the git status for you now.",
+		"<tool_call>{\"name\":\"Bash\",\"arguments\":{\"command\":\"git status\"}}</tool_call>",
+		"Đang kiểm tra trạng thái của kho lưu trữ.",
+	}
+	for _, nr := range nonRefusals {
+		if IsToolRefusal(nr) {
+			t.Errorf("expected IsToolRefusal(%q) to be false, got true", nr)
+		}
+	}
+}
+
+func TestPyKwargsToJSON(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected map[string]any
+	}{
+		{
+			input: `(command="git status", timeout=30)`,
+			expected: map[string]any{
+				"command": "git status",
+				"timeout": int64(30),
+			},
+		},
+		{
+			input: `(AbsolutePath="/Users/foo/bar.go", StartLine=1, EndLine=50, Force=True)`,
+			expected: map[string]any{
+				"AbsolutePath": "/Users/foo/bar.go",
+				"StartLine":    int64(1),
+				"EndLine":      int64(50),
+				"Force":        true,
+			},
+		},
+		{
+			input:    `()`,
+			expected: map[string]any{},
+		},
+	}
+
+	for _, c := range cases {
+		jsonStr, ok := pyKwargsToJSON(c.input)
+		if !ok {
+			t.Fatalf("pyKwargsToJSON(%q) failed", c.input)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+			t.Fatalf("failed to unmarshal result %s: %v", jsonStr, err)
+		}
+		for k, v := range c.expected {
+			if parsed[k] != v {
+				// Special check for number representations
+				if intV, isInt := v.(int64); isInt {
+					if floatV, isFloat := parsed[k].(float64); isFloat && int64(floatV) == intV {
+						continue
+					}
+				}
+				t.Errorf("key %q: expected %v (%T), got %v (%T)", k, v, v, parsed[k], parsed[k])
+			}
+		}
+	}
+}
+
+func TestParseWebTools_GeminiCallKwargs(t *testing.T) {
+	defs := []types.ToolDef{
+		{
+			Name:        "view_file",
+			InputSchema: []byte(`{"properties":{"AbsolutePath":{"type":"string"}},"required":["AbsolutePath"]}`),
+		},
+	}
+	text := `Let me inspect the file:
+call:default_api:view_file(AbsolutePath="/Users/test/main.go")
+`
+	calls := ParseWebTools(text, defs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].Name != "view_file" {
+		t.Errorf("expected view_file, got %s", calls[0].Name)
+	}
+	if !strings.Contains(calls[0].Arguments, "/Users/test/main.go") {
+		t.Errorf("arguments missing path: %s", calls[0].Arguments)
+	}
+}
+
+func TestStreamThoughtExtractor_ReflectionTag(t *testing.T) {
+	e := &streamThoughtExtractor{}
+	th, co := e.Feed("<reflection>\nAnalyzing user request...\n</reflection>\nHere is the answer.")
+	if !strings.Contains(th, "Analyzing user request") {
+		t.Errorf("expected thought to contain 'Analyzing user request', got: %q", th)
+	}
+	if !strings.Contains(co, "Here is the answer.") {
+		t.Errorf("expected content to contain 'Here is the answer.', got: %q", co)
+	}
+}
+
+func TestCoerceToolArgs_DropsInvalidOptionalEnum(t *testing.T) {
+	def := types.ToolDef{Name: "Agent", InputSchema: json.RawMessage(`{"required":["prompt","description"],"properties":{"prompt":{"type":"string"},"description":{"type":"string"},"isolation":{"type":"string","enum":["worktree","remote"]},"model":{"type":"string","enum":["sonnet","opus","haiku"]}}}`)}
+	got := coerceToolArgs(`{"prompt":"count lines","description":"d","isolation":"none","model":"haiku"}`, def)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := m["isolation"]; has {
+		t.Fatalf("isolation outside enum must be dropped: %s", got)
+	}
+	if m["model"] != "haiku" || m["prompt"] != "count lines" {
+		t.Fatalf("valid args must be kept: %s", got)
+	}
+}
+
+func TestWrapWebStream_CapsSpeculativeBatch(t *testing.T) {
+	defs := []types.ToolDef{{Name: "Read"}}
+	var b strings.Builder
+	b.WriteString("Review published successfully, 0 findings.\n")
+	for i := 0; i < 12; i++ {
+		b.WriteString(`<tool_call>{"name":"Read","arguments":{"file_path":"/f` + strconv.Itoa(i) + `"}}</tool_call>` + "\n")
+	}
+	in := make(chan types.StreamChunk, 2)
+	in <- types.StreamChunk{Content: b.String()}
+	close(in)
+	var calls []types.ToolCall
+	var text string
+	for ch := range wrapWebStream("gemini:web:x", defs, nil, in) {
+		calls = append(calls, ch.ToolCalls...)
+		text += ch.Content
+	}
+	if len(calls) != maxWebToolCallsPerTurn {
+		t.Fatalf("want %d calls, got %d", maxWebToolCallsPerTurn, len(calls))
+	}
+	if strings.Contains(text, "published successfully") {
+		t.Fatalf("narration of a speculative batch must be dropped, got %q", text)
+	}
+}
+
+func TestStripWebToolMarkup_DropsProtocolEcho(t *testing.T) {
+	in := "Wait for [Tool result] before continuing.\n<tool_call>{\"name\":\"Bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
+	if got := StripWebToolMarkup(in); got != "" {
+		t.Fatalf("protocol echo must be stripped, got %q", got)
 	}
 }

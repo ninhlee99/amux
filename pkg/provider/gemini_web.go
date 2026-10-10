@@ -81,6 +81,10 @@ func (a *GeminiWebAdapter) client() *http.Client {
 }
 
 func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if strings.TrimSpace(a.Cookies) == "" {
 		return nil, fmt.Errorf("%s: %w: no Gemini web cookies", a.AdapterID, types.ErrAuthentication)
 	}
@@ -123,12 +127,19 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				cloned.FullContext = false
 				promptReq = &cloned
 			}
-			prompt := WebBackendPrompt(promptReq, continuing)
+			prompt := WebBackendPromptForProvider("gemini", promptReq, continuing)
 			var streamedDelta bool
-			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, func(delta string) {
-				streamedDelta = true
-				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: delta})
-			})
+			var onDelta func(string)
+			// With tools the turn is parsed whole (and held by
+			// sendWithWebNudge), so only the final snapshot is sent: a
+			// mid-stream rewrite would otherwise glue draft and answer.
+			if len(req.Tools) == 0 {
+				onDelta = func(delta string) {
+					streamedDelta = true
+					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: delta})
+				}
+			}
+			text, newMeta, err := a.streamGenerate(ctx, prompt, meta, onDelta)
 			if err != nil {
 				if isGeminiUsageLimit(err) && !streamedDelta {
 					if !rotated {
@@ -156,8 +167,11 @@ func (a *GeminiWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w", a.AdapterID, err)})
 				return
 			}
-			if len(newMeta) > 0 && newMeta[0] != "" {
-				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, HistoryMarkOf(req.Messages))
+			if tools.IsToolRefusal(text) {
+				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", a.AdapterID, project)
+				cm.ResetProject(project)
+			} else if len(newMeta) > 0 && newMeta[0] != "" {
+				cm.RegisterTurn(project, req.SessionID, newMeta[0], "", newMeta, ClientHistoryMark(req))
 			}
 			if !streamedDelta && text != "" {
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Content: text})
@@ -302,21 +316,32 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 
 	resp, err := a.client().Do(httpReq)
 	if err != nil {
+		if errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "google.com/sorry") || strings.Contains(err.Error(), "stopped after 10 redirects") {
+			return "", nil, fmt.Errorf("%s: %w: Google anti-bot rate limit (sorry/index)", a.AdapterID, types.ErrRateLimitReached)
+		}
 		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", nil, types.ErrRateLimitReached
 	}
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return "", nil, fmt.Errorf("%s: %w: Google 405 Method Not Allowed (anti-bot challenge / rate limit)", a.AdapterID, types.ErrRateLimitReached)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return "", nil, types.ErrAuthentication
 	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return "", nil, fmt.Errorf("StreamGenerate status %d: %s", resp.StatusCode, bytes.TrimSpace(b))
+		bodyStr := string(bytes.TrimSpace(b))
+		if strings.Contains(bodyStr, "google.com/sorry") || strings.Contains(bodyStr, "Error 405") {
+			return "", nil, fmt.Errorf("%s: %w: Google anti-bot rate limit (405): %s", a.AdapterID, types.ErrRateLimitReached, bodyStr)
+		}
+		return "", nil, fmt.Errorf("StreamGenerate status %d: %s", resp.StatusCode, bodyStr)
 	}
 
 	bestText := ""
+	emitted := ""
 	var bestMeta []string
 	errCode := 0
 	sc := bufio.NewScanner(resp.Body)
@@ -349,11 +374,19 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 					bestMeta = meta
 				}
 			}
-			if len(t) > len(bestText) {
-				delta := t[len(bestText):]
+			// Gemini can restart an answer mid-stream: a later snapshot
+			// may shrink and diverge. The latest snapshot is the answer.
+			if t != "" {
 				bestText = t
-				if len(onDelta) > 0 && onDelta[0] != nil && delta != "" {
-					onDelta[0](delta)
+				// Emit the unlinked text up to any link still being
+				// written: an unfinished "[x](http…" may yet collapse.
+				safe := unlinkGeminiAutolinks(t)
+				if i := strings.LastIndex(safe, "["); i >= 0 && !strings.Contains(safe[i:], ")") {
+					safe = safe[:i]
+				}
+				if len(onDelta) > 0 && onDelta[0] != nil && len(safe) > len(emitted) && strings.HasPrefix(safe, emitted) {
+					onDelta[0](safe[len(emitted):])
+					emitted = safe
 				}
 			}
 		}
@@ -368,7 +401,20 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		bodyHint := ""
 		return "", nil, fmt.Errorf("empty Gemini response%s", bodyHint)
 	}
-	return bestText, bestMeta, nil
+	final := unlinkGeminiAutolinks(bestText)
+	if len(onDelta) > 0 && onDelta[0] != nil {
+		switch {
+		case strings.HasPrefix(final, emitted):
+			if rest := final[len(emitted):]; rest != "" {
+				onDelta[0](rest)
+			}
+		default:
+			// Rewritten after part of the draft was streamed: deltas cannot
+			// be retracted, so give the final answer whole after the draft.
+			onDelta[0]("\n\n" + final)
+		}
+	}
+	return final, bestMeta, nil
 }
 
 func buildGeminiStreamInner(prompt string, metadata []string) []any {
@@ -506,15 +552,27 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 				}
 				if len(cand) > 1 {
 					if parts, ok := cand[1].([]any); ok && len(parts) > 0 {
-						if s, ok := parts[0].(string); ok {
-							text = html.UnescapeString(s)
+						var sb strings.Builder
+						for _, p := range parts {
+							if s, ok := p.(string); ok {
+								sb.WriteString(s)
+							}
+						}
+						if sb.Len() > 0 {
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}
 				if (text == "" || strings.HasPrefix(text, "http://googleusercontent.com/")) && len(cand) > 22 {
 					if parts, ok := cand[22].([]any); ok && len(parts) > 0 {
-						if s, ok := parts[0].(string); ok {
-							text = html.UnescapeString(s)
+						var sb strings.Builder
+						for _, p := range parts {
+							if s, ok := p.(string); ok {
+								sb.WriteString(s)
+							}
+						}
+						if sb.Len() > 0 {
+							text = html.UnescapeString(sb.String())
 						}
 					}
 				}
@@ -530,6 +588,28 @@ func geminiParseEnvelope(envelope []any) (text string, meta []string) {
 		}
 	}
 	return text, meta
+}
+
+var reGeminiAutolink = regexp.MustCompile(`\[([^\[\]\s]+)\]\((https?://[^()\s]+)\)`)
+
+// unlinkGeminiAutolinks undoes the markdown links Gemini Web wraps around
+// bare URLs and domain-like paths — "[http://x](http://x)",
+// "[github.com/o/r](https://github.com/o/r)" — inside its text, including
+// <tool_call> JSON, where they corrupt arguments (a Write to
+// "[github.com/…](https://…)" creates that literal directory). Only links whose
+// label is the URL, with or without its scheme, are touched.
+func unlinkGeminiAutolinks(text string) string {
+	if !strings.Contains(text, "](http") {
+		return text
+	}
+	return reGeminiAutolink.ReplaceAllStringFunc(text, func(m string) string {
+		sub := reGeminiAutolink.FindStringSubmatch(m)
+		label, url := sub[1], sub[2]
+		if label == url || "https://"+label == url || "http://"+label == url {
+			return label
+		}
+		return m
+	})
 }
 
 func isGeminiUsageLimit(err error) bool {

@@ -94,12 +94,6 @@ func FromCodexToolCalls(calls []OpenAIToolCall) []types.ToolCall {
 	return FromOpenAIToolCalls(calls)
 }
 
-// MarshalCodexChatRequest encodes req for an OpenAI-compatible upstream
-// when the client dialect is Codex (full-context agent transcripts).
-func MarshalCodexChatRequest(req *types.ChatRequest) ([]byte, error) {
-	return MarshalOpenAIChatRequest(req)
-}
-
 // MarshalCodexResponsesRequest encodes req for the Codex Responses backend
 // (chatgpt.com/backend-api/codex/responses). Client tools (Claude input_schema,
 // AGY functionDeclarations, OpenAI function.parameters) arrive canonical and

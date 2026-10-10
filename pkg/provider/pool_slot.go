@@ -18,23 +18,6 @@ var poolBrandMethod = map[string][2]string{
 	"claude_cli":  {"claude", "code"},
 }
 
-// CanonicalProvider normalizes provider type strings into anthropic, openai, gemini, cursor.
-func CanonicalProvider(p string) string {
-	s := strings.ToLower(strings.TrimSpace(p))
-	switch {
-	case strings.Contains(s, "claude") || strings.Contains(s, "anthropic"):
-		return "anthropic"
-	case strings.Contains(s, "codex") || strings.Contains(s, "openai") || strings.Contains(s, "chatgpt"):
-		return "openai"
-	case strings.Contains(s, "gemini") || strings.Contains(s, "agy") || strings.Contains(s, "antigravity"):
-		return "gemini"
-	case strings.Contains(s, "cursor"):
-		return "cursor"
-	default:
-		return s
-	}
-}
-
 // IsSubscriptionType checks if providerType corresponds to a subscription tier.
 func IsSubscriptionType(providerType string) bool {
 	pType := strings.ToLower(providerType)

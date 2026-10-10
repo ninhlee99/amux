@@ -209,8 +209,6 @@ func TestWebBackendPrompt_ContinuingThreadWithoutFullContextPreservesToolResults
 	}
 }
 
-
-
 // A fresh web thread given a transcript that already holds tool turns must be
 // told to continue the task; without the cue ChatGPT answers "Ready. Send the
 // repo task" and the client's tool loop stalls.
@@ -324,5 +322,144 @@ func TestWebBackendPrompt_ContinuingFollowUpAfterShrinkDroppedToolTurns(t *testi
 	}
 	if !strings.Contains(got, "New request from the user above") {
 		t.Fatalf("missing new-request cue:\n%s", got)
+	}
+}
+
+func TestWebBackendPromptForProvider_DistinctTemplates(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools: []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "check git status"},
+		},
+	}
+
+	// 1. Claude Web prompt must NOT reference python/container sandboxes
+	claudePrompt := WebBackendPromptForProvider("claude", req, false)
+	if strings.Contains(claudePrompt, "python/container") || strings.Contains(claudePrompt, "container/python") {
+		t.Errorf("Claude prompt must not leak python/container sandbox warning:\n%s", claudePrompt)
+	}
+	if !strings.Contains(claudePrompt, "<tool_call>") {
+		t.Errorf("Claude prompt missing <tool_call>:\n%s", claudePrompt)
+	}
+
+	// 2. ChatGPT Web prompt MUST warn off python/container sandbox
+	chatgptPrompt := WebBackendPromptForProvider("chatgpt", req, false)
+	if !strings.Contains(chatgptPrompt, "python/container") {
+		t.Errorf("ChatGPT prompt must steer away from python/container:\n%s", chatgptPrompt)
+	}
+	if !strings.Contains(chatgptPrompt, "<tool_call>") {
+		t.Errorf("ChatGPT prompt missing <tool_call>:\n%s", chatgptPrompt)
+	}
+
+	// 3. Gemini Web prompt must contain workspace tool directives
+	geminiPrompt := WebBackendPromptForProvider("gemini", req, false)
+	if strings.Contains(geminiPrompt, "python/container") {
+		t.Errorf("Gemini prompt should not reference python/container:\n%s", geminiPrompt)
+	}
+	if !strings.Contains(geminiPrompt, "<tool_call>") {
+		t.Errorf("Gemini prompt missing <tool_call>:\n%s", geminiPrompt)
+	}
+
+	// 4. Default WebBackendPrompt with ServingAccount infers provider
+	reqClaude := &types.ChatRequest{
+		ServingAccount: "claude:web:01",
+		Tools:          req.Tools,
+		Messages:       req.Messages,
+	}
+	inferredClaude := WebBackendPrompt(reqClaude, false)
+	if strings.Contains(inferredClaude, "python/container") {
+		t.Errorf("Inferred Claude prompt must not contain python/container:\n%s", inferredClaude)
+	}
+}
+
+func TestSkillPersistence_TrailingSystemReminder(t *testing.T) {
+	req := &types.ChatRequest{
+		FullContext: false,
+		Tools:       []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{
+			{Role: "user", Content: "/open-pr:fix https://github.com/ninhlee99/amux/pull/47"},
+			{Role: "assistant", ToolCalls: []types.ToolCall{{Name: "Bash", Arguments: `{"command":"git status"}`}}},
+			{Role: "tool", ToolCallID: "toolu_1", Content: "On branch fix/web-provider-regression-audit"},
+			{Role: "user", Content: "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>\n\n(no content)"},
+		},
+	}
+
+	// 1. Live continuing thread check
+	prompt := WebBackendPromptForProvider("claude", req, true)
+
+	// Must maintain task goal in prompt delta
+	if !strings.Contains(prompt, "[Task Goal]: /open-pr:fix https://github.com/ninhlee99/amux/pull/47") {
+		t.Fatalf("prompt delta must prepend [Task Goal] from original user task, got:\n%s", prompt)
+	}
+
+	// Must cue continuation rather than new user request
+	if strings.Contains(prompt, "New request from the user above") {
+		t.Fatalf("trailing reminder metadata must not trigger newRequestCue, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Continuing task with tool results above") {
+		t.Fatalf("prompt should cue continuation of ongoing tool task, got:\n%s", prompt)
+	}
+
+	// 2. Full context handoff check
+	reqFull := &types.ChatRequest{
+		FullContext: true,
+		Tools:       req.Tools,
+		Messages:    req.Messages,
+	}
+	promptFull := WebBackendPromptForProvider("claude", reqFull, false)
+	if !strings.Contains(promptFull, "Task: /open-pr:fix https://github.com/ninhlee99/amux/pull/47") {
+		t.Fatalf("full context handoff must include mid-task task cue, got:\n%s", promptFull)
+	}
+
+	// 3. endsWithUserRequest must return false
+	if endsWithUserRequest(req.Messages) {
+		t.Fatal("endsWithUserRequest must be false when trailing user message is only system-reminder metadata")
+	}
+
+	// 4. currentUserTask must return the real goal, not the metadata
+	task := currentUserTask(req.Messages)
+	if task != "/open-pr:fix https://github.com/ninhlee99/amux/pull/47" {
+		t.Fatalf("currentUserTask should be the original user task, got: %q", task)
+	}
+}
+
+func TestSkillTask_ExtractionWithMetadataOnly(t *testing.T) {
+	// Case where the only user message is a skill reminder
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "<system-reminder>\n- open-pr:review: Review PRs against conventions\n</system-reminder>\n\n(no content)"},
+	}
+	task := currentUserTask(msgs)
+	if !strings.Contains(task, "open-pr:review") {
+		t.Fatalf("currentUserTask fallback should extract skill instructions when no other text exists, got: %q", task)
+	}
+}
+
+
+func TestCurrentUserTask_SkipsSkillExpansion(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "1) write calc.py 2) run the skill-probe skill 3) call the MCP tool"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Skill", Arguments: `{"skill":"skill-probe"}`}}},
+		{Role: "tool", ToolCallID: "t1", Content: "Launching skill: skill-probe"},
+		{Role: "user", Content: "Base directory for this skill: /tmp/x/.claude/skills/skill-probe\n\nRun this exact Bash command"},
+	}
+	if got := currentUserTask(msgs); !strings.HasPrefix(got, "1) write calc.py") {
+		t.Fatalf("task must stay the user's request, got %q", got)
+	}
+}
+
+func TestBuildConcatenatedPrompt_MarksSkillBody(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "run the skill-probe skill"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Skill", Arguments: `{"skill":"skill-probe"}`}}},
+		{Role: "tool", ToolCallID: "t1", Name: "Skill", Content: "Launching skill: skill-probe"},
+		{Role: "user", Content: "Base directory for this skill: /tmp/s\n\nRun this exact Bash command: `echo hi`"},
+	}
+	got := BuildConcatenatedPrompt(msgs)
+	i := strings.Index(got, skillLoadedNote)
+	if i < 0 || i > strings.Index(got, "Base directory for this skill") {
+		t.Fatalf("skill body must be headed by the loaded-skill note:\n%s", got)
+	}
+	if strings.Count(got, skillLoadedNote) != 1 {
+		t.Fatal("only the skill turn gets the note")
 	}
 }

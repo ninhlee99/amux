@@ -312,5 +312,3 @@ func Test100StepMassiveTask_MilestoneRetention(t *testing.T) {
 		t.Fatalf("expected milestone commands in compacted summary, got:\n%s", contentStr)
 	}
 }
-
-

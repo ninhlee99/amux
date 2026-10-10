@@ -146,7 +146,15 @@ func syncAddressableAdaptersToIdentities() {
 			"source": "system_adapter",
 		}
 		email := "-"
-		if strings.HasPrefix(pLower, "codex") {
+		if accountsFile, _ := provider.LoadConfigFile(provider.DefaultAccountsPath()); accountsFile != nil {
+			for _, p := range accountsFile.Providers {
+				if p.ID == a.ID() && strings.TrimSpace(p.Account) != "" {
+					email = p.Account
+					break
+				}
+			}
+		}
+		if email == "-" && strings.HasPrefix(pLower, "codex") {
 			if doc, err := os.ReadFile(provider.CodexAuthPath()); err == nil {
 				var d map[string]any
 				if json.Unmarshal(doc, &d) == nil {
@@ -645,4 +653,3 @@ func cmdIDOn(args []string) {
 	proxy.Sync()
 	fmt.Printf("✓ %s is back in rotation.\n", label)
 }
-

@@ -329,7 +329,6 @@ func cmdUpdate(force, quiet bool) {
 	}
 }
 
-
 func copyExecutable(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {

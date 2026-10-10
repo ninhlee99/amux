@@ -17,44 +17,6 @@ type Config struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// FindProjectRoot locates the nearest directory containing .amux or .git starting from startDir.
-func FindProjectRoot(startDir string) (string, error) {
-	if startDir == "" {
-		var err error
-		startDir, err = os.Getwd()
-		if err != nil {
-			return "", err
-		}
-	}
-
-	curr := filepath.Clean(startDir)
-	for {
-		// Check for .amux or .amux.json or .amuxrc
-		if _, err := os.Stat(filepath.Join(curr, ".amux")); err == nil {
-			return curr, nil
-		}
-		if _, err := os.Stat(filepath.Join(curr, ".amux.json")); err == nil {
-			return curr, nil
-		}
-		if _, err := os.Stat(filepath.Join(curr, ".amuxrc")); err == nil {
-			return curr, nil
-		}
-
-		// If at git root, stop traversal
-		if _, err := os.Stat(filepath.Join(curr, ".git")); err == nil {
-			return curr, nil
-		}
-
-		parent := filepath.Dir(curr)
-		if parent == curr {
-			// Reached filesystem root
-			break
-		}
-		curr = parent
-	}
-	return startDir, nil
-}
-
 // LoadProjectConfig reads .amux / .amux.json if present in the project tree.
 func LoadProjectConfig(startDir string) (*Config, string, error) {
 	if startDir == "" {

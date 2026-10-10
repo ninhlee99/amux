@@ -330,83 +330,6 @@ func TestBuildAdapter_DefaultsAndMissing(t *testing.T) {
 	}
 }
 
-func TestProvider_MigrateLegacyIDs(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "am-provider-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-	cfgPath := filepath.Join(tmpDir, "accounts.json")
-
-	f := &AccountsFile{Providers: []ProviderConfig{
-		{ID: "claude-web", Type: "claude_web", Priority: 6},
-		{ID: "chatgpt-web", Type: "chatgpt_web", Priority: 5},
-		{ID: "my-custom-provider", Type: "openai_compatible", Priority: 10},
-	}}
-	if err := SaveConfigFile(cfgPath, f); err != nil {
-		t.Fatalf("SaveConfigFile failed: %v", err)
-	}
-
-	if err := MigrateLegacyIDs(cfgPath); err != nil {
-		t.Fatalf("MigrateLegacyIDs failed: %v", err)
-	}
-
-	got, err := LoadConfigFile(cfgPath)
-	if err != nil {
-		t.Fatalf("LoadConfigFile failed: %v", err)
-	}
-	want := map[string]string{
-		"claude_web":        "claude:web:01",
-		"chatgpt_web":       "chatgpt:01",
-		"openai_compatible": "my-custom-provider", // untouched: not a legacy literal ID
-	}
-	for _, p := range got.Providers {
-		if p.ID != want[p.Type] {
-			t.Errorf("provider type %q: ID = %q, want %q", p.Type, p.ID, want[p.Type])
-		}
-	}
-
-	// Idempotent: running again on already-migrated IDs changes nothing.
-	if err := MigrateLegacyIDs(cfgPath); err != nil {
-		t.Fatalf("second MigrateLegacyIDs failed: %v", err)
-	}
-	again, err := LoadConfigFile(cfgPath)
-	if err != nil {
-		t.Fatalf("LoadConfigFile (2nd) failed: %v", err)
-	}
-	for i, p := range again.Providers {
-		if p.ID != got.Providers[i].ID {
-			t.Errorf("second migration changed ID: %q -> %q", got.Providers[i].ID, p.ID)
-		}
-	}
-}
-
-func TestProvider_MigrateCompactIDs(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "accounts.json")
-	f := &AccountsFile{Providers: []ProviderConfig{
-		{ID: "geminiapi:01", Type: "gemini", Priority: 1},
-		{ID: "claudeweb:01", Type: "claude_web", Priority: 2},
-		{ID: "openrouter", Type: "openai_compatible", Priority: 3},
-	}}
-	if err := SaveConfigFile(cfgPath, f); err != nil {
-		t.Fatal(err)
-	}
-	if err := MigrateLegacyIDs(cfgPath); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := LoadConfigFile(cfgPath)
-	want := map[string]string{
-		"gemini":            "gemini:api:01",
-		"claude_web":        "claude:web:01",
-		"openai_compatible": "openrouter:api:01",
-	}
-	for _, p := range got.Providers {
-		if p.ID != want[p.Type] {
-			t.Errorf("%s: got %q want %q", p.Type, p.ID, want[p.Type])
-		}
-	}
-}
-
 func TestProvider_SetPriority(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "am-provider-test-*")
 	if err != nil {
@@ -533,4 +456,3 @@ func TestInspectLoadAccounts(t *testing.T) {
 	}
 	t.Logf("Loaded accounts: %v", ids)
 }
-

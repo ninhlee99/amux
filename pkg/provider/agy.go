@@ -860,5 +860,3 @@ func (a *AntigravityAdapter) ensureAccessToken(ctx context.Context) (string, err
 
 	return a.creds.AccessToken, nil
 }
-
-

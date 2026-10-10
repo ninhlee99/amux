@@ -48,6 +48,18 @@ const (
 	chatgptDefaultModel    = "gpt-6-luna"
 )
 
+func isNonChatGPTModel(m string) bool {
+	lower := strings.ToLower(strings.TrimSpace(m))
+	return strings.HasPrefix(lower, "claude-") ||
+		strings.HasPrefix(lower, "gemini-") ||
+		strings.HasPrefix(lower, "grok-") ||
+		strings.HasPrefix(lower, "llama-") ||
+		strings.HasPrefix(lower, "mistral-") ||
+		strings.HasPrefix(lower, "deepseek-") ||
+		strings.HasPrefix(lower, "qwen-") ||
+		strings.HasPrefix(lower, "anthropic.")
+}
+
 func (a *ChatGPTWebAdapter) ID() string    { return a.AdapterID }
 func (a *ChatGPTWebAdapter) Priority() int { return a.PriorityLvl }
 func (a *ChatGPTWebAdapter) Plan() string  { return a.PlanTier }
@@ -64,7 +76,6 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 	return defaultHTTPClient
 }
 
-
 // BuildConcatenatedPrompt flattens a multi-turn ChatRequest into the single
 // text blob the web adapters (ChatGPT, Claude web) send as one message.
 // Multiple system messages are merged into one "[System Instructions]"
@@ -78,6 +89,11 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 // is intentional — it still gives the web adapter's chat UI a prompt to
 // respond to instead of an empty string. See TestBuildConcatenatedPrompt_
 // SystemOnly in config_test.go for the locked-in behavior.
+// skillLoadedNote heads a skill body in the flattened transcript. Shown as a
+// bare user turn after "Launching skill: X", ChatGPT took the skill as done
+// and reported output of commands it never ran.
+const skillLoadedNote = "[Skill loaded — these instructions are now your next steps. Loading a skill does not perform it: carry them out with <tool_call>s (run the commands it names) and report only real [Tool result]s.]\n"
+
 func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 	if len(messages) == 0 {
 		return ""
@@ -98,6 +114,9 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sys.WriteString(m.Content)
 		case "user":
 			sb.WriteString("User: ")
+			if isSkillExpansion(tools.CleanUserTurnContent(m.Content)) {
+				sb.WriteString(skillLoadedNote)
+			}
 			sb.WriteString(m.Content)
 			sb.WriteString("\n\n")
 		case "assistant":
@@ -227,6 +246,10 @@ func (a *ChatGPTWebAdapter) refreshSession() error {
 }
 
 func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if a.SessionToken == "" && a.RefreshToken != "" {
 		_ = a.refreshSession()
 	}
@@ -235,9 +258,9 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 	}
 
 	model := chatgptDefaultModel
-	if a.TargetModel != "" && a.TargetModel != "auto" {
+	if a.TargetModel != "" && a.TargetModel != "auto" && !isNonChatGPTModel(a.TargetModel) {
 		model = a.TargetModel
-	} else if req.Model != "" && req.Model != "default" && req.Model != "auto" {
+	} else if req.Model != "" && req.Model != "default" && req.Model != "auto" && !isNonChatGPTModel(req.Model) {
 		model = req.Model
 	}
 
@@ -279,7 +302,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 			promptReq = &cloned
 		}
 
-		prompt := WebBackendPrompt(promptReq, convID != "" && parentID != "")
+		prompt := WebBackendPromptForProvider("chatgpt", promptReq, convID != "" && parentID != "")
 		if parentID == "" {
 			parentID = nilParentMessageID
 		}
@@ -387,7 +410,7 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 		}
 
 		out := make(chan types.StreamChunk)
-		go streamChatGPTWeb(ctx, a, project, req.SessionID, HistoryMarkOf(req.Messages), len(req.Tools) > 0, resp, out)
+		go streamChatGPTWeb(ctx, a, project, req.SessionID, ClientHistoryMark(req), len(req.Tools) > 0, resp, out)
 		return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 	}
 }
@@ -483,6 +506,19 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		if clientTools && strings.HasPrefix(chunk.Message.Recipient, "container.") &&
 			chunk.Message.Status == "finished_successfully" {
 			if cmd := chatgptContainerCommand(chunk.Message.Content.Text); cmd != "" {
+				log.Printf("%s: redirected ChatGPT sandbox %s to client shell tool", id, chunk.Message.Recipient)
+				a.convs().ResetProject(project)
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Content: chatgptShellToolCall(cmd)})
+				sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
+				return
+			}
+		}
+		// Same for its python tool ("advanced data analysis"): unavailable on
+		// many accounts, it answers "I can't do more advanced data analysis
+		// right now" and the turn dies. Run the code in the client's shell.
+		if clientTools && chunk.Message.Recipient == "python" && ctype == "code" &&
+			chunk.Message.Status == "finished_successfully" {
+			if cmd := chatgptPythonCommand(chunk.Message.Content.Text); cmd != "" {
 				log.Printf("%s: redirected ChatGPT sandbox %s to client shell tool", id, chunk.Message.Recipient)
 				a.convs().ResetProject(project)
 				sendChunk(ctx, out, types.StreamChunk{ID: id, Content: chatgptShellToolCall(cmd)})
@@ -611,6 +647,16 @@ func isShellBinary(s string) bool {
 
 // chatgptShellToolCall renders cmd in the webloop <tool_call> dialect; the
 // web tool parser maps "Bash" onto whatever shell tool the client declared.
+// chatgptPythonCommand wraps code ChatGPT addressed to its python tool as a
+// shell command for the client's Bash tool.
+func chatgptPythonCommand(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	return "python3 - <<'AMUX_PY'\n" + code + "\nAMUX_PY"
+}
+
 func chatgptShellToolCall(cmd string) string {
 	b, _ := json.Marshal(map[string]any{
 		"name":      "Bash",

@@ -192,9 +192,9 @@ func (a *ClaudeAdapter) SendMessageStream(ctx context.Context, req *types.ChatRe
 }
 
 type anthropicEvent struct {
-	Type         string `json:"type"`
-	Index        int    `json:"index"`
-	Message      *struct {
+	Type    string `json:"type"`
+	Index   int    `json:"index"`
+	Message *struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {

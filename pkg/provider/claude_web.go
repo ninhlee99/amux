@@ -71,9 +71,21 @@ func (a *ClaudeWebAdapter) client() *http.Client {
 	return defaultHTTPClient
 }
 
+func isNonClaudeModel(m string) bool {
+	lower := strings.ToLower(strings.TrimSpace(m))
+	return strings.HasPrefix(lower, "gpt-") ||
+		strings.HasPrefix(lower, "gemini-") ||
+		strings.HasPrefix(lower, "grok-") ||
+		strings.HasPrefix(lower, "llama-") ||
+		strings.HasPrefix(lower, "mistral-") ||
+		strings.HasPrefix(lower, "deepseek-") ||
+		strings.HasPrefix(lower, "qwen-") ||
+		lower == "auto" || lower == "default"
+}
+
 func (a *ClaudeWebAdapter) model() string {
 	m := a.TargetModel
-	if m == "" {
+	if m == "" || isNonClaudeModel(m) {
 		m = claudeWebDefaultModel
 	}
 	// Unless user explicitly requested Opus via ANTHROPIC_MODEL env, never upgrade to Opus to preserve quota.
@@ -180,6 +192,10 @@ func (a *ClaudeWebAdapter) refreshPlanAndModel() {
 }
 
 func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	return sendWithWebNudge(ctx, req, a.sendOnce)
+}
+
+func (a *ClaudeWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
 	if a.SessionKey == "" && strings.TrimSpace(a.Cookies) == "" {
 		return nil, fmt.Errorf("%s: %w: no sessionKey configured", a.AdapterID, types.ErrAuthentication)
 	}
@@ -205,6 +221,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	project := ThreadKey(req)
 	cm := a.convs()
 	var resp *http.Response
+	var convUUID string
 	refreshedFor429 := false
 	refreshedAuth := false
 	rotatedConv := false
@@ -228,7 +245,7 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			promptReq = &cloned
 		}
 
-		prompt := WebBackendPrompt(promptReq, hasValidThread)
+		prompt := WebBackendPromptForProvider("claude", promptReq, hasValidThread)
 
 		payloadMap := map[string]any{
 			"prompt":      prompt,
@@ -242,7 +259,8 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 			return nil, fmt.Errorf("%s: marshal: %w", a.AdapterID, err)
 		}
 
-		orgID, convUUID, err := a.ensureConversation(ctx, model, project, req.SessionID, HistoryMarkOf(req.Messages), !hasValidThread)
+		var orgID string
+		orgID, convUUID, err = a.ensureConversation(ctx, model, project, !hasValidThread)
 		if err != nil {
 			return nil, err
 		}
@@ -327,12 +345,12 @@ func (a *ClaudeWebAdapter) SendMessageStream(ctx context.Context, req *types.Cha
 	}
 
 	out := make(chan types.StreamChunk)
-	go streamClaudeWeb(ctx, a, project, resp, out)
+	go streamClaudeWeb(ctx, a, project, req.SessionID, convUUID, ClientHistoryMark(req), resp, out)
 	return tools.MaybeWrapWebStream(a.AdapterID, req, out), nil
 }
 
 // ensureConversation reuses the server-side Claude conversation for the specific project if within turn limits.
-func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project, sessionID string, mark HistoryMark, isNewThread bool) (orgID, convUUID string, err error) {
+func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, project string, isNewThread bool) (orgID, convUUID string, err error) {
 	a.mu.Lock()
 	if a.orgID == "" {
 		a.mu.Unlock()
@@ -350,7 +368,6 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	cm := a.convs()
 	if !isNewThread {
 		if c, ok := cm.GetActive(project); ok && c.ID != "" {
-			cm.RegisterTurn(project, sessionID, c.ID, "", nil, mark)
 			return orgID, c.ID, nil
 		}
 	}
@@ -359,7 +376,6 @@ func (a *ClaudeWebAdapter) ensureConversation(ctx context.Context, model, projec
 	if e != nil {
 		return "", "", e
 	}
-	cm.RegisterTurn(project, sessionID, id, "", nil, mark)
 	return orgID, id, nil
 }
 
@@ -378,8 +394,10 @@ func lastUserPrompt(messages []types.ChatMessage) string {
 		return BuildDeltaWebPrompt(messages)
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if strings.EqualFold(messages[i].Role, "user") && messages[i].Content != "" {
-			return messages[i].Content
+		if strings.EqualFold(messages[i].Role, "user") {
+			if cleaned := tools.CleanUserTurnContent(messages[i].Content); cleaned != "" {
+				return cleaned
+			}
 		}
 	}
 	return BuildConcatenatedPrompt(messages)
@@ -636,7 +654,7 @@ func (a *ClaudeWebAdapter) createConversation(ctx context.Context, orgID, model 
 	return conv.UUID, nil
 }
 
-func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project string, resp *http.Response, out chan<- types.StreamChunk) {
+func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project, sessionID, convID string, mark HistoryMark, resp *http.Response, out chan<- types.StreamChunk) {
 	defer close(out)
 	defer resp.Body.Close()
 
@@ -659,6 +677,8 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project string, r
 			if tools.IsToolRefusal(fullCompletion.String()) {
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 				a.convs().ResetProject(project)
+			} else if convID != "" {
+				a.convs().RegisterTurn(project, sessionID, convID, "", nil, mark)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -703,6 +723,8 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project string, r
 			if tools.IsToolRefusal(fullCompletion.String()) {
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 				a.convs().ResetProject(project)
+			} else if convID != "" {
+				a.convs().RegisterTurn(project, sessionID, convID, "", nil, mark)
 			}
 			sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 			doneSent = true
@@ -717,6 +739,8 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project string, r
 		if tools.IsToolRefusal(fullCompletion.String()) {
 			log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 			a.convs().ResetProject(project)
+		} else if convID != "" {
+			a.convs().RegisterTurn(project, sessionID, convID, "", nil, mark)
 		}
 		sendChunk(ctx, out, types.StreamChunk{ID: id, Done: true})
 	}

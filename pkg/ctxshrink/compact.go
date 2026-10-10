@@ -324,12 +324,13 @@ func getGlobalSemanticSummarizer() SemanticSummarizerFunc {
 // CompactForAccountSwitch compacts a conversation history when switching to a new account,
 // dramatically reducing cold-start tokens (and avoiding paying cache creation on old logs).
 // It preserves:
-// 1. System instructions (so model personas/rules remain 100% intact).
-// 2. The initial user goal/prompt (the root task).
-// 3. Compacts older middle tool results & turns into an explicit handoff note.
-// 4. Preserves the recent tail turns intact (with full context/tool results)
-//    so the model can immediately continue without losing recent state.
-// 5. Safely converts any orphaned tool_results whose tool_use was dropped into
+//  1. System instructions (so model personas/rules remain 100% intact).
+//  2. The initial user goal/prompt (the root task).
+//  3. Compacts older middle tool results & turns into an explicit handoff note.
+//  4. Preserves the recent tail turns intact (with full context/tool results)
+//     so the model can immediately continue without losing recent state.
+//  5. Safely converts any orphaned tool_results whose tool_use was dropped into
+//
 // CompactForAccountSwitch compacts a conversation history when switching to a new account.
 func CompactForAccountSwitch(msgs []types.ChatMessage, tailTurns int) []types.ChatMessage {
 	return CompactForAccountSwitchProject("", msgs, tailTurns)
@@ -397,7 +398,7 @@ func CompactForAccountSwitchProject(project string, msgs []types.ChatMessage, ta
 	}
 
 	middleTurns := rest[1 : len(rest)-tailTurns]
-	
+
 	// Try semantic summarizer if available; fallback instantly to rule-based
 	var summary string
 	if summarizer := getGlobalSemanticSummarizer(); summarizer != nil {

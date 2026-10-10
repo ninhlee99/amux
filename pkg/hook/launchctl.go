@@ -5,11 +5,6 @@ import (
 	"runtime"
 )
 
-// LaunchctlSetenv is disabled to avoid polluting macOS global GUI session environment.
-func LaunchctlSetenv(key, val string) error {
-	return nil
-}
-
 // LaunchctlUnsetenv removes a var set via launchctl. No-op off darwin.
 func LaunchctlUnsetenv(key string) error {
 	if runtime.GOOS != "darwin" {

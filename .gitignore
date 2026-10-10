@@ -12,3 +12,5 @@ all-account*
 
 # Client project maps live only under ~/.am/workspaces/ — never in client repos.
 # Amux tool repo DOES commit docs/GRAPH.md (+ stub MODULES / MAP_GENERATED).
+
+notebooks/review/

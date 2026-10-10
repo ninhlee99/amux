@@ -192,11 +192,6 @@ func (r *Router) registerDiagnosticRoutes() {
 		HelpHandler: helpRun,
 	})
 
-	r.Register("top", CommandRoute{
-		Domain:  domain,
-		Handler: CmdTop,
-	})
-
 	r.Register("doctor", CommandRoute{
 		Domain:      domain,
 		Handler:     CmdDoctor,
@@ -268,11 +263,6 @@ func (r *Router) registerDiagnosticRoutes() {
 		Domain:      domain,
 		Handler:     CmdStatus,
 		HelpHandler: helpStatus,
-	})
-
-	r.Register("ps", CommandRoute{
-		Domain:  domain,
-		Handler: CmdTop,
 	})
 
 	r.Register("ls", CommandRoute{

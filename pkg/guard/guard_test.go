@@ -364,4 +364,3 @@ func TestSessionAffinity_SignalHandlingAndDrain(t *testing.T) {
 		t.Errorf("unexpected error on DrainAndClose: %v", err)
 	}
 }
-

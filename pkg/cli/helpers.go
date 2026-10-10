@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"amux-accounts/pkg/identity"
-	"amux-accounts/pkg/profile"
-	"amux-accounts/pkg/provider"
 )
 
 func autoMigrateCheck() {
@@ -80,30 +78,4 @@ func profileName(name, account string) string {
 		return strings.ReplaceAll(strings.TrimSpace(name), " ", "-")
 	}
 	return account
-}
-
-func isProviderName(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
-	return s == "claude" || s == "codex" || s == "gemini" || s == "antigravity" || s == "cursor" ||
-		strings.HasPrefix(s, "claude-") || strings.HasPrefix(s, "codex-") || strings.HasPrefix(s, "gemini-")
-}
-
-func resolveName(tool, name string) string {
-	if name != "" {
-		return name
-	}
-	cfg := profile.LoadConfig()
-	spec, ok := cfg.Tools[tool]
-	if !ok {
-		return ""
-	}
-	return profile.DetectAccount(spec)
-}
-
-func matchProviderID(target string) string {
-	id, err := provider.MatchID(provider.DefaultAccountsPath(), target)
-	if err == nil {
-		return id
-	}
-	return target
 }

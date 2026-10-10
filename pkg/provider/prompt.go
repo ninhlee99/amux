@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"regexp"
 	"strings"
 
 	"amux-accounts/pkg/ctxshrink"
@@ -9,19 +8,12 @@ import (
 	"amux-accounts/pkg/types"
 )
 
-const contextHandoffPreamble = `[xfer] Continue. [Tool result] = real CLI output. Emit <tool_call> if you need files/commands; else answer.
+const contextHandoffPreamble = `[xfer] Continue previous task. [Tool result] contains workspace outputs. Emit <tool_call> if you need files or commands; else answer.
 
 `
 
-// WebBackendPrompt builds the single string web UIs accept.
-//
-// A live thread (continuingThread without FullContext) already holds the
-// client's system prompt and earlier turns, so it gets only what it has not
-// seen: the new user request, or the tool results since the last reply.
-// A fresh thread or a handoff gets the full transcript, shrunk to the web
-// token budget (~20k tokens) while keeping the system prompt, first user
-// goal and recent tail.
-func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
+// WebBackendPromptForProvider builds the single string web UIs accept, tailored for the specific provider.
+func WebBackendPromptForProvider(provider string, req *types.ChatRequest, continuingThread bool) string {
 	if req == nil {
 		return ""
 	}
@@ -44,18 +36,22 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 			msgs = ctxshrink.FitMessagesToTokenBudget(msgs, ctxshrink.DefaultWebMaxTokens)
 		}
 		body = BuildConcatenatedPrompt(msgs)
-		if req.FullContext {
+		if req.FullContext && (ranTools || conversationalTurns(msgs) > 1) {
 			if body == "" {
 				return ""
 			}
-			body = contextHandoffPreamble + body
+			if tools.NormalizeWebProvider(provider) == "claude" {
+				body = "Continue previous task with tool results shown above.\n\n" + body
+			} else {
+				body = contextHandoffPreamble + body
+			}
 		}
 	}
 
 	if len(req.Tools) == 0 {
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
-	closer := tools.WebCloser()
+	closer := tools.WebCloserForProvider(provider)
 	if !liveThread {
 		if ranTools {
 			closer = midTaskCue(req.Messages) + closer
@@ -64,14 +60,14 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		if endsWithUserRequest(req.Messages) {
 			closer = newRequestCue + closer
 		} else {
-			closer = "\n[next] Continuing task with tool results above. If you need to make code edits, write files, run tests, or commit: emit the next <tool_call> now (e.g. Bash/Edit/Write) — do NOT stop or describe a plan.\n" + closer
+			closer = "\n[next] Continuing task with tool results above. To inspect code, edit files, run tests, or commit changes, emit the next <tool_call> now (e.g. Bash/Edit/Write).\n" + closer
 		}
 	}
 	var preamble string
 	if continuingThread {
-		preamble = tools.WebCatalogOnly(req.Tools)
+		preamble = tools.WebCatalogOnlyForProvider(provider, req.Tools)
 	} else {
-		preamble = tools.WebPreambleForRequest(req)
+		preamble = tools.WebPreambleForProvider(provider, req.Tools)
 	}
 	trimmedBody := strings.TrimSpace(body)
 	var finalPrompt string
@@ -80,9 +76,18 @@ func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
 		body = strings.TrimSpace(trimmedBody) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
 		finalPrompt = preamble + body
 	} else {
-		finalPrompt = preamble + body + closer
+		finalPrompt = preamble + strings.TrimSpace(body) + "\n\n" + strings.TrimSpace(closer) + "\n\nAssistant: "
 	}
 	return enforceWebPromptLimit(finalPrompt, ctxshrink.AbsoluteMaxWebRunes)
+}
+
+// WebBackendPrompt builds the single string web UIs accept.
+func WebBackendPrompt(req *types.ChatRequest, continuingThread bool) string {
+	provider := ""
+	if req != nil && req.ServingAccount != "" {
+		provider = req.ServingAccount
+	}
+	return WebBackendPromptForProvider(provider, req, continuingThread)
 }
 
 func enforceWebPromptLimit(s string, maxRunes int) string {
@@ -113,6 +118,20 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// conversationalTurns counts non-system turns. Claude Code always sends a
+// system prompt, so a first request is system+user — that is not a prior
+// conversation, and the [xfer] "continue previous task" handoff would make the
+// model treat a fresh task as someone else's transcript.
+func conversationalTurns(msgs []types.ChatMessage) int {
+	n := 0
+	for _, m := range msgs {
+		if !strings.EqualFold(m.Role, "system") {
+			n++
+		}
+	}
+	return n
 }
 
 // historyHasToolTurns is true when the client already ran tools this session.
@@ -171,8 +190,8 @@ func BuildDeltaWebPrompt(messages []types.ChatMessage) string {
 func hasUserTurn(msgs []types.ChatMessage) bool {
 	for _, m := range msgs {
 		if strings.EqualFold(m.Role, "user") {
-			c := strings.TrimSpace(m.Content)
-			if c != "" && !strings.EqualFold(c, "(no content)") {
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" {
 				return true
 			}
 		}
@@ -186,20 +205,40 @@ func currentUserTask(messages []types.ChatMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		if strings.EqualFold(m.Role, "user") {
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" && !isSkillExpansion(c) {
+				return c
+			}
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if strings.EqualFold(m.Role, "user") {
 			c := strings.TrimSpace(m.Content)
 			if c != "" && !strings.EqualFold(c, "(no content)") {
-				return c
+				c = strings.TrimSuffix(c, "(no content)")
+				c = strings.TrimSpace(c)
+				if c != "" {
+					return c
+				}
 			}
 		}
 	}
 	return ""
 }
 
+// isSkillExpansion is true for the user turn Claude Code injects when a Skill
+// tool call loads a skill body. It is instructions for the task, not the task:
+// naming it as "Task:" made ChatGPT drop the user's remaining steps.
+func isSkillExpansion(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "Base directory for this skill:")
+}
+
 // newRequestCue follows a new user request on a live thread whose session
 // already ran tools. After a long text answer ChatGPT tends to treat a
 // follow-up like "now implement it" as chat and claims it cannot reach the
 // repo; this points it back at <tool_call>.
-const newRequestCue = "\n[next] New request from the user above. You MUST start with <tool_call> now (e.g. Bash/Read/Edit) — do not describe a plan or claim you lack access.\n"
+const newRequestCue = "\n[next] New request from the user above. Start with <tool_call> now (e.g. Bash/Read/Edit) to inspect files, execute commands, or apply changes directly.\n"
 
 // endsWithUserRequest is true when the latest conversational turn is a user message,
 // scanning backwards past trailing system reminders or hooks that IDE clients (e.g. Claude Code) attach.
@@ -211,128 +250,14 @@ func endsWithUserRequest(msgs []types.ChatMessage) bool {
 			return false
 		}
 		if role == "user" {
-			c := strings.TrimSpace(m.Content)
-			return c != "" && !strings.EqualFold(c, "(no content)")
-		}
-		// If role == "system", continue scanning backwards past client reminders.
-	}
-	return false
-}
-
-// slimWebMessages drops client harness system turns. User/tool/assistant stay.
-func slimWebMessages(msgs []types.ChatMessage) []types.ChatMessage {
-	out := make([]types.ChatMessage, 0, len(msgs))
-	for _, m := range msgs {
-		if strings.EqualFold(m.Role, "system") && isClientHarness(m.Content) {
+			c := tools.CleanUserTurnContent(m.Content)
+			if c != "" {
+				return true
+			}
+			// Metadata-only user turn (e.g. system reminder or (no content)), continue scanning backwards!
 			continue
 		}
-		if strings.EqualFold(m.Role, "user") {
-			c := stripWebUserNoise(m.Content)
-			if c == "" {
-				orig := strings.TrimSpace(m.Content)
-				if orig != "" && !strings.EqualFold(orig, "(no content)") {
-					c = reTotalTokens.ReplaceAllString(orig, "")
-					c = reHookNotice.ReplaceAllString(c, "")
-					c = strings.TrimSpace(c)
-				}
-				if c == "" {
-					continue
-				}
-			}
-			m.Content = c
-		}
-		out = append(out, m)
-	}
-	// If all user turns were dropped, retain at least one user turn to avoid sending empty prompt
-	if len(out) == 0 && len(msgs) > 0 {
-		for _, m := range msgs {
-			if strings.EqualFold(m.Role, "user") && strings.TrimSpace(m.Content) != "" {
-				out = append(out, m)
-				break
-			}
-		}
-	}
-	return out
-}
-
-var (
-	reSysReminder    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>\s*`)
-	reTotalTokens    = regexp.MustCompile(`(?s)<total_tokens>.*?</total_tokens>\s*`)
-	reScratchpadHint = regexp.MustCompile(`(?im)^First privately list what you need next;[^\n]*\n?`)
-	reHookNotice     = regexp.MustCompile(`(?im)^(?:SessionStart|UserPromptSubmit)\b[^\n]*\n?`)
-	reEnvContext     = regexp.MustCompile(`(?s)<environment_context>.*?</environment_context>\s*`)
-	reLocalCaveat    = regexp.MustCompile(`(?s)<local-command-caveat>.*?</local-command-caveat>\s*`)
-)
-
-func stripWebUserNoise(s string) string {
-	s = cleanSystemReminders(s)
-	s = reTotalTokens.ReplaceAllString(s, "")
-	s = reScratchpadHint.ReplaceAllString(s, "")
-	s = reHookNotice.ReplaceAllString(s, "")
-	s = reEnvContext.ReplaceAllString(s, "")
-	s = reLocalCaveat.ReplaceAllString(s, "")
-	return strings.TrimSpace(s)
-}
-
-func cleanSystemReminders(s string) string {
-	return reSysReminder.ReplaceAllStringFunc(s, func(m string) string {
-		trimmed := strings.TrimSpace(m)
-		inner := strings.TrimPrefix(trimmed, "<system-reminder>")
-		inner = strings.TrimSuffix(inner, "</system-reminder>")
-		inner = reTotalTokens.ReplaceAllString(inner, "")
-		inner = reHookNotice.ReplaceAllString(inner, "")
-		inner = reScratchpadHint.ReplaceAllString(inner, "")
-		inner = reLocalCaveat.ReplaceAllString(inner, "")
-		inner = reEnvContext.ReplaceAllString(inner, "")
-		inner = strings.TrimSpace(inner)
-		if inner == "" {
-			return ""
-		}
-		// Strip "You are Claude Code" / harness identity to prevent prompt confusion
-		if strings.Contains(inner, "You are Claude Code") {
-			inner = strings.ReplaceAll(inner, "You are Claude Code", "")
-			inner = strings.TrimSpace(inner)
-		}
-		// If outer text already has user instructions (e.g. text outside <system-reminder>),
-		// and inner is an oversized listing, omit to preserve tokens.
-		outer := strings.TrimSpace(reSysReminder.ReplaceAllString(s, ""))
-		if outer != "" && !strings.EqualFold(outer, "(no content)") {
-			if len(inner) > 1000 {
-				return ""
-			}
-		}
-		if inner == "" {
-			return ""
-		}
-		return "\n[System Context:\n" + inner + "\n]\n"
-	})
-}
-
-func isClientHarness(s string) bool {
-	if strings.Contains(s, "You are Claude Code") || strings.Contains(s, "x-anthropic-billing-header") {
-		return true
-	}
-	if strings.Contains(s, "You are Antigravity") || (strings.Contains(s, "Antigravity") && strings.Contains(s, "agentic")) {
-		return true
-	}
-	if strings.Contains(s, "You are Codex") || strings.Contains(s, "OpenAI Codex") || strings.Contains(s, "codex_cli") {
-		return true
-	}
-	if strings.Contains(s, "You are Cursor") || strings.Contains(s, "Cursor AI") {
-		return true
-	}
-	if strings.Contains(s, "You are Cline") || strings.Contains(s, "Cline, a helpful") {
-		return true
-	}
-	if strings.Contains(s, "You are Roo") || strings.Contains(s, "Roo Code") {
-		return true
-	}
-	low := strings.ToLower(s)
-	if strings.Contains(s, "permission mode") && strings.Contains(low, "tool") {
-		return true
-	}
-	if len([]rune(s)) > 2000 && (strings.Contains(low, "available tools") || strings.Contains(low, "input_schema") || strings.Contains(low, "functiondeclarations")) {
-		return true
+		// If role == "system", continue scanning backwards past client reminders.
 	}
 	return false
 }

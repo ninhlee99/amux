@@ -35,10 +35,10 @@ func TestResolvePoolSlot_ReloginSameAccount(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "accounts.json")
 	if err := AddOrUpdateProvider(path, ProviderConfig{
-		ID:       "claude:web:ninhle",
-		Type:     "claude_web",
-		Priority: 25,
-		Account:  "ninhle@x.com",
+		ID:         "claude:web:ninhle",
+		Type:       "claude_web",
+		Priority:   25,
+		Account:    "ninhle@x.com",
 		SessionKey: "old-key",
 	}); err != nil {
 		t.Fatal(err)

@@ -224,4 +224,3 @@ func TestCheckAGYAuthAvailable(t *testing.T) {
 	t.Logf("loadAGYCredentials: %v, err: %v", c, err)
 	t.Logf("AGYAuthAvailable: %v", AGYAuthAvailable())
 }
-

@@ -136,7 +136,7 @@ tasks:
       - pkg/provider/chatgpt_web.go
       - pkg/provider/claude_web.go
       - pkg/mcp/backend.go
-    symbols: [MaybeWrapWebStream, SupportsTools, parseToolCallJSON, StripWebToolMarkup, repairJSON]
+    symbols: [MaybeWrapWebStream, SupportsTools, parseToolCallJSON, StripWebToolMarkup]
     tests: [pkg/tools/webloop_test.go, pkg/tools/webloop_emulate_test.go]
 
   - id: ide-runner-sandbox
@@ -172,7 +172,7 @@ tasks:
       - pkg/env/env.go
       - pkg/hook/hook.go
       - pkg/hook/launchctl.go
-    symbols: [PrintEnvExports, SyncLaunchctlEnv, HookInstall]
+    symbols: [PrintEnvExports, SyncLaunchctlEnv]
     tests: [pkg/env/env_test.go, pkg/hook/settings_env_test.go]
 
   - id: guard-antiban
@@ -189,7 +189,7 @@ tasks:
     read_first:
       - pkg/proxy/server.go
       - pkg/ui/status.go
-    symbols: [newHandler, fetchProxyStatus, AccountPoolRouter.Status]
+    symbols: [newHandler, AccountPoolRouter.Status]
     tests: [pkg/proxy/server_test.go]
 
   - id: live-integration
@@ -223,7 +223,7 @@ tasks:
       - pkg/tools/dialect.go
       - pkg/tools/claude.go
       - pkg/tools/codex.go
-    symbols: [TranslateToolCall, CanonicalTool]
+    symbols: [TranslateToolCall]
     tests: [pkg/bridge/cross_tool_matrix_test.go]
 
   - id: proxy-down-public

@@ -45,8 +45,3 @@ func OpenBrowser(target string) error {
 	}
 	return cmd.Start()
 }
-
-// OpenPrivateBrowser is retained for compatibility and delegates to OpenBrowser.
-func OpenPrivateBrowser(target string) (openedIncognito bool, browserName string, err error) {
-	return false, "Default Browser", OpenBrowser(target)
-}

@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -68,21 +67,11 @@ func SetDiagnosticAllBodies(v bool) {
 	diagnosticAll = v
 }
 
-// SetLogAllBodies is an alias for SetDiagnosticAllBodies.
-func SetLogAllBodies(v bool) {
-	SetDiagnosticAllBodies(v)
-}
-
 // ResetRequestMetrics clears in-memory cached metrics (useful for testing).
 func ResetRequestMetrics() {
 	statsMu.Lock()
 	defer statsMu.Unlock()
 	cachedMetrics = nil
-}
-
-// ResetStats is an alias for ResetRequestMetrics.
-func ResetStats() {
-	ResetRequestMetrics()
 }
 
 // GetRequestMetrics returns the current aggregate counts of requests and errors.
@@ -95,11 +84,6 @@ func GetRequestMetrics() RequestMetrics {
 	m := loadMetricsDisk()
 	cachedMetrics = &m
 	return m
-}
-
-// GetLogStats is an alias for GetRequestMetrics.
-func GetLogStats() LogStats {
-	return GetRequestMetrics()
 }
 
 func loadMetricsDisk() RequestMetrics {
@@ -174,58 +158,6 @@ func RecordErrorDiagnostic(e ErrorDiagnostic) {
 			_ = lf.Close()
 		}
 	}
-}
-
-// AppendFullIO is an alias for RecordErrorDiagnostic.
-func AppendFullIO(e FullIO) {
-	RecordErrorDiagnostic(e)
-}
-
-// GetLatestErrorLog retrieves the most recent error block from errors.log (or amux.log).
-func GetLatestErrorLog() (string, bool) {
-	appendMu.Lock()
-	defer appendMu.Unlock()
-
-	paths := []string{errorsLogPath(), legacyLogPath()}
-	for _, p := range paths {
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		var blocks []string
-		var current strings.Builder
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 64*1024), 10<<20)
-
-		for sc.Scan() {
-			line := sc.Text()
-			if strings.HasPrefix(line, "================================================================================") {
-				if current.Len() > 0 {
-					blocks = append(blocks, current.String())
-					current.Reset()
-				}
-			}
-			current.WriteString(line)
-			current.WriteByte('\n')
-		}
-		_ = f.Close()
-		if current.Len() > 0 {
-			blocks = append(blocks, current.String())
-		}
-
-		for i := len(blocks) - 1; i >= 0; i-- {
-			if strings.Contains(blocks[i], "error=") {
-				return blocks[i], true
-			}
-		}
-	}
-
-	statsMu.Lock()
-	defer statsMu.Unlock()
-	if cachedMetrics != nil && cachedMetrics.LastError != "" {
-		return fmt.Sprintf("Error: %s\nTime: %s", cachedMetrics.LastError, cachedMetrics.LastErrorTime.Format(time.RFC3339)), true
-	}
-	return "", false
 }
 
 func maybeAutoPrune(retention time.Duration) {

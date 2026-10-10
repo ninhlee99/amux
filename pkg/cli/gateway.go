@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,16 +41,14 @@ func CmdGateway(args []string) {
 		cmdGatewayHook(subArgs)
 	case "unhook":
 		cmdGatewayUnhook(subArgs)
+	case "_supervise":
+		// Internal entry point run by `amux start`: keeps the daemon alive.
+		cmdGatewaySupervise()
 	case "_daemon":
 		// Internal entry point run by detached daemon process
 		cmdGatewayRunDaemon()
 	case "token":
 		cmdGatewayToken(subArgs)
-	case "btw":
-		if len(subArgs) == 0 {
-			die("usage: amux gateway btw <message>")
-		}
-		proxy.CmdBtw(strings.Join(subArgs, " "))
 	default:
 		die("unknown gateway command: %s (valid: start, stop, status, hook, unhook, token)", sub)
 	}
@@ -413,6 +414,18 @@ func cmdGatewayRunDaemon() {
 	_ = gateway.RunDaemon(func() error {
 		return proxy.RunProxy("", "")
 	})
+}
+
+func cmdGatewaySupervise() {
+	self, err := os.Executable()
+	if err != nil {
+		die("find self binary: %v", err)
+	}
+	pidPath := gateway.SupervisorPIDFilePath()
+	_ = os.MkdirAll(filepath.Dir(pidPath), 0o755)
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	defer os.Remove(pidPath)
+	_ = proxy.RunSupervisor(self, "gateway", "_daemon")
 }
 
 func cmdGatewayToken(args []string) {

@@ -27,7 +27,7 @@
 
 - **Môi Trường Sandbox Cô Lập 100% (`amux run <ide>`)**: Chạy Claude Code, Cursor, Windsurf, Antigravity (AGY), hoặc Codex trong tiến trình con được cô lập trỏ về Gateway. Tự động kiểm tra tính sẵn sàng của tài khoản và cấu hình OpenAI của Cursor. Khi thoát ra, shell và cấu hình hệ thống nguyên vẹn 100%. Các lệnh gọi trực tiếp (`claude`, `cursor`) luôn chạy Native nguyên bản với độ trễ 0ms.
 - **Xoay Tua Keychain Ngầm (Silent Keychain Rotation)**: Lưu nhiều tài khoản cho mỗi nhà cung cấp. Khi tài khoản chạm ngưỡng 95% hạn mức, AMUX tự động hoán đổi credential trong Keychain hoặc chuyển tiếp sang tài khoản khả dụng tiếp theo.
-- **Web Accounts Làm AI Coding Proxy (WebLoop 2.0)**: Biến phiên Web miễn phí (ChatGPT Web, Gemini Web, Claude Web, Meta Muse) thành backend cho IDE. Động cơ WebLoop hỗ trợ **stream suy nghĩ thời gian thực (`<thought>`)**, **bộ phân giải Lenient Multi-Schema AST JSON tự phục hồi** (Gemini `parameters`, OpenAI `function.arguments`, Flat JSON, LangChain), lọc sạch markup rác và gửi tín hiệu keepalive chống rớt mạng.
+- **Web Accounts Làm AI Coding Proxy (WebLoop 2.0)**: Biến phiên Web miễn phí (ChatGPT Web, Gemini Web, Claude Web) thành backend cho IDE. Động cơ WebLoop hỗ trợ **stream suy nghĩ thời gian thực (`<thought>`)**, **bộ phân giải Lenient Multi-Schema AST JSON tự phục hồi** (Gemini `parameters`, OpenAI `function.arguments`, Flat JSON, LangChain), lọc sạch markup rác và gửi tín hiệu keepalive chống rớt mạng.
 - **Bộ Công Cụ MCP Toàn Diện (7 Công Cụ Chuyên Sâu)**: Tích hợp trực tiếp vào mọi IDE hỗ trợ MCP (Cursor, Windsurf, Claude Desktop, VS Code, Zed) với các công cụ lập trình mạnh mẽ: `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, và `amux_analyze`. Kết quả trả về được tự động làm sạch khỏi các thẻ markup web nội bộ.
 - **Bảo Mật Cục Bộ & Không Thu Thập Dữ Liệu (Zero-Telemetry)**: Hoạt động 100% offline trên máy của bạn. Mọi secret lưu tại `~/.amux` được mã hóa AES-256-GCM qua macOS Keychain hoặc file khóa riêng biệt (`~/.amux/master.key`).
 
@@ -229,7 +229,6 @@ Tất cả công cụ MCP tự động loại bỏ các thẻ markup nội bộ 
 
 ### 3. Giám Sát & Chẩn Đoán
 - `amux dashboard` — Mở dashboard tương tác toàn màn hình trong terminal.
-- `amux top` — Xem log thời gian thực các request, token và độ trễ qua gateway.
 - `amux doctor [--fix]` — Tự động chẩn đoán quyền hạn, keychain và dọn dẹp config cũ.
 - `amux usage [day|week|month]` — Báo cáo thống kê lượng token tiêu thụ.
 

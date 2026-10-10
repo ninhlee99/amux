@@ -87,11 +87,11 @@ flowchart TB
 | `amux run <ide>` sandbox & preflight | `cli/run.go`, `hook/cursor.go`, `cli/cli.go` | `cmdRun`, `LoadCursorSettings`, `findAppBinary` | `pkg/cli/cli_test.go` |
 | Guard / quarantine / 429 | `guard/*.go` | `Pace`, `IsQuarantined`, `RecordError` | `guard_test.go` |
 | Nén token context (20k budget / 85k runes) | `pkg/ctxshrink/shrink.go`, `bridge/responses.go` | `ShrinkConversation`, `MaxWebRunesLimit` | `pkg/ctxshrink/shrink_test.go` |
-| Ma trận tool chéo (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP) | `bridge/cross_tool_matrix_test.go`, `tools/dialect.go` | `TranslateToolCall`, `CanonicalTool` | `cross_tool_matrix_test.go` |
+| Ma trận tool chéo (Claude ↔ Codex ↔ AGY ↔ Subagent ↔ MCP) | `bridge/cross_tool_matrix_test.go`, `tools/dialect.go` | `TranslateToolCall` | `cross_tool_matrix_test.go` |
 | Dừng gateway (`amux stop`) | `pkg/proxy/client.go`, `pkg/cli/cli.go` | `cmdGatewayStop`, `SaveBindPublic` | `client_test.go`, `cli_test.go` |
-| Endpoint `/_am/status` & structured 503 errors | `proxy/server.go`, `ui/status.go` | `newHandler`, `fetchProxyStatus`, `writeAnthropicError` | `server_test.go` |
+| Endpoint `/_am/status` & structured 503 errors | `proxy/server.go` | `newHandler`, `writeAnthropicError` | `server_test.go` |
 | Integration thật (credentials) | `live/live_test.go` | `//go:build live` | `go test -tags live ./pkg/live` |
-| MCP server / tool `amux_*`, `muse_*` | `mcp/server.go`, `mcp/tools.go`, `mcp/backend.go`, `cli/mcp.go` | `Serve`, `RegisterAmuxTools`, `RegisterMuseTools`, `PoolMemberFilter` | `pkg/mcp/server_test.go` |
+| MCP server / tool `amux_*` | `mcp/server.go`, `mcp/tools.go`, `mcp/backend.go`, `cli/mcp.go` | `Serve`, `RegisterAmuxTools`, `PoolMemberFilter` | `pkg/mcp/server_test.go` |
 | `amux mcp install` cho IDE | `mcp/install.go` | `Targets`, `Install`, `setCodexBlock`, `ErrHasComments` | `pkg/mcp/install_test.go` |
 | Pool xoay tự động (sub chỉ vào pool khi `amux pool add`) | `cli/pool.go`, `identity/identity.go`, `identity/store.go`, `router/pool.go`, `proxy/rotator.go` | `CanAutoRotate`, `PoolMemberFilter`, `ProfileInPool`, `SetSubscriptionPoolFilter`, `pooledLocked` | `send_provider_test.go`, `rotator_test.go`, `identity_test.go` |
 | `amux switch` không login lại / gỡ sạch (`off`, `unhook`, `uninstall`, `mcp uninstall`) | `cli/id.go`, `proxy/client.go` (`SwitchProfile`), `profile/manager.go` (`accountOnlyKeys`), `gateway/hook.go`, `gateway/hookstate.go`, `cli/system.go`, `mcp/install.go` | `cmdIDSelect`, `CmdOff`, `cmdUninstall`, `UnhookAgy`, `Uninstall` | `unhook_clean_test.go`, `account_merge_test.go`, `install_test.go` |

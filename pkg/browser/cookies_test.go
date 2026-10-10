@@ -29,10 +29,10 @@ func TestParseCookieHeaderBareValueWithPadding(t *testing.T) {
 	// Real __Secure-1PSID / sessionKey values are base64-ish and often carry
 	// '=' padding. A bare paste of one must not be rejected.
 	cases := map[string]string{
-		"g.a000xyzABC123==":  "g.a000xyzABC123==",
-		"g.a000xyzABC123=":   "g.a000xyzABC123=",
-		"g.a000xyzABC123":    "g.a000xyzABC123",
-		"sk-ant-abc123==":    "sk-ant-abc123==",
+		"g.a000xyzABC123==": "g.a000xyzABC123==",
+		"g.a000xyzABC123=":  "g.a000xyzABC123=",
+		"g.a000xyzABC123":   "g.a000xyzABC123",
+		"sk-ant-abc123==":   "sk-ant-abc123==",
 	}
 	for in, want := range cases {
 		if got := ParseCookieHeader(in, "__Secure-1PSID"); got != want {
@@ -87,5 +87,3 @@ func TestDecryptCookie_Strips32ByteHeader(t *testing.T) {
 		t.Errorf("decryptCookie got %q, want %q", got, expected)
 	}
 }
-
-

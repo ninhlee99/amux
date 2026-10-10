@@ -58,8 +58,14 @@ type chatgptSentinelTokens struct {
 //
 // PoW algorithm matches the public reverse-engineered form used by gpt4free /
 // chat2api (fingerprint JSON → base64 → sha3-512(seed+base) ≤ difficulty).
+const chatgptSentinelTimeout = 60 * time.Second
+
 func fetchChatGPTSentinel(ctx context.Context, client *http.Client, accessToken, accountID, deviceID string) (*chatgptSentinelTokens, error) {
 	body := []byte(`{"p":""}`)
+	// A small JSON call: bound it so a dead pooled connection fails fast
+	// instead of waiting out the OS TCP timeout (~16 min observed).
+	ctx, cancel := context.WithTimeout(ctx, chatgptSentinelTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTSentinelURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

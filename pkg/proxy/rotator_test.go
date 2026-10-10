@@ -91,15 +91,15 @@ func TestRotator_ShouldFailoverToProviderPool(t *testing.T) {
 
 	// 1 profile, available → false
 	r1 := &Rotator{
-		tool:          "claude",
-		order:         []string{"solo"},
-		tokens:        map[string]*types.Token{"solo": {Access: "tok"}},
-		accounts:      map[string]string{},
-		cooldown:      map[string]time.Time{},
-		dead:          map[string]bool{},
-		autoSwitches:  map[string]int{},
+		tool:           "claude",
+		order:          []string{"solo"},
+		tokens:         map[string]*types.Token{"solo": {Access: "tok"}},
+		accounts:       map[string]string{},
+		cooldown:       map[string]time.Time{},
+		dead:           map[string]bool{},
+		autoSwitches:   map[string]int{},
 		manualSwitches: map[string]int{},
-		usedThreshold: DefaultUsedThreshold,
+		usedThreshold:  DefaultUsedThreshold,
 	}
 	if r1.ShouldFailoverToProviderPool() {
 		t.Fatal("1 available profile: no failover")
@@ -113,9 +113,9 @@ func TestRotator_ShouldFailoverToProviderPool(t *testing.T) {
 
 	// 2 profiles, both cooling → true (exhaust Claude first, then pool)
 	r2 := &Rotator{
-		tool:   "claude",
-		order:  []string{"a", "b"},
-		tokens: map[string]*types.Token{"a": {Access: "t"}, "b": {Access: "t"}},
+		tool:     "claude",
+		order:    []string{"a", "b"},
+		tokens:   map[string]*types.Token{"a": {Access: "t"}, "b": {Access: "t"}},
 		accounts: map[string]string{},
 		cooldown: map[string]time.Time{
 			"a": time.Now().Add(time.Hour),

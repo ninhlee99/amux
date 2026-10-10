@@ -2,7 +2,9 @@
 
 ## Purpose
 Web chat accounts (ChatGPT, Claude.ai, Gemini web) serve as free-quota backends using the user's own browser sessions.
+
 ## Requirements
+
 ### Requirement: Dedicated login profiles
 Web logins SHALL happen in a dedicated Chromium profile under `~/.amux/browser-profiles/<name>`, never the user's system browser profile, with the session cookie captured over the DevTools Protocol.
 
@@ -51,3 +53,44 @@ Web adapters SHALL track accumulated prompt tokens and turn counts per conversat
 - **WHEN** an ongoing web conversation reaches the configured token threshold
 - **THEN** the adapter rotates the project conversation to a clean state for subsequent requests
 
+### Requirement: Gemini web account identity detection
+Gemini web login SHALL extract the user's account email and subscription tier from the authenticated session at `gemini.google.com/app`.
+
+#### Scenario: Gemini web login email detection
+- **WHEN** the user completes login to Gemini Web
+- **THEN** amux loads `https://gemini.google.com/app` with the session cookies, extracts the user's email, and saves the account under `gemini:web:<email_prefix>`
+
+### Requirement: Gemini Web self-links are collapsed
+The Gemini Web adapter SHALL replace markdown links whose label equals their URL, with or without the `http(s)://` scheme, by the label, in both streamed deltas and the final text, so tool-call arguments keep the literal path or URL the model wrote.
+
+#### Scenario: Self-linked path in a tool call
+- **WHEN** Gemini returns `{"file_path":"~/x/[github.com/o/r/p.json](https://github.com/o/r/p.json)"}` inside a `<tool_call>`
+- **THEN** the tool call carries `~/x/github.com/o/r/p.json`
+
+### Requirement: Gemini mid-stream rewrites
+The Gemini Web adapter SHALL take the latest non-empty response snapshot as the answer. For requests with client tools it SHALL send only that final text. For requests without tools it SHALL stream text only while each snapshot extends what was already sent, and SHALL send the final answer after a blank line when a rewrite diverged from it.
+
+#### Scenario: Draft abandoned for a rewrite
+- **WHEN** Gemini streams `<tool_call> {"name":"Ba…` and then restarts with `## Review\nAll good.`
+- **THEN** the answer is `## Review\nAll good.` with no part of the draft spliced into it
+
+### Requirement: Web streams have an idle timeout
+Web provider HTTP responses SHALL fail with an "upstream stream idle" error when no bytes arrive for 3 minutes, so a silent upstream does not hold the client's request open indefinitely. Streams that keep delivering bytes SHALL NOT be limited in total duration.
+
+#### Scenario: claude.ai goes silent mid-completion
+- **WHEN** a Claude Web completion stream sends headers and then no data for 3 minutes
+- **THEN** the adapter's read fails with the idle error and the request returns an error instead of hanging
+
+### Requirement: Dead web connections are detected quickly
+Web provider transports SHALL health-check idle HTTP/2 connections with pings so a silently dropped connection is discarded within about 45 seconds, and the ChatGPT sentinel request SHALL fail after 60 seconds instead of waiting for the operating system's TCP timeout.
+
+#### Scenario: Pooled connection dropped by the network
+- **WHEN** the HTTP/2 connection to chatgpt.com stops answering while idle
+- **THEN** the next request uses a new connection rather than hanging for many minutes
+
+### Requirement: ChatGPT python tool runs on the client
+When the client sent tools and ChatGPT Web addresses code to its own `python` tool, the adapter SHALL return a Bash tool call that runs that code with `python3` on the client instead of ChatGPT's tool error or canned "can't do more advanced data analysis" reply.
+
+#### Scenario: Python tool unavailable on the account
+- **WHEN** ChatGPT streams a `code` message to `python`, then a `system_error`, then "It seems like I can’t do more advanced data analysis right now."
+- **THEN** the client receives one Bash tool call running the code and none of that text

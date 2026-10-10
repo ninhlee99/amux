@@ -54,9 +54,6 @@ func obj(props map[string]any, required ...string) map[string]any {
 
 func str(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 func num(desc string) map[string]any { return map[string]any{"type": "integer", "description": desc} }
-func boolean(desc string) map[string]any {
-	return map[string]any{"type": "boolean", "description": desc}
-}
 
 func seconds(n int, def time.Duration) time.Duration {
 	if n <= 0 {
@@ -119,8 +116,8 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		},
 	})
 	s.Register(Tool{
-		Name:  "amux_review",
-		Title: "Review code diff or snippet",
+		Name:        "amux_review",
+		Title:       "Review code diff or snippet",
 		Description: "Send a git diff, pull request patch, or code snippet to an AI in the pool for independent code review (bugs, security, architecture, edge cases).",
 		InputSchema: obj(map[string]any{
 			"diff":        str("The git diff, patch, or code snippet to review."),
@@ -162,8 +159,8 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		},
 	})
 	s.Register(Tool{
-		Name:  "amux_diagnose",
-		Title: "Diagnose error or crash",
+		Name:        "amux_diagnose",
+		Title:       "Diagnose error or crash",
 		Description: "Investigate a bug, error message, failing test, or stack trace. Analyzes root cause, reproduction conditions, and outlines exact fixes.",
 		InputSchema: obj(map[string]any{
 			"error":       str("The error message, panic log, test failure, or stack trace."),
@@ -212,8 +209,8 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		},
 	})
 	s.Register(Tool{
-		Name:  "amux_fix",
-		Title: "Generate bug fix or code patch",
+		Name:        "amux_fix",
+		Title:       "Generate bug fix or code patch",
 		Description: "Generate a precise code patch, refactor, or bug fix for a given file or function based on issue description.",
 		InputSchema: obj(map[string]any{
 			"file_content": str("The current code content of the file or function needing fixes."),
@@ -260,8 +257,8 @@ func RegisterAmuxTools(s *Server, b Backend) {
 		},
 	})
 	s.Register(Tool{
-		Name:  "amux_analyze",
-		Title: "Analyze project architecture or design",
+		Name:        "amux_analyze",
+		Title:       "Analyze project architecture or design",
 		Description: "Analyze codebase structure, database schema, module relationships, or technical trade-offs for a project.",
 		InputSchema: obj(map[string]any{
 			"structure":   str("The file tree, module layout, API contracts, or schema to evaluate."),

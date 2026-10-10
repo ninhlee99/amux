@@ -27,7 +27,7 @@
 
 - **Zero-Pollution Sandbox (`amux run <ide>`)**: Run Claude Code, Cursor, Windsurf, Antigravity (AGY), or Codex in an isolated child process pointing to the gateway. Pre-flight checks verify account readiness and inspect Cursor OpenAI settings. Exiting leaves your shell and system settings 100% clean. Direct launches (`claude`, `cursor`) run natively with 0ms overhead.
 - **Silent Keychain Rotation**: Maintain multiple accounts per provider. When usage hits 95%, AMUX smoothly rotates credentials or hands over to the next account without breaking your flow.
-- **Web Accounts as Coding Proxies (WebLoop 2.0)**: Connect ChatGPT Web, Gemini Web, Claude Web, or Meta Muse. WebLoop translates natural language and markdown into native agent tool calls with **real-time thinking streams (`<thought>`)**, **Lenient Multi-Schema AST JSON self-healing** (Gemini `parameters`, OpenAI `function.arguments`, flat JSON, LangChain formats), markup sanitization, and keepalive pulses.
+- **Web Accounts as Coding Proxies (WebLoop 2.0)**: Connect ChatGPT Web, Gemini Web, or Claude Web. WebLoop translates natural language and markdown into native agent tool calls with **real-time thinking streams (`<thought>`)**, **Lenient Multi-Schema AST JSON self-healing** (Gemini `parameters`, OpenAI `function.arguments`, flat JSON, LangChain formats), markup sanitization, and keepalive pulses.
 - **Full Developer MCP Suite (7 Specialized Tools)**: Wire your accounts into any MCP-capable IDE (Cursor, Windsurf, VS Code, Zed, Claude Desktop) with tools like `amux_ask`, `amux_review`, `amux_diagnose`, `amux_fix`, and `amux_analyze`. Results are automatically sanitized of internal web markup.
 - **Zero-Telemetry & Encrypted Secret Vault**: 100% offline and private. Secrets are encrypted locally via AES-256-GCM in macOS Keychain or an isolated keyfile (`~/.amux/master.key`).
 
@@ -229,7 +229,6 @@ All MCP tools automatically sanitize LLM outputs to remove internal web markup (
 
 ### 3. Diagnostics & Monitoring
 - `amux dashboard` — Open interactive full-screen terminal UI.
-- `amux top` — Live stream of gateway requests, token usage, and latencies.
 - `amux doctor [--fix]` — Diagnose keychain, permissions, and clean legacy hooks.
 - `amux usage [day|week|month]` — View token consumption metrics.
 

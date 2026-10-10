@@ -35,6 +35,8 @@ func NewProxyTransport(proxyURL string) (*http.Transport, error) {
 	// Generation providers may legitimately take several minutes before first
 	// SSE bytes (reasoning, sentinel and upstream queueing).
 	t.ResponseHeaderTimeout = 5 * time.Minute
+	// Detect silently dropped HTTP/2 connections (see provider.webHTTP2Config).
+	t.HTTP2 = &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second}
 	return t, nil
 }
 

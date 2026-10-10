@@ -309,27 +309,6 @@ func (sa *SessionAffinity) Unpin(sessionKey string) {
 	delete(shard.pinned, sessionKey)
 }
 
-// UnpinAccount removes all sessions pinned to an account concurrently across all shards via WorkerPool.
-func (sa *SessionAffinity) UnpinAccount(accountID string) {
-	if accountID == "" {
-		return
-	}
-	tasks := make([]Task, numSessionShards)
-	for i := 0; i < numSessionShards; i++ {
-		shard := &sa.shards[i]
-		tasks[i] = func() {
-			shard.mu.Lock()
-			for k, v := range shard.pinned {
-				if v.accountID == accountID {
-					delete(shard.pinned, k)
-				}
-			}
-			shard.mu.Unlock()
-		}
-	}
-	sa.pool.ExecuteBatch(tasks)
-}
-
 // ActivePinsCount returns the number of active pinned sessions counted concurrently via WorkerPool.
 func (sa *SessionAffinity) ActivePinsCount() int {
 	now := time.Now()

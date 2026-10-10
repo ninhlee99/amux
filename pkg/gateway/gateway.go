@@ -20,25 +20,30 @@ import (
 
 // GatewayStatus represents the live status of the Universal AI Gateway.
 type GatewayStatus struct {
-	Running      bool           `json:"running"`
-	PID          int            `json:"pid,omitempty"`
-	Port         string         `json:"port"`
-	URL          string         `json:"url"`
+	Running        bool           `json:"running"`
+	PID            int            `json:"pid,omitempty"`
+	Port           string         `json:"port"`
+	URL            string         `json:"url"`
 	ClaudeHooked   bool           `json:"claude_hooked"`
 	CursorHooked   bool           `json:"cursor_hooked"`
 	WindsurfHooked bool           `json:"windsurf_hooked"`
 	CodexHooked    bool           `json:"codex_hooked"`
 	AgyHooked      bool           `json:"agy_hooked"`
 	Upstream       string         `json:"upstream,omitempty"`
-	Mode         string         `json:"mode,omitempty"`
-	Sessions     int            `json:"sessions"`
-	PublicMode   bool           `json:"public_mode"`
-	Pool         map[string]any `json:"pool,omitempty"`
+	Mode           string         `json:"mode,omitempty"`
+	Sessions       int            `json:"sessions"`
+	PublicMode     bool           `json:"public_mode"`
+	Pool           map[string]any `json:"pool,omitempty"`
 }
 
 // PIDFilePath returns ~/.amux/gateway.pid.
 func PIDFilePath() string {
 	return filepath.Join(types.BaseDir(), "gateway.pid")
+}
+
+// SupervisorPIDFilePath returns ~/.amux/gateway.supervisor.pid.
+func SupervisorPIDFilePath() string {
+	return filepath.Join(types.BaseDir(), "gateway.supervisor.pid")
 }
 
 // LogFilePath returns ~/.amux/gateway.log.
@@ -144,7 +149,7 @@ func Start() error {
 		return fmt.Errorf("find self binary: %w", err)
 	}
 
-	cmd := exec.Command(self, "gateway", "_daemon")
+	cmd := exec.Command(self, "gateway", "_supervise")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true, // detach from terminal process group
 	}
@@ -185,12 +190,21 @@ func Start() error {
 			// Some other process is answering on :8787 right now — that's
 			// not going to change while we keep polling, so fail fast
 			// instead of burning the rest of the deadline.
+			stopSupervisor(pid)
 			return fmt.Errorf("gateway process %d started, but port 8787 is already in use by a different process (not amux) — stop whatever else is listening there, or check 'lsof -i :8787', and try again", pid)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	return fmt.Errorf("gateway process %d started but did not respond on :8787 in time (it may still come up in the background — check with 'amux status')", pid)
+}
+
+// stopSupervisor asks a just-spawned supervisor to stop so a failed start
+// doesn't leave it respawning a daemon that can never bind.
+func stopSupervisor(pid int) {
+	if pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
 }
 
 // Stop gracefully stops the running gateway daemon.
@@ -214,6 +228,14 @@ func Stop() error {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// The supervisor forwards SIGTERM to the daemon and stops respawning;
+	// signalling the daemon alone would just get it restarted.
+	if pidData, err := os.ReadFile(SupervisorPIDFilePath()); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(pidData))); err == nil && pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		}
 	}
 
 	// If PID file exists, try SIGTERM

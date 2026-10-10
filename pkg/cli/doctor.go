@@ -14,7 +14,7 @@ import (
 	"amux-accounts/pkg/hook"
 	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/mcp"
-	"amux-accounts/pkg/monitor"
+	"amux-accounts/pkg/proxy"
 	"amux-accounts/pkg/types"
 	"amux-accounts/pkg/ui"
 )
@@ -81,14 +81,12 @@ func CmdDoctor(args []string) {
 		fmt.Printf("FAIL (%s)\n", msg)
 	}
 
-	// 2. Gateway Daemon & UDS Socket Status
-	fmt.Print("[Daemon Socket] Checking Unix Domain Socket (~/.amux/amux.sock)... ")
-	sockPath := monitor.DefaultSocketPath()
-	udsClient := monitor.NewUDSClient(sockPath)
-	if udsClient.IsDaemonAvailable() {
-		fmt.Printf("ONLINE (Responding via IPC)\n")
+	// 2. Gateway Daemon Status
+	fmt.Print("[Gateway] Checking gateway daemon... ")
+	if proxy.ProxyUp() {
+		fmt.Printf("ONLINE\n")
 	} else {
-		fmt.Printf("OFFLINE (Run 'amux start' to activate socket IPC & proxy)\n")
+		fmt.Printf("OFFLINE (Run 'amux start' to activate the proxy)\n")
 	}
 
 	// 3. Network Upstream Connectivity

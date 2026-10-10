@@ -249,9 +249,11 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 
 		// If tool calls were accumulated (or extracted from text prompt for web loops)
+		var forcedTools bool
 		if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-			if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+			if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 				toolCalls = parsed
+				forcedTools = forced
 			}
 		}
 		if len(toolCalls) > 0 {
@@ -261,7 +263,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		outputIndex := 0
 		if len(toolCalls) > 0 {
 			cleanProse := tools.StripWebToolMarkup(fullContent.String())
-			if len(cleanProse) > flushedContentLen {
+			if !forcedTools && !tools.IsToolRefusal(fullContent.String()) && len(cleanProse) > flushedContentLen {
 				remaining := cleanProse[flushedContentLen:]
 				if strings.TrimSpace(remaining) != "" {
 					if !textPartStarted {
@@ -520,9 +522,11 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 		}
 	}
 
+	var forcedTools bool
 	if len(toolCalls) == 0 && fullContent.Len() > 0 && len(req.Tools) > 0 {
-		if parsed, _ := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
+		if parsed, forced := tools.FinalizeWebToolCalls(fullContent.String(), req.Tools, req.Messages); len(parsed) > 0 {
 			toolCalls = parsed
+			forcedTools = forced
 		}
 	}
 	if len(toolCalls) > 0 {
@@ -532,7 +536,11 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	var outputItems []map[string]any
 	cleanText := fullContent.String()
 	if len(toolCalls) > 0 {
-		cleanText = tools.StripWebToolMarkup(cleanText)
+		if forcedTools || tools.IsToolRefusal(fullContent.String()) {
+			cleanText = ""
+		} else {
+			cleanText = tools.StripWebToolMarkup(cleanText)
+		}
 	}
 	if strings.TrimSpace(cleanText) != "" {
 		outputItems = append(outputItems, map[string]any{

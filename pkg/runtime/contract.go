@@ -119,21 +119,6 @@ func formatSortedCatalog(tools []NativeToolDefinition) string {
 	return sb.String()
 }
 
-// FormatSchemaCatalog renders all tools in the manifest into a high-fidelity catalog.
-func FormatSchemaCatalog(m *RuntimeManifest) string {
-	if m == nil || len(m.Tools) == 0 {
-		return ""
-	}
-
-	sortedTools := make([]NativeToolDefinition, len(m.Tools))
-	copy(sortedTools, m.Tools)
-	sort.Slice(sortedTools, func(i, j int) bool {
-		return sortedTools[i].Name < sortedTools[j].Name
-	})
-
-	return formatSortedCatalog(sortedTools)
-}
-
 // FormatToolSchema formats a single tool definition with clear required/optional parameters.
 // Also includes the compact signature `ToolName:key:type` for backward-compatible test assertions.
 func FormatToolSchema(t NativeToolDefinition) string {

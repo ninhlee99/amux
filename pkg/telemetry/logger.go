@@ -65,24 +65,3 @@ func LogPassthrough(client string, upstream string, account string, toolCount in
 		_, _ = fmt.Fprint(logOut, line)
 	}
 }
-
-// LogGatewayRequest emits real-time structured log for routed gateway requests.
-func LogGatewayRequest(action string, client string, upstream string, account string, toolCount int, statusCode int, duration time.Duration) {
-	logMu.Lock()
-	defer logMu.Unlock()
-
-	ts := time.Now().Format("2006-01-02 15:04:05.000")
-	durMs := duration.Milliseconds()
-
-	toolInfo := ""
-	if toolCount > 0 {
-		toolInfo = fmt.Sprintf(" | Tools: %d active", toolCount)
-	}
-
-	line := fmt.Sprintf("[%s] [%s] %s -> %s | Account: %s%s | %d (%dms)\n",
-		ts, action, client, upstream, account, toolInfo, statusCode, durMs)
-
-	if logOut != nil {
-		_, _ = fmt.Fprint(logOut, line)
-	}
-}

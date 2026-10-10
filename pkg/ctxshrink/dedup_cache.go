@@ -301,33 +301,6 @@ func (d *GlobalToolDeduplicator) ResetProject(project string) {
 	delete(d.projects, key)
 }
 
-// Size returns the count of cached content pointers across all projects.
-func (d *GlobalToolDeduplicator) Size() int {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	total := 0
-	for _, store := range d.projects {
-		store.mu.RLock()
-		total += len(store.store)
-		store.mu.RUnlock()
-	}
-	return total
-}
-
-// ProjectSize returns the count of cached content pointers for a specific project.
-func (d *GlobalToolDeduplicator) ProjectSize(project string) int {
-	key := normalizeProjectKey(project)
-	d.mu.RLock()
-	store, ok := d.projects[key]
-	d.mu.RUnlock()
-	if !ok || store == nil {
-		return 0
-	}
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	return len(store.store)
-}
-
 func defaultDedupCachePath() string {
 	return filepath.Join(types.BaseDir(), "cache", "tool_dedup.json")
 }

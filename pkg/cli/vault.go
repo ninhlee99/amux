@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"amux-accounts/pkg/identity"
+
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/term"
 )

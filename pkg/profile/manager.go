@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"amux-accounts/pkg/auth"
@@ -336,7 +335,6 @@ func parseJWTClaim(tok, field string) string {
 	}
 	return ""
 }
-
 
 func SnapshotArtifact(a types.Artifact) (types.ProfileEntry, error) {
 	switch a.Kind {
@@ -802,26 +800,6 @@ func SyncActiveFromSystem(tool string) {
 	if ReadActivePointer(tool) != name {
 		WriteActivePointer(tool, name)
 	}
-}
-
-func PrintLiveLogins() {
-	c := LoadConfig()
-	tools := ToolNames(c)
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "TOOL\tLOGGED IN AS\tSAVED PROFILE")
-	for _, tn := range tools {
-		acct := DetectAccount(ToolSpec(tn))
-		acctDisplay := acct
-		if acctDisplay == "" {
-			acctDisplay = "-"
-		}
-		prof := MatchProfileByAccount(tn, acct)
-		if prof == "" {
-			prof = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", tn, acctDisplay, prof)
-	}
-	w.Flush()
 }
 
 // SaveDirectProfile saves an in-memory credential payload as a managed profile.

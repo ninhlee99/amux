@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change upgrade-tier2-web-gateway. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Smart tool result pruning
 The gateway SHALL prune overly long tool results (exceeding 4KB or 100 lines) when flattening multi-turn message history for Web providers, preserving the leading 30 lines and trailing 40 lines with a truncation summary indicator.
 
@@ -11,11 +13,18 @@ The gateway SHALL prune overly long tool results (exceeding 4KB or 100 lines) wh
 - **THEN** the flattened prompt contains the first 30 lines, a truncation marker `[... truncated X lines ...]`, and the last 40 lines
 
 ### Requirement: Dynamic micro few-shot prompt injection
-When formatting requests with tools for web chat sessions, the gateway SHALL include a concise 1-shot example demonstrating tool calling markup syntax to guide the web model.
+When formatting requests with tools for web chat sessions, the gateway SHALL include a concise 1-shot example demonstrating tool calling markup syntax to guide the web model, and SHALL use neutral, non-adversarial protocol framing without coercive phrases (such as "never refuse", "never claim lack of tools", "DO NOT decline", "fake edits are forbidden") that trigger model safety refusals.
 
 #### Scenario: Tool catalog and few-shot formatting
 - **WHEN** a client sends a ChatRequest containing tools to a Web backend
-- **THEN** the injected prompt includes both the catalog and a 1-shot `<tool_call>` example
+- **THEN** the injected prompt includes both the catalog and a 1-shot `<tool_call>` example using neutral technical protocol instructions
+
+### Requirement: Robust web refusal detection without leaking simulation debate
+The gateway SHALL detect web model refusal or simulation concerns (including indications of text simulation, harness distrust, or model inability to access tools) in `IsToolRefusal`, preventing raw refusal essays from degrading the user experience while ensuring valid tool calls and normal responses are preserved across Claude, ChatGPT, and Gemini web providers.
+
+#### Scenario: Claude Web simulation refusal detected
+- **WHEN** a web model response includes statements rejecting the session as a text simulation or expressing prompt injection suspicion
+- **THEN** `IsToolRefusal` evaluates to true, allowing the gateway to handle the refusal appropriately
 
 ### Requirement: Elimination of synthetic refusal tool injection
 The gateway SHALL NOT inject synthetic or heuristic tool calls when a web model outputs conversational refusal, incomplete work notices, or plain explanatory prose.
@@ -73,4 +82,44 @@ When serving OpenAI/Cursor stream requests with tools configured, the gateway SH
 - **WHEN** a tool returns 150 lines of code content under 24KB
 - **THEN** `PruneToolResult` returns the full content without omitting lines in the middle
 
+### Requirement: Provider-specific web tool prompt specialization
+The gateway SHALL tailor web tool prompt preambles, reminders, and closers specifically to the active web provider:
+- For Claude Web (`claude`): The prompt SHALL instruct the model neutrally on tool invocation without referencing Python or container sandboxes.
+- For ChatGPT Web (`chatgpt`): The prompt SHALL advise the model that internal Python/container tools cannot access the workspace, directing execution to `<tool_call>`.
+- For Gemini Web (`gemini`): The prompt SHALL provide workspace tool directives aligned with Google model formats.
 
+#### Scenario: Claude Web prompt omits container sandbox text
+- **WHEN** formatting a prompt for Claude Web
+- **THEN** the preamble and reminder do not contain references to Python or container sandboxes
+
+#### Scenario: ChatGPT Web prompt retains sandbox steering
+- **WHEN** formatting a prompt for ChatGPT Web
+- **THEN** the preamble and reminder advise the model that internal python/container tools cannot access the workspace
+
+### Requirement: Skill metadata turn normalization
+The gateway prompt engine SHALL filter IDE metadata blocks such as `<system-reminder>` when inspecting user messages, ensuring that trailing metadata updates containing `(no content)` are not misclassified as new user requests, and that the original user task goal (including slash commands and skills) is preserved across all subsequent tool turns.
+
+#### Scenario: Trailing skill reminder does not break tool loop
+- **WHEN** an IDE client appends a user message with `<system-reminder>15000000 tokens left</system-reminder>\n\n(no content)` following a tool execution
+- **THEN** the prompt engine treats the session as an ongoing tool loop, does not inject new-request cues, and maintains the active task goal
+
+### Requirement: Web catalog marks optional and enumerated arguments
+The web tool catalog SHALL list required arguments as `name:type`, optional arguments as `name?:type`, and enumerated arguments by their allowed values joined with `|`. Before a parsed web tool call is returned to the client, optional arguments whose value is null or outside the schema enum SHALL be removed.
+
+#### Scenario: ChatGPT fills Agent isolation with an invalid value
+- **WHEN** a web reply calls `Agent` with `{"prompt":"count lines","description":"d","isolation":"none"}` and `isolation` is an optional enum of `worktree|remote`
+- **THEN** the tool call returned to the client has no `isolation` argument and keeps `prompt` and `description`
+
+### Requirement: Task cue ignores skill bodies
+When the gateway restates the current task for a web model, it SHALL use the latest user turn that is not a skill expansion (a turn starting with `Base directory for this skill:`).
+
+#### Scenario: Skill loaded mid-task
+- **WHEN** the history is a user request, a `Skill` tool call, and the injected skill body
+- **THEN** the restated task is the user request
+
+### Requirement: Echoed protocol lines are not shown
+Text the client receives from a web reply SHALL NOT contain lines that only repeat the gateway's tool protocol instructions, such as "Wait for [Tool result] before continuing.".
+
+#### Scenario: Gemini echoes the wait line
+- **WHEN** a Gemini Web reply is "Wait for [Tool result] before continuing." followed by a `<tool_call>`
+- **THEN** the client receives the tool call and no text

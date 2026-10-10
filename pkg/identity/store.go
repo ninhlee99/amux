@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	storeMu sync.RWMutex
+	storeMu             sync.RWMutex
 	identitiesFileMagic = []byte("AMENC1:")
 )
 
@@ -472,21 +472,6 @@ func SetAutoRotate(path string, id string, enabled bool) error {
 	}
 
 	return SaveConfig(path, cfg)
-}
-
-// CanAutoRotateByID checks if an identity is eligible for auto-rotation/switching.
-// If not found in config, defaults to true. If found and CanAutoRotate() is false, returns false.
-func CanAutoRotateByID(path string, id string) bool {
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		return true
-	}
-	for _, ident := range cfg.Identities {
-		if ident.ID == id {
-			return ident.CanAutoRotate()
-		}
-	}
-	return true
 }
 
 // SetEnabled hard-enables or hard-disables an identity by ID.

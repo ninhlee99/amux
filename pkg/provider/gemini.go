@@ -42,7 +42,6 @@ type GeminiAdapter struct {
 
 	keyIndex  uint64
 	keyLimits sync.Map // map[string]time.Time (cooldown per key)
-	wrapped   types.ProviderAdapter
 }
 
 func parseGeminiKeys(apiKey string) []string {
@@ -118,8 +117,9 @@ func NewGeminiAdapter(id string, priority int, apiKey, model string) *GeminiAdap
 	}
 }
 
-func (a *GeminiAdapter) ID() string    { return a.AdapterID }
-func (a *GeminiAdapter) Priority() int { return a.PriorityLvl }
+func (a *GeminiAdapter) ID() string          { return a.AdapterID }
+func (a *GeminiAdapter) Priority() int       { return a.PriorityLvl }
+func (a *GeminiAdapter) SupportsTools() bool { return true }
 
 func (a *GeminiAdapter) getNextAPIKey() (string, int) {
 	keys := a.APIKeys

@@ -139,3 +139,8 @@ func helpDashboard() {
 	fmt.Println("    --once, -1, -o    Print a single snapshot and exit")
 	fmt.Println("    --json, -j        Output dashboard data in JSON format")
 }
+
+func clearScreen() {
+	// ANSI clear screen and home cursor
+	fmt.Print("\033[2J\033[H")
+}

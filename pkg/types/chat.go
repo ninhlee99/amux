@@ -144,6 +144,10 @@ type ChatRequest struct {
 	ServingAPI string `json:"-"`
 	// ServingModel tracks the underlying model invoked.
 	ServingModel string `json:"-"`
+	// ClientMessages, when > 0, is how many leading Messages came from the
+	// client; turns after it were added by the gateway (a web nudge retry).
+	// Thread checkpoints fingerprint only the client's part.
+	ClientMessages int `json:"-"`
 }
 
 // Project returns the project directory / root if present in Metadata.
@@ -215,6 +219,12 @@ type StreamChunk struct {
 	Error        error
 	// LogText is the raw provider reply for request logging and error diagnosis (not sent to the client).
 	LogText string
+	// ForcedTools indicates whether tool calls were auto-kickstarted or extracted from non-standard markup.
+	ForcedTools bool
+	// SpeculativeTools marks tool calls cut from a reply that scripted many
+	// calls at once; text streamed earlier in the turn narrated results no
+	// tool produced and should be discarded by a buffering consumer.
+	SpeculativeTools bool
 	// Usage carries token counts including cache read/creation stats from the upstream provider.
 	Usage *UsageStats
 }

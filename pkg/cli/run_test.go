@@ -138,4 +138,3 @@ func TestPrepareSandboxEnv_ProviderPinning(t *testing.T) {
 		t.Fatalf("cursor provider pinning mismatch: %+v", env)
 	}
 }
-

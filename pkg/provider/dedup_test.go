@@ -235,4 +235,3 @@ func TestResolvePoolSlot_ChatGPTWebAndCodexStaySeparate(t *testing.T) {
 		t.Errorf("web relogin slot = %+v, want chatgpt:bob", webSlot)
 	}
 }
-

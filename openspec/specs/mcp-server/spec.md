@@ -56,13 +56,6 @@ The server SHALL expose `amux_providers` (accounts without secrets), `amux_statu
 - **WHEN** `amux_analyze` is called with `structure` and `objective`
 - **THEN** architectural recommendations are returned
 
-### Requirement: Muse tools
-The server SHALL expose `muse_status`, `muse_login`, `muse_new_chat`, `muse_chat`, `muse_read_last`, `muse_chats`, `muse_open_chat`, `muse_read_chat`, `muse_media`, `muse_dump_dom` and `muse_close`, starting the Muse browser lazily on first use.
-
-#### Scenario: Chat with an attachment
-- **WHEN** `muse_chat` is called with `prompt` and `files: ["/tmp/a.png"]`
-- **THEN** the image is attached in the composer and the full reply plus thread URL is returned
-
 ### Requirement: Host registration
 `amux mcp install [host…|all]` SHALL register `<amux binary> mcp` in Claude Code (via `claude mcp add --scope user` when available, else `~/.claude.json`), Claude Desktop, Cursor, Windsurf, VS Code (`servers` key), Gemini CLI, Antigravity, Codex (`[mcp_servers.amux]` in `config.toml`), opencode (`mcp` key, local command array) and Zed (`context_servers`). Edits MUST be atomic, idempotent, keep a one-time `.amux.bak`, preserve other entries and file permissions, and MUST NOT rewrite files containing comments (the snippet is printed instead). `uninstall` removes only the amux entry.
 

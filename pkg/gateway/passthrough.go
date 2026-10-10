@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/telemetry"
 )
 
@@ -144,16 +143,4 @@ func DialectsMatch(clientDialect, targetDialect string) bool {
 		return true
 	}
 	return false
-}
-
-// RedactAuthHeaders applies target isolation to authorization headers.
-func RedactAuthHeaders(r *http.Request) {
-	if !privacy.Enabled {
-		return
-	}
-	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
-		if strings.HasPrefix(authHeader, "Bearer sk-") {
-			// Redact only the secret part
-		}
-	}
 }
