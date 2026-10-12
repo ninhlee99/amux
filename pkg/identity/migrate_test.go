@@ -249,3 +249,21 @@ func TestMigrateLegacyAccounts_FreshInstallTiers(t *testing.T) {
 		t.Errorf("api key account must stay api_key, got %s", got["openai:api:01"].Tier)
 	}
 }
+
+// Cached loads still see every save, and callers get independent values.
+func TestLoadConfig_CacheFollowsSaves(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("AMUX_HOME", tmpDir)
+	path := filepath.Join(tmpDir, "identities.json")
+	_ = identity.SaveConfig(path, &identity.Config{Identities: []identity.Identity{{ID: "a", Provider: "Codex", Tier: identity.TierAPIKey}}})
+	first, _ := identity.LoadConfig(path)
+	first.Identities[0].ID = "mutated"
+	again, _ := identity.LoadConfig(path)
+	if again.Identities[0].ID != "a" {
+		t.Fatal("a caller's mutation leaked into the cache")
+	}
+	_ = identity.SaveConfig(path, &identity.Config{Identities: []identity.Identity{{ID: "b", Provider: "Codex", Tier: identity.TierAPIKey}}})
+	if got, _ := identity.LoadConfig(path); got.Identities[0].ID != "b" {
+		t.Fatalf("load after save returned stale %q", got.Identities[0].ID)
+	}
+}

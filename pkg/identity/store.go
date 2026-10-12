@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/types"
@@ -36,6 +37,12 @@ func LoadConfig(path string) (*Config, error) {
 		path = DefaultIdentitiesPath()
 	}
 
+	info, statErr := os.Stat(path)
+	if statErr == nil {
+		if plain, ok := cachedPlain(path, info); ok {
+			return parseConfig(plain)
+		}
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -56,7 +63,40 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		}
 	}
+	if statErr == nil {
+		storePlain(path, info, data)
+	}
+	return parseConfig(data)
+}
 
+// The decrypted file is cached by path, size and mtime: decryption costs
+// ~50ms, and routing and /_am/status load the config for every account,
+// which made a status call take ~700ms (over the CLI's 500ms liveness probe).
+// Each call still unmarshals fresh values, so callers never share state.
+var plainCache struct {
+	sync.Mutex
+	path string
+	size int64
+	mod  time.Time
+	data []byte
+}
+
+func cachedPlain(path string, info os.FileInfo) ([]byte, bool) {
+	plainCache.Lock()
+	defer plainCache.Unlock()
+	if plainCache.data != nil && plainCache.path == path && plainCache.size == info.Size() && plainCache.mod.Equal(info.ModTime()) {
+		return plainCache.data, true
+	}
+	return nil, false
+}
+
+func storePlain(path string, info os.FileInfo, data []byte) {
+	plainCache.Lock()
+	defer plainCache.Unlock()
+	plainCache.path, plainCache.size, plainCache.mod, plainCache.data = path, info.Size(), info.ModTime(), data
+}
+
+func parseConfig(data []byte) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal identity config: %w", err)
@@ -95,6 +135,9 @@ func isWebIdentity(id Identity) bool {
 
 // SaveConfig atomically writes the flat identity config to disk with AES-256-GCM encryption at rest.
 func SaveConfig(path string, cfg *Config) error {
+	plainCache.Lock()
+	plainCache.data = nil
+	plainCache.Unlock()
 	storeMu.Lock()
 	defer storeMu.Unlock()
 

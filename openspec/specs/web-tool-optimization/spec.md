@@ -150,3 +150,10 @@ A web reply without a tool call that declines because the model doubts the relay
 - **WHEN** Claude Web replies that it cannot verify the relayed [Tool result]s and the retry on a fresh chat continues the task
 - **THEN** the client receives the retry's reply only
 
+### Requirement: Relay-doubt detection needs a relay-specific signal
+A reply SHALL count as relay doubt only when it contains a relay-specific phrase (e.g. "relayed text", "playing along", "fabricated", "no real tool execution") and at least one further doubt signal; answers that only mention a prompt injection or uncertainty SHALL pass through.
+
+#### Scenario: model reports an injection in a file
+- **WHEN** a reply says a file "contains a prompt injection" and that the model "can't verify" its author
+- **THEN** the reply reaches the client unchanged
+

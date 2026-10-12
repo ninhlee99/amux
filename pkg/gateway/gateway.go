@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -53,8 +54,17 @@ func LogFilePath() string {
 
 // IsRunning reports whether the gateway is responding to HTTP requests.
 func IsRunning() bool {
-	return probeStatus() == probeUp
+	switch probeStatus() {
+	case probeUp, probeBusy:
+		return true
+	}
+	return false
 }
+
+const gatewayAddr = "127.0.0.1:8787"
+
+// busyProbeTimeout is the second, patient status probe for a held port.
+var busyProbeTimeout = 5 * time.Second
 
 type probeResult int
 
@@ -70,6 +80,9 @@ const (
 	// timeout waiting on a health check that was talking to the wrong
 	// server).
 	probeOccupied
+	// probeBusy means the port is held and accepts connections but the
+	// status call timed out twice — a loaded gateway, not a free port.
+	probeBusy
 )
 
 // probeStatus checks /_am/status once and classifies the result. It relies
@@ -79,7 +92,20 @@ func probeStatus() probeResult {
 	c := http.Client{Timeout: 500 * time.Millisecond}
 	resp, err := c.Get(GatewayDefaultURL + "/_am/status")
 	if err != nil {
-		return probeDown
+		// A busy gateway (several sessions streaming) can answer slower
+		// than 500ms. If something holds the port, ask again with more
+		// patience before calling it down: a false "down" makes `amux run`
+		// try to start a second gateway.
+		conn, derr := net.DialTimeout("tcp", gatewayAddr, 300*time.Millisecond)
+		if derr != nil {
+			return probeDown
+		}
+		_ = conn.Close()
+		slow := http.Client{Timeout: busyProbeTimeout}
+		resp, err = slow.Get(GatewayDefaultURL + "/_am/status")
+		if err != nil {
+			return probeBusy
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK && resp.Header.Get(proxy.AmuxGatewayHeader) != "" {
@@ -200,9 +226,9 @@ func Start() error {
 		return fmt.Errorf("spawn detached gateway: %w", err)
 	}
 
+	// The daemon records its own pid; writing the supervisor's here would
+	// overwrite a running gateway's file when this start turns out redundant.
 	pid := cmd.Process.Pid
-	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
-	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
 
 	// Wait for the gateway to be ready. Startup runs a keychain lookup
 	// synchronously before it can bind the listener (see RunProxy), bounded
@@ -213,7 +239,7 @@ func Start() error {
 	deadline := time.Now().Add(auth.KCTimeout + 5*time.Second)
 	for time.Now().Before(deadline) {
 		switch probeStatus() {
-		case probeUp:
+		case probeUp, probeBusy:
 			return nil
 		case probeOccupied:
 			// Some other process is answering on :8787 right now — that's

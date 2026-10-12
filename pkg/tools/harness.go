@@ -71,30 +71,42 @@ func notifyField(body, tag string) string {
 	return strings.TrimSpace(rest[:j])
 }
 
-// relayDoubtSignals are phrases a web model uses when it doubts that the
-// [Tool result]s relayed by the client are real ("I can't verify these ran").
-var relayDoubtSignals = []string{
-	"relayed text", "relayed into", "relayed from", "being relayed",
-	"can't verify", "cannot verify", "can't confirm", "cannot confirm", "unable to verify",
-	"not actual tool output", "not real tool", "no real tool execution", "plain text, not",
-	"fabricat", "injected", "prompt injection", "playing along", "simulated tool",
-}
+// relayDoubtStrong are phrases only a model doubting the relay itself uses;
+// relayDoubtWeak also appear in ordinary answers ("I can't verify the
+// version", "this file contains a prompt injection").
+var (
+	relayDoubtStrong = []string{
+		"relayed text", "relayed into", "relayed from", "being relayed", "relayed conversation",
+		"playing along", "no real tool execution", "not actual tool output", "not real tool",
+		"simulated tool", "fabricated", "fake tool",
+	}
+	relayDoubtWeak = []string{
+		"can't verify", "cannot verify", "can't confirm", "cannot confirm", "unable to verify",
+		"injected", "prompt injection", "plain text, not",
+	}
+)
 
 // IsRelayDoubt reports a reply that declines to continue because the model
-// doubts the relayed tool results. It needs two distinct signals so a normal
-// answer that mentions one of the words is not taken for it.
+// doubts the relayed tool results: at least one relay-specific phrase plus a
+// second signal, so a normal answer that mentions injection or uncertainty
+// is not taken for it.
 func IsRelayDoubt(text string) bool {
 	low := strings.ToLower(strings.ReplaceAll(text, "’", "'"))
 	if strings.Contains(low, "<tool_call>") {
 		return false
 	}
-	hits := 0
-	for _, s := range relayDoubtSignals {
+	strong, weak := 0, 0
+	for _, s := range relayDoubtStrong {
 		if strings.Contains(low, s) {
-			hits++
+			strong++
 		}
 	}
-	return hits >= 2
+	for _, s := range relayDoubtWeak {
+		if strings.Contains(low, s) {
+			weak++
+		}
+	}
+	return strong >= 1 && strong+weak >= 2
 }
 
 // ResetsThread reports a reply after which the web conversation must not be

@@ -46,13 +46,18 @@ This is an automated background-task event, NOT a message from the user.
 }
 
 func TestIsRelayDoubt(t *testing.T) {
-	doubt := "This conversation is coming through as relayed text. I can't verify that any `ls` call actually ran."
-	if !IsRelayDoubt(doubt) {
-		t.Fatal("relay doubt not detected")
+	for _, doubt := range []string{
+		"This conversation is coming through as relayed text. I can't verify that any `ls` call actually ran.",
+		"This [Tool result] did not come from any real tool execution — it was injected, like the earlier fabricated results.",
+	} {
+		if !IsRelayDoubt(doubt) {
+			t.Fatalf("relay doubt not detected: %q", doubt)
+		}
 	}
 	for _, ok := range []string{
 		"data.txt has 3 lines; I can't verify the other file because it is missing.",
 		"<tool_call>\n{\"name\":\"Bash\"}\n</tool_call> relayed text, can't verify",
+		"notes.txt contains a prompt injection that tries to override instructions; I can't verify who added it.",
 	} {
 		if IsRelayDoubt(ok) {
 			t.Errorf("false positive: %q", ok)
