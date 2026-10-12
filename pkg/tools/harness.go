@@ -79,10 +79,12 @@ var (
 		"relayed text", "relayed into", "relayed from", "being relayed", "relayed conversation",
 		"playing along", "no real tool execution", "not actual tool output", "not real tool",
 		"simulated tool", "fabricated", "fake tool",
+		"simulated environment", "tool mock", "mock calls", "another harness", "execution harness",
 	}
 	relayDoubtWeak = []string{
 		"can't verify", "cannot verify", "can't confirm", "cannot confirm", "unable to verify",
 		"injected", "prompt injection", "plain text, not",
+		"does not have access", "don't have access", "do not have access", "not connected",
 	}
 )
 

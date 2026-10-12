@@ -2827,6 +2827,9 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 	if dropInvalidOptionalArgs(m, def.InputSchema) {
 		changed = true
 	}
+	if coerceArgTypes(m, def.InputSchema) {
+		changed = true
+	}
 
 	if !changed {
 		return argsJSON
@@ -2842,6 +2845,70 @@ func coerceToolArgs(argsJSON string, def types.ToolDef, projectRoot ...string) s
 // value the schema does not allow (null, or outside the enum). Web models fill
 // every catalog key — Agent {"isolation":"none","model":"claude-haiku-…"} —
 // and the client rejects the whole call, while omitting them runs it.
+// coerceArgTypes fixes scalar/array mismatches web models make against the
+// schema: "iana.org" for an array of domains, "5" for a number, "true" for a
+// boolean. Claude Code rejects such calls with InputValidationError and the
+// model tends to resend the same call.
+func coerceArgTypes(m map[string]any, schemaRaw json.RawMessage) bool {
+	if len(schemaRaw) == 0 {
+		return false
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Type  any `json:"type"`
+			Items struct {
+				Type string `json:"type"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schemaRaw, &schema) != nil {
+		return false
+	}
+	changed := false
+	for k, v := range m {
+		prop, ok := schema.Properties[k]
+		if !ok {
+			continue
+		}
+		typ, _ := prop.Type.(string)
+		str, isStr := v.(string)
+		switch {
+		case typ == "array" && isStr:
+			t := strings.TrimSpace(str)
+			var arr []any
+			if strings.HasPrefix(t, "[") && json.Unmarshal([]byte(t), &arr) == nil {
+				m[k] = arr
+			} else if t == "" {
+				m[k] = []any{}
+			} else {
+				parts := []any{}
+				for _, p := range strings.Split(t, ",") {
+					if p = strings.TrimSpace(p); p != "" {
+						parts = append(parts, p)
+					}
+				}
+				m[k] = parts
+			}
+			changed = true
+		case (typ == "integer" || typ == "number") && isStr:
+			if f, err := strconv.ParseFloat(strings.TrimSpace(str), 64); err == nil {
+				if typ == "integer" {
+					m[k] = int64(f)
+				} else {
+					m[k] = f
+				}
+				changed = true
+			}
+		case typ == "boolean" && isStr:
+			if b, err := strconv.ParseBool(strings.TrimSpace(str)); err == nil {
+				m[k] = b
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 func dropInvalidOptionalArgs(m map[string]any, schemaRaw json.RawMessage) bool {
 	if len(schemaRaw) == 0 {
 		return false

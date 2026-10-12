@@ -157,3 +157,10 @@ A reply SHALL count as relay doubt only when it contains a relay-specific phrase
 - **WHEN** a reply says a file "contains a prompt injection" and that the model "can't verify" its author
 - **THEN** the reply reaches the client unchanged
 
+### Requirement: Tool arguments match their schema types
+Before a web model's tool call reaches the client, arguments whose schema type is array, integer/number or boolean SHALL be converted from the string forms web models produce (comma lists or JSON-array strings, numeric strings, "true"/"false").
+
+#### Scenario: WebSearch allowed_domains as a string
+- **WHEN** a web model calls WebSearch with `"allowed_domains": "iana.org"`
+- **THEN** the client receives `"allowed_domains": ["iana.org"]` and the call validates
+

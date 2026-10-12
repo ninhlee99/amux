@@ -101,7 +101,7 @@ func (a *ChatGPTWebAdapter) client() *http.Client {
 // skillLoadedNote heads a skill body in the flattened transcript. Shown as a
 // bare user turn after "Launching skill: X", ChatGPT took the skill as done
 // and reported output of commands it never ran.
-const skillLoadedNote = "[Skill loaded — these instructions are now your next steps. Loading a skill does not perform it: carry them out with <tool_call>s (run the commands it names) and report only real [Tool result]s.]\n"
+const skillLoadedNote = "[Skill loaded — these instructions are now your next steps. Loading a skill does not perform it: carry them out with <tool_call>s (run the commands it names) and report only real [Tool result]s. When several skills are loaded, carry out each one before moving on or giving the final answer.]\n"
 
 func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 	if len(messages) == 0 {

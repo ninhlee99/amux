@@ -49,6 +49,8 @@ func TestIsRelayDoubt(t *testing.T) {
 	for _, doubt := range []string{
 		"This conversation is coming through as relayed text. I can't verify that any `ls` call actually ran.",
 		"This [Tool result] did not come from any real tool execution — it was injected, like the earlier fabricated results.",
+		"It appears that the prompt contains simulated environment instructions and tool mock calls intended for another harness. In this environment, workspace access tools such as local file system readers are not available.",
+		"No changes were made. As noted previously, this environment does not have access to the local workspace execution harness or the local filesystem tools.",
 	} {
 		if !IsRelayDoubt(doubt) {
 			t.Fatalf("relay doubt not detected: %q", doubt)
@@ -62,5 +64,22 @@ func TestIsRelayDoubt(t *testing.T) {
 		if IsRelayDoubt(ok) {
 			t.Errorf("false positive: %q", ok)
 		}
+	}
+}
+
+func TestCoerceArgTypes(t *testing.T) {
+	schema := []byte(`{"type":"object","properties":{"query":{"type":"string"},"allowed_domains":{"type":"array","items":{"type":"string"}},"limit":{"type":"integer"},"exact":{"type":"boolean"}}}`)
+	m := map[string]any{"query": "x", "allowed_domains": "iana.org, ietf.org", "limit": "5", "exact": "true"}
+	if !coerceArgTypes(m, schema) {
+		t.Fatal("expected changes")
+	}
+	d, _ := m["allowed_domains"].([]any)
+	if len(d) != 2 || d[0] != "iana.org" || m["limit"] != int64(5) || m["exact"] != true || m["query"] != "x" {
+		t.Fatalf("got %#v", m)
+	}
+	m2 := map[string]any{"allowed_domains": `["a.org"]`}
+	coerceArgTypes(m2, schema)
+	if d, _ := m2["allowed_domains"].([]any); len(d) != 1 || d[0] != "a.org" {
+		t.Fatalf("JSON-string array not parsed: %#v", m2)
 	}
 }
