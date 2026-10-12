@@ -67,3 +67,36 @@ func TestHandleClaudeMessages_WebSearch(t *testing.T) {
 		t.Errorf("web model must get the search instruction without the server tool: %+v", backend.got)
 	}
 }
+
+type textAdapter struct{ id, text string }
+
+func (a *textAdapter) ID() string    { return a.id }
+func (a *textAdapter) Priority() int { return 1 }
+func (a *textAdapter) SendMessageStream(context.Context, *types.ChatRequest) (<-chan types.StreamChunk, error) {
+	ch := make(chan types.StreamChunk, 2)
+	ch <- types.StreamChunk{Content: a.text}
+	ch <- types.StreamChunk{Done: true}
+	close(ch)
+	return ch, nil
+}
+
+// A pinned account that cannot search (claude.ai without web search) gets
+// its WebSearch side request answered by an account that searches natively.
+func TestHandleClaudeMessages_WebSearchFallsBack(t *testing.T) {
+	resetPacingForTest(t)
+	pool := router.NewAccountPoolRouter([]types.ProviderAdapter{
+		&textAdapter{id: "claude:web:x", text: "I don't have web search access in this environment."},
+		&textAdapter{id: "chatgpt:y", text: "Found it. [Example Domains - IANA](https://www.iana.org/help/example-domains)"},
+	})
+	body := []byte(`{"model":"m","max_tokens":10,"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"messages":[{"role":"user","content":"Perform a web search for the query: IANA example domain"}]}`)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+	r.Header.Set("X-Provider", "claude:web:x")
+	if err := HandleClaudeMessages(w, r, pool, body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.Body.String(), `"url":"https://www.iana.org/help/example-domains"`) {
+		t.Fatalf("want the ChatGPT result with its link, got %s", w.Body.String())
+	}
+}

@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -107,6 +108,38 @@ func webSearchBlocks(query, text string) []map[string]any {
 	}
 }
 
+// webSearchFamilies are account families whose web UI searches by itself.
+var webSearchFamilies = []string{"chatgpt", "gemini:web"}
+
+// searchElsewhere runs the search on another family that searches natively
+// and returns its answer when that answer cites sources.
+func searchElsewhere(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRequest) (string, string) {
+	served := strings.ToLower(req.ServingAccount)
+	for _, fam := range webSearchFamilies {
+		if strings.HasPrefix(served, fam) {
+			continue
+		}
+		cloned := *req
+		cloned.SessionID = ""
+		ch, err := pool.SendProvider(r.Context(), fam, &cloned)
+		if err != nil {
+			continue
+		}
+		var b strings.Builder
+		failed := false
+		for c := range ch {
+			if c.Error != nil {
+				failed = true
+			}
+			b.WriteString(c.Content)
+		}
+		if ans := strings.TrimSpace(b.String()); !failed && len(extractWebSources(ans)) > 0 {
+			return ans, cloned.ServingAccount
+		}
+	}
+	return "", ""
+}
+
 // handleWebSearch answers a web_search side request from the pool.
 func handleWebSearch(w http.ResponseWriter, r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRequest, query, msgID string) error {
 	started := time.Now()
@@ -184,6 +217,15 @@ wait:
 		text.WriteString(chunk.Content)
 	}
 	answer := strings.TrimSpace(text.String())
+	if len(extractWebSources(answer)) == 0 {
+		// The serving account could not search (claude.ai without its web
+		// search feature answers "no web access"). The search is a
+		// stateless side request, so ask an account that searches natively.
+		if alt, from := searchElsewhere(r, pool, req); alt != "" {
+			log.Printf("amux: web search: %s returned no sources — answered by %s", req.ServingAccount, from)
+			answer = alt
+		}
+	}
 	blocks := webSearchBlocks(query, answer)
 	logChatRequest(r, pool, req, answer, "end_turn", "", estimateInputTokens(req), len(answer)/4, started, nil)
 
