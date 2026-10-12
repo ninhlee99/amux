@@ -45,6 +45,16 @@ func logChatRequestWithCache(r *http.Request, pool *router.AccountPoolRouter, re
 	account := poolAccountLabel(pool)
 	if req != nil && req.ServingAccount != "" {
 		account = req.ServingAccount
+	} else if errStr != "" {
+		// A failed request was served by no one: the pool's last-used account
+		// belongs to some other concurrent request. Name the pinned account,
+		// or the pool.
+		account = "provider-pool"
+		if r != nil {
+			if id := strings.TrimSpace(r.Header.Get("X-Provider")); id != "" {
+				account = id
+			}
+		}
 	}
 	if len(toolCalls) == 0 && strings.TrimSpace(output) != "" {
 		var defs []types.ToolDef

@@ -34,6 +34,7 @@ type GeminiWebAdapter struct {
 	Cookies     string
 	TargetModel string
 	PlanTier    string // "pro" | "free" | …
+	Account     string // configured Google email; a refresh never adopts another account's cookies
 	HTTPClient  *http.Client
 
 	mu          sync.Mutex
@@ -41,6 +42,9 @@ type GeminiWebAdapter struct {
 	accessToken string // SNlM0e
 	buildLabel  string // cfb2h
 	sessionID   string // FdrFJe
+	// prevCookies holds the jar replaced by a browser refresh until init
+	// confirms the new one belongs to Account.
+	prevCookies string
 	reqID       int
 	inited      bool
 }
@@ -151,6 +155,22 @@ func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest)
 					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w: %v", a.AdapterID, types.ErrRateLimitReached, err)})
 					return
 				}
+				if (errors.Is(err, errGeminiStalled) || errors.Is(err, errGeminiCanned)) && !streamedDelta && !rotated {
+					rotated = true
+					cm.ResetProject(project)
+					log.Printf("%s: Gemini never started answering — retrying in a new chat", a.AdapterID)
+					continue
+				}
+				if errors.Is(err, errGeminiStalled) && !streamedDelta {
+					// Stalled again on a fresh chat: Google is throttling this
+					// account (latency climbs request after request with no
+					// 429). Report it as a limit so the router rests the
+					// account and serves the turn from another one.
+					sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: types.NewRateLimitError(
+						fmt.Sprintf("%s: %s: Gemini is throttling this account (no answer on a fresh chat)", a.AdapterID, types.ErrRateLimitReached),
+						geminiThrottleCooldown)})
+					return
+				}
 				if isGeminiAuthErr(err) && !streamedDelta {
 					if attempt == 0 {
 						a.mu.Lock()
@@ -167,7 +187,7 @@ func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest)
 				sendChunk(ctx, out, types.StreamChunk{ID: a.AdapterID, Error: fmt.Errorf("%s: %w", a.AdapterID, err)})
 				return
 			}
-			if tools.IsToolRefusal(text) {
+			if tools.ResetsThread(text) {
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", a.AdapterID, project)
 				cm.ResetProject(project)
 			} else if len(newMeta) > 0 && newMeta[0] != "" {
@@ -185,22 +205,51 @@ func (a *GeminiWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest)
 }
 
 func (a *GeminiWebAdapter) refreshCookiesFromBrowserLocked() error {
-	tok, _, err := browser.ExtractCookie("google.com", "__Secure-1PSID")
-	if err != nil || tok == "" {
+	picked, err := pickBrowserSession(a.AdapterID, a.Account,
+		browserSessionsFor("google.com", "__Secure-1PSID", "__Secure-1PSIDTS"),
+		func(s browserSession) (string, error) {
+			if a.Account == "" {
+				return "", nil
+			}
+			return a.googleAccountOf(s.Jar)
+		})
+	if err != nil {
 		return fmt.Errorf("extract google __Secure-1PSID: %w", err)
 	}
-	jar := "__Secure-1PSID=" + tok
-	if ts, _, _ := browser.ExtractCookie("google.com", "__Secure-1PSIDTS"); ts != "" {
-		jar += "; __Secure-1PSIDTS=" + ts
-	}
+	jar := picked.Jar
 
+	// Adopted provisionally: initLocked checks the account before saving.
+	a.prevCookies = a.Cookies
 	a.Cookies = jar
 	a.inited = false
 	a.accessToken = ""
-
-	_ = UpdateProviderCookies(DefaultAccountsPath(), a.AdapterID, tok, jar)
-	log.Printf("%s: auto-refreshed __Secure-1PSID from browser", a.AdapterID)
 	return nil
+}
+
+// googleAccountOf loads gemini.google.com/app with jar and returns the
+// signed-in Google account's email.
+func (a *GeminiWebAdapter) googleAccountOf(jar string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, geminiWebInitURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", geminiWebUA)
+	req.Header.Set("Cookie", jar)
+	req.Header.Set("Accept", "text/html")
+	resp, err := a.client().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	text := string(body)
+	if !geminiSNlM0eRe.MatchString(text) {
+		return "", fmt.Errorf("gemini session not signed in")
+	}
+	return browser.ParseGeminiAccountEmail(text), nil
 }
 
 func (a *GeminiWebAdapter) ensureInit(ctx context.Context) error {
@@ -238,6 +287,20 @@ func (a *GeminiWebAdapter) initLocked(ctx context.Context, retried bool) error {
 	}
 	if m := geminiFdrFJeRe.FindStringSubmatch(text); len(m) > 1 {
 		a.sessionID = m[1]
+	}
+	if a.prevCookies != "" {
+		// First init after a browser refresh: keep the new jar only if it
+		// is signed in to this adapter's Google account.
+		if err := checkSessionAccount(a.AdapterID, a.Account, browser.ParseGeminiAccountEmail(text)); err != nil {
+			a.Cookies, a.prevCookies = a.prevCookies, ""
+			a.accessToken = ""
+			return err
+		}
+		if a.accessToken != "" {
+			a.prevCookies = ""
+			_ = UpdateProviderCookies(DefaultAccountsPath(), a.AdapterID, browser.ParseCookieHeader(a.Cookies, "__Secure-1PSID"), a.Cookies)
+			log.Printf("%s: auto-refreshed __Secure-1PSID from browser", a.AdapterID)
+		}
 	}
 	if a.accessToken == "" {
 		if !retried {
@@ -301,7 +364,16 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		q.Set("f.sid", sid)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, geminiWebGenerateURL+"?"+q.Encode(), strings.NewReader(form.Encode()))
+	// Gemini sometimes accepts a request and never starts it: no headers for
+	// minutes, or only a {"37":[n]} heartbeat every minute until it drops the
+	// stream ~6 minutes later. Heartbeats defeat the byte-level idle timeout,
+	// so watch for real progress (conversation ids or text) from the start.
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stall := newGeminiStallWatch(cancel, geminiAckTimeout)
+	defer stall.stop()
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, geminiWebGenerateURL+"?"+q.Encode(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", nil, err
 	}
@@ -315,6 +387,9 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 	httpReq.Header.Set("x-goog-ext-525005358-jspb", fmt.Sprintf(`["%s",1]`, uuid))
 
 	resp, err := a.client().Do(httpReq)
+	if err != nil && stall.fired() && ctx.Err() == nil {
+		return "", nil, fmt.Errorf("%s: %w", a.AdapterID, errGeminiStalled)
+	}
 	if err != nil {
 		if errors.Is(err, types.ErrRateLimitReached) || strings.Contains(err.Error(), "google.com/sorry") || strings.Contains(err.Error(), "stopped after 10 redirects") {
 			return "", nil, fmt.Errorf("%s: %w: Google anti-bot rate limit (sorry/index)", a.AdapterID, types.ErrRateLimitReached)
@@ -322,6 +397,7 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		return "", nil, err
 	}
 	defer resp.Body.Close()
+	stall.watchBody(resp.Body)
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return "", nil, types.ErrRateLimitReached
 	}
@@ -369,6 +445,9 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 				continue
 			}
 			t, meta := geminiParseEnvelope(env)
+			if t != "" || (len(meta) > 0 && meta[0] != "") {
+				stall.progress(geminiStallTimeout)
+			}
 			if len(meta) > 0 && meta[0] != "" {
 				if len(bestMeta) == 0 || bestMeta[0] == "" || len(meta) >= len(bestMeta) {
 					bestMeta = meta
@@ -384,12 +463,20 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 				if i := strings.LastIndex(safe, "["); i >= 0 && !strings.Contains(safe[i:], ")") {
 					safe = safe[:i]
 				}
+				// Hold the first few words: Gemini's canned error replies are
+				// short and must not reach the client before they are caught.
+				if emitted == "" && len(safe) < geminiDeltaHold {
+					continue
+				}
 				if len(onDelta) > 0 && onDelta[0] != nil && len(safe) > len(emitted) && strings.HasPrefix(safe, emitted) {
 					onDelta[0](safe[len(emitted):])
 					emitted = safe
 				}
 			}
 		}
+	}
+	if stall.fired() && ctx.Err() == nil {
+		return "", nil, fmt.Errorf("%s: %w", a.AdapterID, errGeminiStalled)
 	}
 	if err := sc.Err(); err != nil {
 		return "", nil, err
@@ -402,6 +489,9 @@ func (a *GeminiWebAdapter) streamGenerate(ctx context.Context, prompt string, me
 		return "", nil, fmt.Errorf("empty Gemini response%s", bodyHint)
 	}
 	final := unlinkGeminiAutolinks(bestText)
+	if emitted == "" && isGeminiCannedError(final) {
+		return "", nil, fmt.Errorf("%s: %w: %q", a.AdapterID, errGeminiCanned, final)
+	}
 	if len(onDelta) > 0 && onDelta[0] != nil {
 		switch {
 		case strings.HasPrefix(final, emitted):
@@ -610,6 +700,94 @@ func unlinkGeminiAutolinks(text string) string {
 		}
 		return m
 	})
+}
+
+// errGeminiCanned: Gemini answered with its generic error text.
+var errGeminiCanned = errors.New("Gemini returned its generic error reply")
+
+// geminiDeltaHold is how much text is held back before streaming starts.
+const geminiDeltaHold = 120
+
+var geminiCannedErrors = []string{
+	"sorry, something went wrong",
+	"something went wrong. please try",
+	"i seem to be encountering an error",
+	"i encountered an error doing what you asked",
+	"i'm having a hard time fulfilling your request",
+	"i'm having trouble fulfilling your request",
+}
+
+// isGeminiCannedError reports whether text is one of Gemini's short generic
+// failure replies rather than an answer.
+func isGeminiCannedError(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" || len(t) > 110 {
+		return false
+	}
+	for _, p := range geminiCannedErrors {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// errGeminiStalled: Gemini accepted the request but made no progress.
+var errGeminiStalled = errors.New("Gemini accepted the request but never answered")
+
+var (
+	// geminiAckTimeout bounds the wait for the conversation-id frame, which a
+	// healthy generation sends within a few seconds.
+	geminiAckTimeout = 45 * time.Second
+	// geminiStallTimeout bounds the gap between progress frames afterwards
+	// (long enough for a slow Pro answer).
+	geminiStallTimeout = 3 * time.Minute
+	// geminiThrottleCooldown rests an account that stalled twice in a row.
+	geminiThrottleCooldown = 5 * time.Minute
+)
+
+// geminiStallWatch cancels the request when no progress is reported in time.
+type geminiStallWatch struct {
+	timer *time.Timer
+	mu    sync.Mutex
+	done  bool
+	body  io.Closer
+}
+
+func newGeminiStallWatch(cancel context.CancelFunc, d time.Duration) *geminiStallWatch {
+	w := &geminiStallWatch{}
+	w.timer = time.AfterFunc(d, func() {
+		w.mu.Lock()
+		w.done = true
+		body := w.body
+		w.mu.Unlock()
+		cancel()
+		if body != nil {
+			_ = body.Close()
+		}
+	})
+	return w
+}
+
+func (w *geminiStallWatch) progress(d time.Duration) { w.timer.Reset(d) }
+
+// watchBody also closes body on a stall, for transports that ignore ctx.
+func (w *geminiStallWatch) watchBody(body io.Closer) {
+	w.mu.Lock()
+	w.body = body
+	fired := w.done
+	w.mu.Unlock()
+	if fired {
+		_ = body.Close()
+	}
+}
+
+func (w *geminiStallWatch) stop() { w.timer.Stop() }
+
+func (w *geminiStallWatch) fired() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.done
 }
 
 func isGeminiUsageLimit(err error) bool {

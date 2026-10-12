@@ -463,3 +463,30 @@ func TestBuildConcatenatedPrompt_MarksSkillBody(t *testing.T) {
 		t.Fatal("only the skill turn gets the note")
 	}
 }
+
+func TestWaitingOnBackgroundAgent(t *testing.T) {
+	launch := types.ChatMessage{Role: "tool", Content: "Async agent launched successfully. agentId: a1"}
+	notify := types.ChatMessage{Role: "user", Content: "<task-notification><task-id>a1</task-id><status>completed</status></task-notification>"}
+	cases := []struct {
+		name string
+		msgs []types.ChatMessage
+		want bool
+	}{
+		{"none", []types.ChatMessage{{Role: "user", Content: "hi"}}, false},
+		{"running", []types.ChatMessage{{Role: "user", Content: "go"}, launch, {Role: "tool", Content: "(Bash completed with no output)"}}, true},
+		{"reported", []types.ChatMessage{{Role: "user", Content: "go"}, launch, notify}, false},
+		{"one of two reported", []types.ChatMessage{launch, launch, notify}, true},
+	}
+	for _, c := range cases {
+		if got := waitingOnBackgroundAgent(c.msgs); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+	req := &types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "count lines"}, {Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Agent"}}}, launch},
+		Tools:    []types.ToolDef{{Name: "Bash"}, {Name: "Agent"}},
+	}
+	if p := WebBackendPromptForProvider("gemini", req, true); !strings.Contains(p, "Do not poll") {
+		t.Fatalf("prompt lacks the background-agent cue:\n%s", p)
+	}
+}

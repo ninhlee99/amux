@@ -67,3 +67,38 @@ Within one tier, the router SHALL try accounts whose health score is below 80 (d
 - **WHEN** two web accounts are in the pool and one has dropped to health 70 after 5xx errors
 - **THEN** new turns are served by the healthy account while it keeps succeeding
 
+### Requirement: In-stream errors before output fail over
+The router SHALL wait for a stream's first content, thinking or tool call before committing to an account. An error chunk that arrives before any of these SHALL be treated like a synchronous send error: the account's error is recorded, rate limits cool it down, and the next eligible account is tried. Errors after output has started SHALL be passed to the client unchanged.
+
+#### Scenario: web account reports its usage limit inside the stream
+- **WHEN** account A returns a stream whose first chunk is a rate-limit error and account B is eligible
+- **THEN** the client receives B's answer, A is cooling down, and later requests skip A
+
+### Requirement: Cooldown follows the upstream reset time
+When a rate-limit error carries a reset hint, the router SHALL cool the account down until then (clamped to 5 s – 30 min) instead of the fixed default.
+
+#### Scenario: claude.ai limit resets in 90 minutes
+- **WHEN** Claude Web returns a limit body with `resetsAt` 90 minutes ahead
+- **THEN** the error's RetryAfter is about 90 minutes and the account is cooled for the clamped maximum
+
+### Requirement: Automatic switches never pin
+When the gateway falls back from Claude to the provider pool, it SHALL record the serving account for status only; it SHALL NOT create a manual pin, so new sessions keep load-balancing across the pool.
+
+#### Scenario: Claude Code is off
+- **WHEN** eight new sessions arrive while Claude Code is turned off
+- **THEN** they are spread over the pooled web accounts instead of all going to the first one used
+
+### Requirement: The router owns session affinity
+Bridges SHALL NOT pin sessions before routing unless a manual pin exists; a session SHALL stay on the account that first served it while that account is usable, and its history SHALL be compacted only when it moves to another account.
+
+#### Scenario: multi-turn session
+- **WHEN** one session sends three turns and its account stays healthy
+- **THEN** all three turns are served by the same account with full history
+
+### Requirement: Concurrent new sessions spread immediately
+The router SHALL advance its round-robin position when it picks an account, not when the stream succeeds, so sessions that start concurrently are spread over the pool before any of them has received output.
+
+#### Scenario: four Claude Code sessions start at once
+- **WHEN** four new sessions arrive within a second on a pool of four web accounts
+- **THEN** each account receives one session
+

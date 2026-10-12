@@ -292,7 +292,7 @@ func (r *AccountPoolRouter) SendNamed(ctx context.Context, id string, req *types
 	if err := guard.Pace(ctx, id, AdapterAccountType(a) == types.AccountTypeWeb); err != nil {
 		return nil, err
 	}
-	ch, err := a.SendMessageStream(ctx, req)
+	ch, err := startStream(ctx, a, req)
 	if err != nil {
 		guard.RecordError(id, err)
 		return nil, err
@@ -406,6 +406,12 @@ func (r *AccountPoolRouter) SetPreferred(id string) {
 	defer r.mu.Unlock()
 	r.preferred = id
 	r.manualPin = strings.TrimSpace(id) != ""
+}
+
+// NoteAutoSwitch records id as the active provider for status after an
+// automatic failover, without pinning: new sessions keep load-balancing.
+func (r *AccountPoolRouter) NoteAutoSwitch(id string) {
+	r.markUsed(id, true)
 }
 
 // ClearPreferred drops the manual pin so session load-balance resumes.
@@ -558,6 +564,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 	sessionKey := guard.ExtractSessionKey(nil, req)
 
 	// 1. Affinity wins for an in-flight session (unless the account died).
+	movedSession := false
 	if sessionKey != "" {
 		if pinned, ok := guard.GlobalAffinity().GetPinned(sessionKey); ok {
 			if alive := r.adapterAlive(adapters, pinned); alive != nil {
@@ -565,6 +572,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 				manual = true // treat affinity as sticky for this request
 			} else {
 				guard.GlobalAffinity().Unpin(sessionKey)
+				movedSession = containsAdapter(adapters, pinned)
 			}
 		}
 	}
@@ -598,7 +606,7 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 				errs = append(errs, fmt.Errorf("%s: %w", a.ID(), err))
 				break
 			}
-			ch, err := a.SendMessageStream(ctx, req)
+			ch, err := startStream(ctx, a, req)
 			if err == nil {
 				guard.RecordSuccess(a.ID())
 				if sessionKey != "" {
@@ -656,7 +664,11 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 		if r.tierIndices == nil {
 			r.tierIndices = make(map[types.AccountType]int)
 		}
-		startIdx := r.tierIndices[tier]
+		// Reserve the slot now: a web stream is only known good after its
+		// first chunk, seconds later, and concurrent new sessions would all
+		// start on the same account until then.
+		startIdx := r.tierIndices[tier] % len(tierAdapters)
+		r.tierIndices[tier] = (startIdx + 1) % len(tierAdapters)
 		r.mu.Unlock()
 
 		for _, currIdx := range healthOrder(tierAdapters, startIdx) {
@@ -685,14 +697,14 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 				continue
 			}
 			callReq := req
-			if (skippedPreferred || len(failedInReq) > 0) && req != nil && len(req.Messages) > 4 {
+			if (skippedPreferred || movedSession || len(failedInReq) > 0) && req != nil && len(req.Messages) > 4 {
 				// Secondary / fallback adapter is a cold account: compact messages so it does not
 				// pay massive uncached token creation fees and burn its 5h/7d rate limit.
 				cloned := *req
 				cloned.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 				callReq = &cloned
 			}
-			ch, err := a.SendMessageStream(ctx, callReq)
+			ch, err := startStream(ctx, a, callReq)
 			if err == nil {
 				req.ServingAccount = a.ID()
 				req.ServingModel = adapterModel(a)
@@ -704,9 +716,12 @@ func (r *AccountPoolRouter) sendAmong(ctx context.Context, req *types.ChatReques
 				if sessionKey != "" {
 					guard.GlobalAffinity().Pin(sessionKey, a.ID())
 				}
-				r.mu.Lock()
-				r.tierIndices[tier] = (currIdx + 1) % len(tierAdapters)
-				r.mu.Unlock()
+				if currIdx != startIdx {
+					// Failed over past the reserved slot: continue after it.
+					r.mu.Lock()
+					r.tierIndices[tier] = (currIdx + 1) % len(tierAdapters)
+					r.mu.Unlock()
+				}
 
 				was := preferredID
 				// Failover from a manual pin promotes status preferred but

@@ -25,6 +25,7 @@ type LegacyProvider struct {
 	BaseURL      string  `json:"baseUrl,omitempty"`
 	Priority     int     `json:"priority"`
 	Disabled     bool    `json:"disabled"`
+	Enabled      *bool   `json:"enabled,omitempty"` // accounts.json writes enabled:false for an account turned off
 	UsagePercent float64 `json:"usage_percent,omitempty"`
 	ResetAt      int64   `json:"reset_at,omitempty"`
 	ApiKey       string  `json:"apiKey,omitempty"`
@@ -41,6 +42,15 @@ type LegacyAccountDoc struct {
 type accountKey struct {
 	provider string
 	email    string
+}
+
+// isSubscriptionType reports provider types that are CLI OAuth logins.
+func isSubscriptionType(t string) bool {
+	switch t {
+	case "claude", "claude_oauth", "codex", "codex_cli", "antigravity", "agy":
+		return true
+	}
+	return false
 }
 
 func isNumericSuffixID(id string) bool {
@@ -171,13 +181,24 @@ func MigrateLegacyAccounts(accountsPath string, identitiesPath string) (int, err
 				creds := make(map[string]string)
 
 				pType := strings.ToLower(p.Type)
+				if p.Enabled != nil && !*p.Enabled {
+					p.Disabled = true
+				}
 				switch {
-				case strings.Contains(pType, "sub") || types.IsSubscriptionTier(p.Plan) || pType == "codex_cli" || pType == "claude_oauth" || pType == "antigravity":
-					tier = TierSubscription
-					authType = string(AuthOAuth)
+				// Web first: a web session on a paid plan (Gemini Pro, Claude
+				// Pro) is still a cookie session, not an OAuth subscription.
 				case strings.Contains(pType, "web"):
 					tier = TierWeb
 					authType = string(AuthCDP)
+				case p.ApiKey != "" || p.ApiKeySnake != "":
+					tier = TierAPIKey
+					authType = string(AuthAPIKey)
+				// "claude" / "codex" / "agy" are the CLI OAuth logins (see
+				// provider.BuildAdapter): subscriptions, never API keys, so they
+				// stay out of the pool until `amux pool add`.
+				case strings.Contains(pType, "sub") || types.IsSubscriptionTier(p.Plan) || isSubscriptionType(pType):
+					tier = TierSubscription
+					authType = string(AuthOAuth)
 				default:
 					tier = TierAPIKey
 					authType = string(AuthAPIKey)

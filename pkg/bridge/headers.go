@@ -10,6 +10,7 @@ import (
 
 	"amux-accounts/pkg/auth"
 	"amux-accounts/pkg/guard"
+	"amux-accounts/pkg/identity"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/provider"
 	"amux-accounts/pkg/router"
@@ -222,15 +223,16 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 	EnrichRequestMetadata(r, req)
 	var ch <-chan types.StreamChunk
 	var err error
-	if id := explicitProviderHeaders(r, req); id != "" {
-		ch, err = pool.SendProvider(r.Context(), id, req)
+	pinned := explicitProviderHeaders(r, req)
+	if pinned != "" {
+		ch, err = pool.SendProvider(r.Context(), pinned, req)
 	} else {
 		ch, err = pool.Send(r.Context(), req)
 	}
-	if err != nil && req != nil {
+	if err != nil && req != nil && pinned == "" {
 		switch req.ClientDialect {
 		case tools.DialectCodex, tools.DialectCursor:
-			if provider.CodexAuthAvailable() {
+			if subscriptionPooled("openai") && provider.CodexAuthAvailable() {
 				term.LogProxy("⚠️ Pool router failed (%v) -> activating fail-safe fallback to direct Codex credentials", err)
 				codexAdapter := &provider.CodexCLIAdapter{
 					AdapterID:   "keychain:codex",
@@ -241,6 +243,9 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 				}
 			}
 		default:
+			if !subscriptionPooled("anthropic") {
+				break
+			}
 			if tok := auth.LiveKeychainToken(); tok != nil && tok.Access != "" {
 				term.LogProxy("⚠️ Pool router failed (%v) -> activating fail-safe fallback to direct Claude credentials", err)
 				directAdapter := &provider.ClaudeAdapter{
@@ -255,6 +260,38 @@ func poolSend(r *http.Request, pool *router.AccountPoolRouter, req *types.ChatRe
 		}
 	}
 	return ch, err
+}
+
+// SessionSwitched reports whether this session moves to another account
+// because of a manual `amux switch` pin, returning the previous account. Pool
+// routing keeps sessions on their own account (router affinity) and compacts
+// itself when a session must leave a dead account, so without a manual pin
+// nothing is checked: pinning sessions to the status-only "preferred" account
+// or to "pool" here would make every session hop accounts and lose history
+// on each turn.
+func SessionSwitched(r *http.Request, req *types.ChatRequest, pool *router.AccountPoolRouter) (bool, string) {
+	if pool == nil || !pool.ManualPin() || pool.Preferred() == "" {
+		return false, ""
+	}
+	return guard.CheckSessionAccountSwitch(r, req, pool.Preferred())
+}
+
+// subscriptionPooled reports whether the user put a subscription of product
+// ("anthropic" = Claude Code, "openai" = Codex) in the rotation pool. Only then
+// may a failed pool fall back to that tool's own login: subscriptions are
+// never used automatically unless added with `amux pool add`.
+var subscriptionPooled = func(product string) bool {
+	cfg, err := identity.LoadConfig("")
+	if err != nil {
+		return false
+	}
+	for _, id := range cfg.Identities {
+		if id.IsSubscription() && identity.IsEnabled(id) && id.CanAutoRotate() &&
+			identity.CanonicalProvider(id.Provider) == product {
+			return true
+		}
+	}
+	return false
 }
 
 // EnrichRequestMetadata populates SessionID and project metadata on req from HTTP headers and client connection.

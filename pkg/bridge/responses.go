@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"amux-accounts/pkg/ctxshrink"
-	"amux-accounts/pkg/guard"
 	"amux-accounts/pkg/privacy"
 	"amux-accounts/pkg/router"
 	"amux-accounts/pkg/term"
@@ -45,11 +44,7 @@ func HandleOpenAIResponses(w http.ResponseWriter, r *http.Request, pool *router.
 	EnrichRequestMetadata(r, req)
 
 	// Session switch detection & compact for Responses API clients
-	targetAccount := pool.Preferred()
-	if targetAccount == "" {
-		targetAccount = "pool"
-	}
-	if switched, _ := guard.CheckSessionAccountSwitch(r, req, targetAccount); switched {
+	if switched, _ := SessionSwitched(r, req, pool); switched {
 		if len(req.Messages) > 4 {
 			req.Messages = ctxshrink.CompactForAccountSwitchProject(req.Project(), req.Messages, 6)
 		}

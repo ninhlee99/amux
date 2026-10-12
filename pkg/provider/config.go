@@ -564,6 +564,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			RefreshToken: ResolveSecret(p.RefreshToken),
 			TargetModel:  model,
 			PlanTier:     p.Plan,
+			Account:      p.Account,
 			HTTPClient:   proxyClient,
 		}, nil
 
@@ -575,6 +576,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			Cookies:     p.Cookies,
 			TargetModel: p.Model,
 			PlanTier:    p.Plan,
+			Account:     p.Account,
 			HTTPClient:  proxyClient,
 			orgID:       p.OrgID,
 		}, nil
@@ -591,6 +593,7 @@ func BuildAdapter(p ProviderConfig) (types.ProviderAdapter, error) {
 			Cookies:     cookies,
 			TargetModel: p.Model,
 			PlanTier:    p.Plan,
+			Account:     p.Account,
 			HTTPClient:  proxyClient,
 		}, nil
 

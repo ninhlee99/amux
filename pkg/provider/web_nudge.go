@@ -2,12 +2,17 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 
 	"amux-accounts/pkg/tools"
 	"amux-accounts/pkg/types"
 )
+
+// errWebRelayDeclined: the web model would not act on relayed tool results.
+var errWebRelayDeclined = errors.New("web model declined to act on the relayed tool results; try another provider")
 
 // webNudge is the user turn added when a web reply stopped without a
 // <tool_call>: it restates the protocol and the task so the model acts.
@@ -62,6 +67,40 @@ func sendWithWebNudge(ctx context.Context, req *types.ChatRequest, send func(con
 		if raw == "" {
 			raw = text.String()
 		}
+		account := req.ServingAccount
+		for _, h := range held {
+			if h.ID != "" {
+				account = h.ID
+				break
+			}
+		}
+		if !realTools && ctx.Err() == nil && tools.IsRelayDoubt(raw) {
+			// The model doubts the relayed tool results. Arguing with it
+			// would only add pressure: ask the same thing once more on a fresh
+			// thread (the adapter reset it), and if it still declines, fail so
+			// the router can hand the turn to another account.
+			log.Printf("%s: web model doubted the relayed tool results — retrying once in a fresh chat", account)
+			if second, err := send(ctx, req); err == nil {
+				var again []types.StreamChunk
+				var t strings.Builder
+				for ch := range second {
+					again = append(again, ch)
+					t.WriteString(ch.Content)
+					if ch.LogText != "" {
+						t.Reset()
+						t.WriteString(ch.LogText)
+					}
+				}
+				if !tools.IsRelayDoubt(t.String()) {
+					for _, ch := range again {
+						out <- ch
+					}
+					return
+				}
+			}
+			out <- types.StreamChunk{ID: account, Error: fmt.Errorf("%s: %w", account, errWebRelayDeclined), Done: true}
+			return
+		}
 		if !realTools && ctx.Err() == nil {
 			kind := ""
 			switch {
@@ -73,7 +112,7 @@ func sendWithWebNudge(ctx context.Context, req *types.ChatRequest, send func(con
 				kind = "lost-task"
 			}
 			if kind != "" {
-				log.Printf("%s: web reply was a tool %s without <tool_call> — re-sending once with a nudge", req.ServingAccount, kind)
+				log.Printf("%s: web reply was a tool %s without <tool_call> — re-sending once with a nudge", account, kind)
 				if second, err := send(ctx, nudgedRequest(req, raw, kind)); err == nil {
 					for ch := range second {
 						out <- ch

@@ -2,9 +2,7 @@
 
 ## Purpose
 amux runs a local Universal AI Gateway (default `127.0.0.1:8787`) that speaks the wire formats coding agents already use — Anthropic Messages, OpenAI Chat Completions / Responses, and Google Gemini — so Claude Code, Codex, Cursor, Antigravity and any OpenAI-compatible tool can be pointed at it without changing the tool.
-
 ## Requirements
-
 ### Requirement: Multi-dialect endpoints
 The gateway SHALL serve `POST /v1/messages` (Anthropic), `POST /v1/chat/completions` and `POST /v1/responses` (OpenAI), `POST /v1beta/models/{model}:generateContent|streamGenerateContent|countTokens` (Gemini) and `GET /v1/models`, translating every request into the canonical `types.ChatRequest` and every reply back into the caller's dialect, including streaming (SSE).
 
@@ -127,3 +125,11 @@ Outbound privacy redaction SHALL NOT replace an email-like match whose final dom
 #### Scenario: Playwright capture file name
 - **WHEN** a tool result contains `mv /tmp/out/page@3f9a1c2e.webm dashboard.webm`
 - **THEN** the text sent upstream is unchanged
+
+### Requirement: Gateway processes only remove their own pid files
+The gateway daemon and supervisor SHALL remove gateway.pid / gateway.supervisor.pid on exit only if the file still names their own pid, and a supervisor SHALL NOT start while the recorded supervisor is alive.
+
+#### Scenario: second start while running
+- **WHEN** a second supervisor is launched while one is running
+- **THEN** it exits without touching the pid files, and `amux status` / `amux stop` still find the running gateway
+

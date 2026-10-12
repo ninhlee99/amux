@@ -393,6 +393,9 @@ func HandleClaudeMessages(w http.ResponseWriter, r *http.Request, pool *router.A
 
 	started := time.Now()
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	if query, ok := webSearchQuery(rawBody, req); ok {
+		return handleWebSearch(w, r, pool, req, query, msgID)
+	}
 
 	replayKey, canReplay := ctxshrink.GlobalReplayCache().ComputeHashForProject(req.Project(), req)
 	if canReplay {

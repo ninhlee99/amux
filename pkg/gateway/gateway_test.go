@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -391,3 +392,20 @@ func TestGateway_HookAgy_RefusesOverwriteExternalBaseURL(t *testing.T) {
 }
 
 
+
+func TestRemovePIDFileIfOwn(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "gateway.pid")
+	_ = os.WriteFile(p, []byte("12345"), 0o600)
+	gateway.RemovePIDFileIfOwn(p, 999)
+	if _, err := os.Stat(p); err != nil {
+		t.Fatal("another process's pid file must be kept")
+	}
+	gateway.RemovePIDFileIfOwn(p, 12345)
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("own pid file must be removed")
+	}
+	_ = os.WriteFile(p, []byte(strconv.Itoa(os.Getppid())), 0o600)
+	if gateway.LivePIDInFile(p) != os.Getppid() {
+		t.Fatal("a live process in the pid file must be reported")
+	}
+}

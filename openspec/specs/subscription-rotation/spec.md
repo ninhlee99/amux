@@ -18,3 +18,17 @@ When the active subscription is in the rotation pool and its 5h/7d usage reaches
 - **WHEN** the user logs in a second Claude Code account
 - **THEN** neither account is in the pool until `amux pool add`
 
+### Requirement: Failed pools never fall back to an unpooled subscription
+When every pool account fails, the gateway SHALL fall back to the calling tool's own Claude Code / Codex login only if a subscription of that product is enabled and in the rotation pool, and never for a request pinned to a specific account.
+
+#### Scenario: pinned web account fails, Claude Code is off
+- **WHEN** a request pinned to `chatgpt:x` fails and the Claude Code subscription is not in the pool
+- **THEN** the client receives the error and the Claude Code login is not used
+
+### Requirement: Snapshotted profiles respect turned-off identities
+The Claude rotator SHALL treat a saved profile as off when the subscription identity with the same account email is turned off, including profiles snapshotted from the live login.
+
+#### Scenario: fresh AMUX_HOME
+- **WHEN** the gateway snapshots the live Claude Code login of an identity the user turned off
+- **THEN** requests do not use that subscription
+

@@ -138,6 +138,35 @@ func GetStatus() GatewayStatus {
 	return st
 }
 
+// RemovePIDFileIfOwn removes path only while it still names pid. A second
+// gateway that fails to bind must not delete the files of the one that is
+// running, or `amux stop` / `amux status` lose track of it.
+func RemovePIDFileIfOwn(path string, pid int) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if owner, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && owner == pid {
+		_ = os.Remove(path)
+	}
+}
+
+// LivePIDInFile returns the pid recorded in path when that process is alive.
+func LivePIDInFile(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return 0
+	}
+	if syscall.Kill(pid, 0) != nil {
+		return 0
+	}
+	return pid
+}
+
 // Start launches the detached background gateway process.
 func Start() error {
 	if IsRunning() {
@@ -253,7 +282,7 @@ func RunDaemon(serverFunc func() error) error {
 	pid := os.Getpid()
 	_ = os.MkdirAll(filepath.Dir(PIDFilePath()), 0o755)
 	_ = os.WriteFile(PIDFilePath(), []byte(strconv.Itoa(pid)), 0o600)
-	defer os.Remove(PIDFilePath())
+	defer RemovePIDFileIfOwn(PIDFilePath(), pid)
 
 	logPath := LogFilePath()
 	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)

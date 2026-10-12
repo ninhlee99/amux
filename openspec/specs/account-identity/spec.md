@@ -93,3 +93,17 @@ The CLI command `amux doctor auth` SHALL inspect all configured identities and a
 - **WHEN** an identity's JWT expiration time has passed
 - **THEN** `amux doctor auth` reports the credential as expired and suggests re-authenticating with `amux login <provider>`
 
+### Requirement: Web sessions on paid plans stay web identities
+Migration SHALL classify a provider whose type is a web type as tier `web` with `cdp` auth regardless of its plan. Loading identities SHALL repair web identities (id containing `:web:`, `chatgpt:` ids, or a "… Web" provider) stored as subscriptions back to active web identities.
+
+#### Scenario: Gemini Web on Google AI Pro
+- **WHEN** accounts.json lists `gemini:web:x` of type `gemini_web` with plan `pro`
+- **THEN** the identity is tier `web`, auth `cdp`, active
+
+### Requirement: Fresh installs keep subscriptions out of the pool
+Migrating accounts.json SHALL classify CLI OAuth logins (`claude`, `claude_oauth`, `codex`, `codex_cli`, `antigravity`, `agy`) as subscriptions outside the rotation pool, keep providers with an API key as API keys, and migrate `enabled: false` as turned off. The live CLI login SHALL NOT be added as an extra "(email unknown)" subscription when that product already has one.
+
+#### Scenario: accounts.json only
+- **WHEN** amux starts with an AMUX_HOME holding only accounts.json with Claude Code (enabled:false) and Codex logins
+- **THEN** both are listed as subscriptions outside the pool, Claude Code is off, and no duplicate Claude Code row appears
+

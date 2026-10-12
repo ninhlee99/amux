@@ -162,17 +162,49 @@ func TestEnrichRequestMetadata_ProjectExtraction(t *testing.T) {
 	}
 }
 
-func TestPoolSend_FailSafeDirectFallback(t *testing.T) {
+// A failed pool never falls back to the user's own Claude/Codex login unless
+// that subscription is in the rotation pool, and never for a pinned request.
+func TestPoolSend_DirectFallbackOnlyForPooledSubscription(t *testing.T) {
 	resetPacingForTest(t)
-	// Pool with empty adapters
+	asked := 0
+	old := subscriptionPooled
+	subscriptionPooled = func(string) bool { asked++; return false }
+	t.Cleanup(func() { subscriptionPooled = old })
+
 	pool := router.NewAccountPoolRouter(nil)
 	httpReq := httptest.NewRequest("POST", "/v1/messages", nil)
-	chatReq := &types.ChatRequest{ClientDialect: "claude"}
+	if _, err := poolSend(httpReq, pool, &types.ChatRequest{ClientDialect: "claude"}); err == nil {
+		t.Fatal("empty pool must fail when no subscription is pooled")
+	}
+	if asked != 1 {
+		t.Fatalf("pool membership must gate the fallback, asked %d times", asked)
+	}
 
-	_, err := poolSend(httpReq, pool, chatReq)
-	// If keychain token exists on local mac, it tries direct fallback; otherwise it returns empty pool error without panic
-	if err != nil && !strings.Contains(err.Error(), "no adapter available") && !strings.Contains(err.Error(), "keychain") {
-		t.Logf("poolSend returned expected error when no keychain/adapters: %v", err)
+	pinned := httptest.NewRequest("POST", "/v1/messages", nil)
+	pinned.Header.Set("X-Provider", "chatgpt:x")
+	if _, err := poolSend(pinned, pool, &types.ChatRequest{ClientDialect: "claude"}); err == nil {
+		t.Fatal("pinned request to a missing account must fail")
+	}
+	if asked != 1 {
+		t.Fatalf("a pinned request must never fall back")
 	}
 }
 
+
+// Without a manual pin, session-switch detection never pins sessions itself:
+// the router's affinity keeps each session on its account across turns.
+func TestSessionSwitched_OnlyForManualPin(t *testing.T) {
+	resetPacingForTest(t)
+	pool := router.NewAccountPoolRouter(nil)
+	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := &types.ChatRequest{SessionID: "sess-switch-test"}
+	pool.NoteAutoSwitch("chatgpt:a")
+	for i := 0; i < 3; i++ {
+		if switched, _ := SessionSwitched(httpReq, req, pool); switched {
+			t.Fatalf("turn %d: auto-switch status must not count as a session switch", i)
+		}
+	}
+	if _, ok := guard.GlobalAffinity().GetPinned("sess-switch-test"); ok {
+		t.Fatal("detection must not pin the session")
+	}
+}

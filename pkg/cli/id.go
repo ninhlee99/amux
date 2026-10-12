@@ -99,6 +99,18 @@ func parseJWTEmail(tok string) string {
 	return strings.TrimSpace(claims.Email)
 }
 
+// hasSubscriptionFor reports whether cfg already holds a subscription of the
+// product named by provider ("claude", "codex", "antigravity").
+func hasSubscriptionFor(cfg *identity.Config, provider string) bool {
+	want := identity.CanonicalProvider(provider)
+	for _, id := range cfg.Identities {
+		if id.IsSubscription() && identity.CanonicalProvider(id.Provider) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func syncAddressableAdaptersToIdentities() {
 	_, _ = identity.MigrateLegacyAccounts("", "")
 	adapters, err := provider.LoadAllAddressable(provider.DefaultAccountsPath())
@@ -170,6 +182,12 @@ func syncAddressableAdaptersToIdentities() {
 					}
 				}
 			}
+		}
+		if (email == "" || email == "-") && tier == identity.TierSubscription && hasSubscriptionFor(cfg, providerName) {
+			// The live CLI login with no known email is one of the
+			// subscriptions already listed: adding it would show a
+			// duplicate "(email unknown)" account.
+			continue
 		}
 		meta := map[string]interface{}{
 			"migrated_from": "system_adapter",

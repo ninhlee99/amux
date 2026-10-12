@@ -67,7 +67,30 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Identities == nil {
 		cfg.Identities = []Identity{}
 	}
+	repairWebTiers(&cfg)
 	return &cfg, nil
+}
+
+// repairWebTiers fixes web sessions that older migrations stored as OAuth
+// subscriptions because their plan was paid. Left alone they would be built as
+// Antigravity / Claude OAuth adapters and drop out of the web rotation.
+func repairWebTiers(cfg *Config) {
+	for i := range cfg.Identities {
+		id := &cfg.Identities[i]
+		if !id.IsSubscription() || !isWebIdentity(*id) {
+			continue
+		}
+		id.Tier = TierWeb
+		id.AuthType = string(AuthCDP)
+		id.Active = IsEnabled(*id)
+	}
+}
+
+// isWebIdentity reports whether id names a browser-session product.
+func isWebIdentity(id Identity) bool {
+	lid := strings.ToLower(id.ID)
+	return strings.Contains(lid, ":web:") || strings.HasPrefix(lid, "chatgpt:") ||
+		strings.HasSuffix(strings.ToLower(id.Provider), " web")
 }
 
 // SaveConfig atomically writes the flat identity config to disk with AES-256-GCM encryption at rest.

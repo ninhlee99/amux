@@ -148,3 +148,104 @@ func TestMigrateLegacyAccounts_ChatGPTWebAndCodexStaySeparate(t *testing.T) {
 		t.Errorf("subscription must not be disabled by migration, got %v", codex.Metadata)
 	}
 }
+
+// A web session on a paid plan stays a web identity: plan "pro" must not turn
+// Gemini Web / Claude Web into an OAuth subscription.
+func TestMigrateLegacyAccounts_PaidWebPlanStaysWeb(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("AMUX_HOME", tmpDir)
+
+	accountsPath := filepath.Join(tmpDir, "accounts.json")
+	identitiesPath := filepath.Join(tmpDir, "identities.json")
+
+	doc := identity.LegacyAccountDoc{
+		Providers: []identity.LegacyProvider{
+			{ID: "gemini:web:bi117ute", Type: "gemini_web", Account: "bi117.ute@gmail.com", Plan: "pro"},
+			{ID: "claude:web:bi117ute", Type: "claude_web", Account: "bi117.ute@gmail.com", Plan: "pro"},
+		},
+	}
+	docBytes, _ := json.Marshal(doc)
+	_ = os.WriteFile(accountsPath, docBytes, 0o600)
+
+	if _, err := identity.MigrateLegacyAccounts(accountsPath, identitiesPath); err != nil {
+		t.Fatalf("MigrateLegacyAccounts failed: %v", err)
+	}
+	cfg, err := identity.LoadConfig(identitiesPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg.Identities) != 2 {
+		t.Fatalf("want 2 identities, got %+v", cfg.Identities)
+	}
+	for _, id := range cfg.Identities {
+		if id.Tier != identity.TierWeb || id.AuthType != string(identity.AuthCDP) || !id.Active {
+			t.Errorf("%s = tier %s auth %s active %v, want active web/cdp", id.ID, id.Tier, id.AuthType, id.Active)
+		}
+	}
+}
+
+// Identities saved by the old migration as subscriptions are repaired on load.
+func TestLoadConfig_RepairsWebStoredAsSubscription(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("AMUX_HOME", tmpDir)
+	path := filepath.Join(tmpDir, "identities.json")
+
+	cfg := &identity.Config{Identities: []identity.Identity{
+		{ID: "gemini:web:bi117ute", Provider: "Gemini Web", Tier: identity.TierSubscription, AuthType: string(identity.AuthOAuth)},
+		{ID: "agy:01", Provider: "Antigravity", Tier: identity.TierSubscription, AuthType: string(identity.AuthOAuth)},
+	}}
+	if err := identity.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := identity.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := got.Identities[0]; g.Tier != identity.TierWeb || g.AuthType != string(identity.AuthCDP) || !g.Active {
+		t.Errorf("gemini web not repaired: %+v", g)
+	}
+	if a := got.Identities[1]; a.Tier != identity.TierSubscription || a.Active {
+		t.Errorf("antigravity subscription must stay untouched: %+v", a)
+	}
+}
+
+// A fresh install migrates CLI logins as subscriptions outside the pool, keeps
+// accounts the user turned off off, and keeps real API keys as API keys.
+func TestMigrateLegacyAccounts_FreshInstallTiers(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("AMUX_HOME", tmpDir)
+	accountsPath := filepath.Join(tmpDir, "accounts.json")
+	identitiesPath := filepath.Join(tmpDir, "identities.json")
+
+	off := false
+	doc := identity.LegacyAccountDoc{Providers: []identity.LegacyProvider{
+		{ID: "claude:code:01", Type: "claude", Account: "me@x.com", Enabled: &off},
+		{ID: "codex:01", Type: "codex", Account: "me@x.com"},
+		{ID: "agy:01", Type: "antigravity"},
+		{ID: "openai:api:01", Type: "openai_compatible", ApiKey: "sk-test"},
+	}}
+	b, _ := json.Marshal(doc)
+	_ = os.WriteFile(accountsPath, b, 0o600)
+	if _, err := identity.MigrateLegacyAccounts(accountsPath, identitiesPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := identity.LoadConfig(identitiesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]identity.Identity{}
+	for _, id := range cfg.Identities {
+		got[id.ID] = id
+	}
+	for _, id := range []string{"claude:code:01", "codex:01", "agy:01"} {
+		if g := got[id]; !g.IsSubscription() || g.CanAutoRotate() {
+			t.Errorf("%s must be a subscription outside the pool, got tier %s pool %v", id, g.Tier, g.CanAutoRotate())
+		}
+	}
+	if identity.IsEnabled(got["claude:code:01"]) {
+		t.Error("enabled:false must migrate as turned off")
+	}
+	if got["openai:api:01"].Tier != identity.TierAPIKey {
+		t.Errorf("api key account must stay api_key, got %s", got["openai:api:01"].Tier)
+	}
+}

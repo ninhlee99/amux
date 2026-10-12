@@ -52,6 +52,9 @@ func WebBackendPromptForProvider(provider string, req *types.ChatRequest, contin
 		return enforceWebPromptLimit(body, ctxshrink.AbsoluteMaxWebRunes)
 	}
 	closer := tools.WebCloserForProvider(provider)
+	if waitingOnBackgroundAgent(req.Messages) {
+		closer = backgroundAgentCue + closer
+	}
 	if !liveThread {
 		if ranTools {
 			closer = midTaskCue(req.Messages) + closer
@@ -260,4 +263,24 @@ func endsWithUserRequest(msgs []types.ChatMessage) bool {
 		// If role == "system", continue scanning backwards past client reminders.
 	}
 	return false
+}
+
+const backgroundAgentCue = "\n[note] A background subagent is still running. The client delivers its result to you automatically as a notification. Do not poll for it (no ListAgents, SendMessage, sleep or Monitor loops): do any remaining independent step, otherwise end this turn now with a one-line status.\n"
+
+// waitingOnBackgroundAgent is true when a subagent launched in the background
+// has not reported back yet. Web models otherwise burn turns polling it with
+// ListAgents / sleep instead of waiting for Claude Code's notification.
+func waitingOnBackgroundAgent(msgs []types.ChatMessage) bool {
+	running := 0
+	for _, m := range msgs {
+		c := m.Content
+		if strings.EqualFold(m.Role, "tool") {
+			running += strings.Count(c, "Async agent launched")
+			continue
+		}
+		if done := strings.Count(c, "<task-notification>"); done > 0 {
+			running = max(0, running-done)
+		}
+	}
+	return running > 0
 }

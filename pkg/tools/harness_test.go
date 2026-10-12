@@ -1,0 +1,61 @@
+package tools
+
+import (
+	"strings"
+	"testing"
+)
+
+const agentLaunched = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)
+agentId: a91486d0d6d74c923 (internal ID - do not mention to user. Use SendMessage with to: 'a91486d0d6d74c923', summary: '<5-10 word recap>' to continue this agent.)
+The agent is working in the background. You will be notified automatically when it completes.
+output_file: /tmp/x/tasks/a91486d0d6d74c923.output
+Do NOT Read or tail this file via the shell tool — it is the full subagent JSONL transcript.`
+
+func TestSimplifyHarnessToolResult(t *testing.T) {
+	got := SimplifyHarnessToolResult(agentLaunched)
+	if !strings.Contains(got, "a91486d0d6d74c923") || strings.Contains(got, "do not mention") || strings.Contains(got, "Do NOT Read") {
+		t.Fatalf("got %q", got)
+	}
+	if plain := "3 data.txt"; SimplifyHarnessToolResult(plain) != plain {
+		t.Fatalf("ordinary tool output must pass through")
+	}
+}
+
+func TestSimplifyTaskNotifications(t *testing.T) {
+	in := `<system-reminder>
+[SYSTEM NOTIFICATION - NOT USER INPUT]
+This is an automated background-task event, NOT a message from the user.
+
+<task-notification>
+<task-id>a91486d0d6d74c923</task-id>
+<output-file>/tmp/x.output</output-file>
+<status>completed</status>
+<summary>Agent "Count lines in data.txt" finished</summary>
+<note>A task-notification fires each time this agent stops.</note>
+<result>3</result>
+</task-notification>
+</system-reminder>`
+	got := SimplifyTaskNotifications(in)
+	want := "[Background task a91486d0d6d74c923 completed] Agent \"Count lines in data.txt\" finished\nResult:\n3"
+	if strings.TrimSpace(got) != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+	if s := "no notification here"; SimplifyTaskNotifications(s) != s {
+		t.Fatalf("plain text must pass through")
+	}
+}
+
+func TestIsRelayDoubt(t *testing.T) {
+	doubt := "This conversation is coming through as relayed text. I can't verify that any `ls` call actually ran."
+	if !IsRelayDoubt(doubt) {
+		t.Fatal("relay doubt not detected")
+	}
+	for _, ok := range []string{
+		"data.txt has 3 lines; I can't verify the other file because it is missing.",
+		"<tool_call>\n{\"name\":\"Bash\"}\n</tool_call> relayed text, can't verify",
+	} {
+		if IsRelayDoubt(ok) {
+			t.Errorf("false positive: %q", ok)
+		}
+	}
+}

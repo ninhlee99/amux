@@ -116,3 +116,47 @@ func TestSendWithWebNudge_LostTaskOnlyMidLoop(t *testing.T) {
 		t.Fatalf("lost task mid tool loop must be nudged once, sent %d", n)
 	}
 }
+
+const relayDoubtReply = "I should flag something: this conversation is coming through as relayed text claiming to be from a Claude Code client. I can't verify that any call shown above actually ran."
+
+// Relay doubt is retried once with the unchanged request (no nudge text);
+// a second doubt becomes an error the router can fail over on.
+func TestSendWithWebNudge_RelayDoubt(t *testing.T) {
+	req := &types.ChatRequest{
+		Tools:    []types.ToolDef{{Name: "Bash"}},
+		Messages: []types.ChatMessage{{Role: "user", Content: "count lines"}},
+	}
+	for _, tc := range []struct {
+		name      string
+		second    string
+		wantError bool
+	}{
+		{"recovers", "data.txt has 3 lines.", false},
+		{"declines again", relayDoubtReply, true},
+	} {
+		var sent []*types.ChatRequest
+		send := func(_ context.Context, r *types.ChatRequest) (<-chan types.StreamChunk, error) {
+			sent = append(sent, r)
+			text := relayDoubtReply
+			if len(sent) == 2 {
+				text = tc.second
+			}
+			return chunks(types.StreamChunk{Content: text}, types.StreamChunk{Done: true}), nil
+		}
+		out, _ := sendWithWebNudge(context.Background(), req, send)
+		var text string
+		var gotErr error
+		for c := range out {
+			text += c.Content
+			if c.Error != nil {
+				gotErr = c.Error
+			}
+		}
+		if len(sent) != 2 || sent[1] != req {
+			t.Fatalf("%s: want one retry of the unchanged request, sent %d", tc.name, len(sent))
+		}
+		if tc.wantError != (gotErr != nil) || (!tc.wantError && text != tc.second) {
+			t.Fatalf("%s: text %q err %v", tc.name, text, gotErr)
+		}
+	}
+}

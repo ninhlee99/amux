@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"amux-accounts/pkg/browser"
 	"amux-accounts/pkg/tools"
@@ -28,11 +31,17 @@ type ChatGPTWebAdapter struct {
 	RefreshToken string
 	TargetModel  string
 	PlanTier     string // "plus" | "pro" | "team" | "free" | …
+	Account      string // configured email; a refresh never adopts another account's session
 	HTTPClient   *http.Client
 
 	mu      sync.Mutex
 	convMgr *ProjectConversationManager
+	// refreshFailedAt backs off session refreshes after one fails, so a
+	// client retrying a dead account does not re-read the browser each time.
+	refreshFailedAt time.Time
 }
+
+const chatgptRefreshBackoff = 5 * time.Minute
 
 func (a *ChatGPTWebAdapter) convs() *ProjectConversationManager {
 	a.mu.Lock()
@@ -117,7 +126,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			if isSkillExpansion(tools.CleanUserTurnContent(m.Content)) {
 				sb.WriteString(skillLoadedNote)
 			}
-			sb.WriteString(m.Content)
+			sb.WriteString(tools.SimplifyTaskNotifications(m.Content))
 			sb.WriteString("\n\n")
 		case "assistant":
 			sb.WriteString("Assistant: ")
@@ -160,7 +169,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 					sb.WriteString("User: [Tool result — CLI ran]:\n")
 				}
 			}
-			toolContent := tools.PruneToolResult(m.Content)
+			toolContent := tools.PruneToolResult(tools.SimplifyHarnessToolResult(m.Content))
 			// If this is an older tool result and exceeds limit, keep essential head & tail to avoid HTTP 413 while preserving exit codes/errors
 			if idx < len(messages)-2 && len(toolContent) > 2000 {
 				r := []rune(toolContent)
@@ -192,6 +201,60 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 	return strings.TrimSpace(out.String())
 }
 
+// reChatGPTCitation matches ChatGPT's private-use citation markers
+// ("\ue200cite\ue202turn0search0\ue201"), which render as nothing in
+// chatgpt.com but as garbage in a client.
+var reChatGPTCitation = regexp.MustCompile("\ue200[^\ue201]*\ue201")
+
+// stripChatGPTCitations removes citation markers, and an unfinished one at
+// the end of a streaming snapshot.
+func stripChatGPTCitations(s string) string {
+	if !strings.Contains(s, "\ue200") {
+		return s
+	}
+	s = reChatGPTCitation.ReplaceAllString(s, "")
+	if i := strings.LastIndex(s, "\ue200"); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// isChatGPTAuthFailure reports a 401 / expired-token answer from ChatGPT.
+func isChatGPTAuthFailure(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "status 401") || strings.Contains(s, "token_expired")
+}
+
+// chatgptJWTExpired reports whether the access token's exp claim has passed
+// (with a minute of slack). Tokens without a readable exp are not expired.
+func chatgptJWTExpired(tok string, now time.Time) bool {
+	parts := strings.Split(tok, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp == 0 {
+		return false
+	}
+	return now.Add(time.Minute).Unix() >= claims.Exp
+}
+
+// chatGPTRateLimitErr carries ChatGPT's Retry-After so the router cools the
+// account down for as long as the limit lasts.
+func chatGPTRateLimitErr(id, msg string, h http.Header) error {
+	text := fmt.Sprintf("%s: %s", id, types.ErrRateLimitReached)
+	if msg != "" {
+		text += ": " + msg
+	}
+	return types.NewRateLimitError(text, time.Duration(parseRetryAfterSeconds(h))*time.Second)
+}
+
 func isChatGPTRateLimit(statusCode int, body string) bool {
 	if statusCode == http.StatusTooManyRequests {
 		return true
@@ -204,7 +267,22 @@ func isChatGPTRateLimit(statusCode int, body string) bool {
 		strings.Contains(lower, "try again later")
 }
 
-func (a *ChatGPTWebAdapter) refreshSession() error {
+func (a *ChatGPTWebAdapter) refreshSession() (err error) {
+	a.mu.Lock()
+	if !a.refreshFailedAt.IsZero() && time.Since(a.refreshFailedAt) < chatgptRefreshBackoff {
+		a.mu.Unlock()
+		return fmt.Errorf("session refresh failed recently; retrying after %s", chatgptRefreshBackoff)
+	}
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		if err != nil {
+			a.refreshFailedAt = time.Now()
+		} else {
+			a.refreshFailedAt = time.Time{}
+		}
+		a.mu.Unlock()
+	}()
 	a.mu.Lock()
 	cookie := a.RefreshToken
 	if cookie == "" {
@@ -217,22 +295,27 @@ func (a *ChatGPTWebAdapter) refreshSession() error {
 	}
 
 	sess, err := browser.FetchChatGPTSession(cookie)
-	if err != nil {
-		// Fallback: try extracting fresh cookie directly from browser
-		if tok, _, bErr := browser.ExtractCookie("chatgpt.com", "__Secure-next-auth.session-token"); bErr == nil && tok != "" {
-			cf, _, _ := browser.ExtractCookie("chatgpt.com", "cf_clearance")
-			freshCookie := "__Secure-next-auth.session-token=" + tok
-			if cf != "" {
-				freshCookie += "; cf_clearance=" + cf
-			}
-			sess, err = browser.FetchChatGPTSession(freshCookie)
-			if err == nil {
-				cookie = freshCookie
-			}
-		}
+	if err == nil {
+		err = checkSessionAccount(a.AdapterID, a.Account, sess.Email)
 	}
 	if err != nil {
-		return fmt.Errorf("refresh chatgpt session: %w", err)
+		// The stored cookie is dead (or another account's): look for this
+		// account's session in every browser profile.
+		var fresh *browser.ChatGPTSession
+		picked, perr := pickBrowserSession(a.AdapterID, a.Account,
+			browserSessionsFor("chatgpt.com", "__Secure-next-auth.session-token", "cf_clearance"),
+			func(s browserSession) (string, error) {
+				got, ferr := browser.FetchChatGPTSession(s.Jar)
+				if ferr != nil {
+					return "", ferr
+				}
+				fresh = got
+				return got.Email, nil
+			})
+		if perr != nil {
+			return fmt.Errorf("refresh chatgpt session: %w", perr)
+		}
+		sess, cookie = fresh, picked.Jar
 	}
 
 	a.mu.Lock()
@@ -250,7 +333,10 @@ func (a *ChatGPTWebAdapter) SendMessageStream(ctx context.Context, req *types.Ch
 }
 
 func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest) (<-chan types.StreamChunk, error) {
-	if a.SessionToken == "" && a.RefreshToken != "" {
+	a.mu.Lock()
+	stale := a.SessionToken == "" || chatgptJWTExpired(a.SessionToken, time.Now())
+	a.mu.Unlock()
+	if stale && a.RefreshToken != "" {
 		_ = a.refreshSession()
 	}
 	if a.SessionToken == "" {
@@ -267,6 +353,17 @@ func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest
 	accountID := chatgptAccountIDFromJWT(a.SessionToken)
 	deviceID := newUUIDv4()
 	sentinel, err := fetchChatGPTSentinel(ctx, a.client(), a.SessionToken, accountID, deviceID)
+	if err != nil && isChatGPTAuthFailure(err) {
+		// The access token expired (or was revoked) before the conversation
+		// call could refresh it: refresh here and retry once.
+		if rerr := a.refreshSession(); rerr == nil {
+			accountID = chatgptAccountIDFromJWT(a.SessionToken)
+			sentinel, err = fetchChatGPTSentinel(ctx, a.client(), a.SessionToken, accountID, deviceID)
+		}
+		if err != nil && isChatGPTAuthFailure(err) {
+			return nil, fmt.Errorf("%s: %w: %v (run: amux login chatgpt)", a.AdapterID, types.ErrAuthentication, err)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", a.AdapterID, err)
 	}
@@ -371,7 +468,7 @@ func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest
 				log.Printf("%s: rate limited on current thread for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
 				continue
 			}
-			return nil, types.ErrRateLimitReached
+			return nil, chatGPTRateLimitErr(a.AdapterID, "", resp.Header)
 		}
 
 		if resp.StatusCode >= 400 {
@@ -388,7 +485,7 @@ func (a *ChatGPTWebAdapter) sendOnce(ctx context.Context, req *types.ChatRequest
 					log.Printf("%s: rate limited on current thread for project %s — starting a new ChatGPT conversation", a.AdapterID, project)
 					continue
 				}
-				return nil, fmt.Errorf("%s: %w: %s", a.AdapterID, types.ErrRateLimitReached, msg)
+				return nil, chatGPTRateLimitErr(a.AdapterID, msg, resp.Header)
 			}
 			if resp.StatusCode == http.StatusNotFound {
 				if !rotatedConv {
@@ -448,7 +545,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		}
 		if payload == "[DONE]" {
 			if convID != "" && msgID != "" {
-				if tools.IsToolRefusal(lastText) {
+				if tools.ResetsThread(lastText) {
 					log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 					a.convs().ResetProject(project)
 				} else {
@@ -554,7 +651,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		}
 
 		if len(chunk.Message.Content.Parts) > 0 {
-			fullText := chunk.Message.Content.Parts[0]
+			fullText := stripChatGPTCitations(chunk.Message.Content.Parts[0])
 			if strings.HasPrefix(fullText, lastText) {
 				delta := fullText[len(lastText):]
 				lastText = fullText
@@ -573,7 +670,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 
 		if chunk.Message.Status == "finished_successfully" && lastText != "" {
 			if convID != "" && msgID != "" {
-				if tools.IsToolRefusal(lastText) {
+				if tools.ResetsThread(lastText) {
 					log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 					a.convs().ResetProject(project)
 				} else {
@@ -590,7 +687,7 @@ func streamChatGPTWeb(ctx context.Context, a *ChatGPTWebAdapter, project, sessio
 		return
 	}
 	if convID != "" && msgID != "" {
-		if tools.IsToolRefusal(lastText) {
+		if tools.ResetsThread(lastText) {
 			log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 			a.convs().ResetProject(project)
 		} else {

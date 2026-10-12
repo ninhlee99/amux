@@ -2,9 +2,7 @@
 
 ## Purpose
 TBD - created by archiving change upgrade-tier2-web-gateway. Update Purpose after archive.
-
 ## Requirements
-
 ### Requirement: Smart tool result pruning
 The gateway SHALL prune overly long tool results (exceeding 4KB or 100 lines) when flattening multi-turn message history for Web providers, preserving the leading 30 lines and trailing 40 lines with a truncation summary indicator.
 
@@ -123,3 +121,32 @@ Text the client receives from a web reply SHALL NOT contain lines that only repe
 #### Scenario: Gemini echoes the wait line
 - **WHEN** a Gemini Web reply is "Wait for [Tool result] before continuing." followed by a `<tool_call>`
 - **THEN** the client receives the tool call and no text
+
+### Requirement: Client harness metadata is condensed for web models
+Web prompts SHALL replace Claude Code's "Async agent launched" tool result with one line naming the agent id, and each `<task-notification>` (with its system-notification wrapper) with `[Background task <id> <status>] <summary>` plus its result.
+
+#### Scenario: background agent completes
+- **WHEN** the history holds an "Async agent launched" result and a task notification with result `3`
+- **THEN** the web prompt shows "Background subagent started (id …)" and "[Background task … completed] … Result: 3", without the harness directives
+
+### Requirement: Web models wait for background agents
+While a launched background agent has not reported back, the web prompt SHALL tell the model that the result arrives as a notification and not to poll for it.
+
+#### Scenario: agent still running
+- **WHEN** a tool result says an async agent launched and no task notification followed
+- **THEN** the prompt closer contains the do-not-poll note
+
+### Requirement: Claude Web preamble describes the relay
+The Claude Web tool preamble SHALL state that the conversation is relayed from the user's coding-agent client, which runs `<tool_call>` blocks on the user's machine and pastes real output back, separate from claude.ai's own sandbox tools.
+
+#### Scenario: claude.ai receives a tool result
+- **WHEN** a Claude Web prompt carries tools
+- **THEN** it begins with the relay description
+
+### Requirement: Relay doubt is retried on a fresh thread, not argued with
+A web reply without a tool call that declines because the model doubts the relayed tool results SHALL reset the web thread and be retried once with the unchanged request. If the retry declines again, the turn SHALL fail with an error before any content so the router can try another account.
+
+#### Scenario: claude.ai doubts the relay once
+- **WHEN** Claude Web replies that it cannot verify the relayed [Tool result]s and the retry on a fresh chat continues the task
+- **THEN** the client receives the retry's reply only
+

@@ -422,9 +422,13 @@ func cmdGatewaySupervise() {
 		die("find self binary: %v", err)
 	}
 	pidPath := gateway.SupervisorPIDFilePath()
+	if other := gateway.LivePIDInFile(pidPath); other != 0 {
+		fmt.Fprintf(os.Stderr, "amux supervisor: another supervisor (pid %d) is already running — not starting a second one\n", other)
+		return
+	}
 	_ = os.MkdirAll(filepath.Dir(pidPath), 0o755)
 	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600)
-	defer os.Remove(pidPath)
+	defer gateway.RemovePIDFileIfOwn(pidPath, os.Getpid())
 	_ = proxy.RunSupervisor(self, "gateway", "_daemon")
 }
 

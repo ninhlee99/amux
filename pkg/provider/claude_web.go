@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ type ClaudeWebAdapter struct {
 	Cookies     string // full Cookie header from login CDP (preferred over SessionKey alone)
 	TargetModel string
 	PlanTier    string // "pro" | "max" | "team" | "free" | …
+	Account     string // configured email; a refresh never adopts another account's session
 	HTTPClient  *http.Client
 
 	// Cached across turns in one am chat / pool process so we don't burn
@@ -128,6 +130,9 @@ func (a *ClaudeWebAdapter) refreshCookiesFromProfile() error {
 	if err != nil {
 		return err
 	}
+	if err := a.checkBrowserAccount(auth.SessionValue, auth.CookieHeader); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	a.Cookies = auth.CookieHeader
 	if auth.SessionValue != "" {
@@ -147,15 +152,22 @@ func (a *ClaudeWebAdapter) refreshCookiesFromProfile() error {
 
 // refreshSessionFromBrowser pulls fresh sessionKey and Cloudflare cookies directly from installed browsers.
 func (a *ClaudeWebAdapter) refreshSessionFromBrowser() error {
-	tok, _, err := browser.ExtractCookie("claude.ai", "sessionKey")
-	if err != nil || tok == "" {
+	picked, err := pickBrowserSession(a.AdapterID, a.Account,
+		browserSessionsFor("claude.ai", "sessionKey", "cf_clearance"),
+		func(s browserSession) (string, error) {
+			if a.Account == "" {
+				return "", nil
+			}
+			acct, ferr := browser.FetchClaudeAccount(s.Value, s.Jar)
+			if ferr != nil || acct == nil {
+				return "", fmt.Errorf("claude account lookup: %v", ferr)
+			}
+			return acct.Email, nil
+		})
+	if err != nil {
 		return fmt.Errorf("extract claude sessionKey: %w", err)
 	}
-	cf, _, _ := browser.ExtractCookie("claude.ai", "cf_clearance")
-	jar := "sessionKey=" + tok
-	if cf != "" {
-		jar += "; cf_clearance=" + cf
-	}
+	tok, jar := picked.Value, picked.Jar
 
 	a.mu.Lock()
 	a.SessionKey = tok
@@ -168,6 +180,19 @@ func (a *ClaudeWebAdapter) refreshSessionFromBrowser() error {
 	log.Printf("%s: auto-refreshed sessionKey from browser", a.AdapterID)
 	a.refreshPlanAndModel()
 	return nil
+}
+
+// checkBrowserAccount rejects a browser session signed in to another claude.ai
+// account than this adapter's.
+func (a *ClaudeWebAdapter) checkBrowserAccount(sessionKey, jar string) error {
+	if a.Account == "" || sessionKey == "" {
+		return nil
+	}
+	acct, err := browser.FetchClaudeAccount(sessionKey, jar)
+	if err != nil || acct == nil {
+		return nil
+	}
+	return checkSessionAccount(a.AdapterID, a.Account, acct.Email)
 }
 
 // refreshPlanAndModel re-detects tier/model so skipFreeWebHardTask doesn't
@@ -447,14 +472,42 @@ func parseRetryAfterSeconds(h http.Header) int {
 
 func claudeFreeRateLimitErr(id string, body []byte, retryAfter int) error {
 	hint := "Claude free/plan message limit — wait a few minutes, use another provider (geminiapi/chatgptweb), or upgrade Pro"
-	if retryAfter > 0 {
-		hint = fmt.Sprintf("%s (Retry-After=%ds)", hint, retryAfter)
+	wait := time.Duration(retryAfter) * time.Second
+	if wait <= 0 {
+		wait = claudeLimitResetIn(body, time.Now())
 	}
-	msg := string(bytes.TrimSpace(body))
-	if msg == "" {
-		return fmt.Errorf("%s: %w: %s", id, types.ErrRateLimitReached, hint)
+	if wait > 0 {
+		hint = fmt.Sprintf("%s (resets in %s)", hint, wait.Round(time.Second))
 	}
-	return fmt.Errorf("%s: %w: %s — %s", id, types.ErrRateLimitReached, hint, msg)
+	msg := fmt.Sprintf("%s: %s: %s", id, types.ErrRateLimitReached, hint)
+	if b := string(bytes.TrimSpace(body)); b != "" {
+		msg += " — " + b
+	}
+	// The router cools the account down until the limit resets, instead of
+	// retrying it every couple of minutes.
+	return types.NewRateLimitError(msg, wait)
+}
+
+var reClaudeResetsAt = regexp.MustCompile(`resetsAt\\?"\s*:\s*(\d{9,13})`)
+
+// claudeLimitResetIn reads claude.ai's "resetsAt" (unix seconds or ms) from a
+// limit body and returns how long until then.
+func claudeLimitResetIn(body []byte, now time.Time) time.Duration {
+	m := reClaudeResetsAt.FindSubmatch(body)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(string(m[1]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	if n > 1e12 {
+		n /= 1000
+	}
+	if d := time.Unix(n, 0).Sub(now); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func setClaudeWebHeaders(req *http.Request, includeJSON bool) {
@@ -674,7 +727,7 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project, sessionI
 			continue
 		}
 		if payload == "[DONE]" {
-			if tools.IsToolRefusal(fullCompletion.String()) {
+			if tools.ResetsThread(fullCompletion.String()) {
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 				a.convs().ResetProject(project)
 			} else if convID != "" {
@@ -700,7 +753,11 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project, sessionI
 			continue
 		}
 		if chunk.Error != nil {
-			sendChunk(ctx, out, types.StreamChunk{ID: id, Error: fmt.Errorf("%s: %v", id, chunk.Error), Done: true})
+			err := fmt.Errorf("%s: %v", id, chunk.Error)
+			if raw, _ := json.Marshal(chunk.Error); bytes.Contains(raw, []byte("rate_limit")) || bytes.Contains(raw, []byte("exceeded_limit")) {
+				err = claudeFreeRateLimitErr(id, raw, 0)
+			}
+			sendChunk(ctx, out, types.StreamChunk{ID: id, Error: err, Done: true})
 			doneSent = true
 			return
 		}
@@ -720,7 +777,7 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project, sessionI
 			}
 		}
 		if chunk.StopReason != "" {
-			if tools.IsToolRefusal(fullCompletion.String()) {
+			if tools.ResetsThread(fullCompletion.String()) {
 				log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 				a.convs().ResetProject(project)
 			} else if convID != "" {
@@ -736,7 +793,7 @@ func streamClaudeWeb(ctx context.Context, a *ClaudeWebAdapter, project, sessionI
 		return
 	}
 	if !doneSent && ctx.Err() == nil {
-		if tools.IsToolRefusal(fullCompletion.String()) {
+		if tools.ResetsThread(fullCompletion.String()) {
 			log.Printf("%s: detected tool refusal in reply — resetting project conversation for %s", id, project)
 			a.convs().ResetProject(project)
 		} else if convID != "" {

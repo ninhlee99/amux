@@ -19,8 +19,7 @@ import (
 )
 
 // Claude Web templates: clean, direct agent instructions without mentioning external container sandboxes.
-const webToolPreambleClaude = `In this environment you have access to workspace tools.
-The client executes your tool calls directly in the workspace and returns [Tool result].
+const webToolPreambleClaude = `` + claudeRelayIntro + `
 To invoke a tool, emit a <tool_call> block:
 <tool_call>
 {"name":"TOOL_NAME","arguments":{...}}
@@ -36,6 +35,13 @@ Assistant: <tool_call>
 Several blocks only for independent calls (at most 5); a call that needs another's output waits for its [Tool result]. Never write results, ids or conclusions before the [Tool result] arrives. Arguments marked ? are optional — omit them unless you need them.
 CATALOG
 `
+
+// claudeRelayIntro says plainly how the session is wired. claude.ai has its
+// own sandbox tools; a vague "you have access to workspace tools" contradicts
+// them, and it then takes real [Tool result]s for injected text.
+const claudeRelayIntro = `I am relaying this conversation from my coding-agent client (Claude Code), which runs on my own machine.
+The client reads your reply as plain text, runs each <tool_call> block in my local workspace, and pastes the real output back as [Tool result].
+These workspace tools belong to that client and are separate from your own sandbox tools, which cannot see my machine.`
 
 const webToolReminderClaude = `To inspect files, run terminal commands, or edit code on the repository, invoke tools using <tool_call>:
 <tool_call>
@@ -406,8 +412,7 @@ func WebPreambleForProvider(provider string, defs []types.ToolDef) string {
 	example := dynamicToolExample(defs)
 	switch NormalizeWebProvider(provider) {
 	case "claude":
-		return `In this environment you have access to workspace tools.
-The client executes your tool calls directly in the workspace and returns [Tool result].
+		return claudeRelayIntro + `
 To invoke a tool, emit a <tool_call> block:
 <tool_call>
 {"name":"TOOL_NAME","arguments":{...}}

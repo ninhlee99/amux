@@ -9,6 +9,10 @@
 #   ./scripts/test_provider.sh gemini              # Chạy benchmark tự động với Gemini Web
 #   ./scripts/test_provider.sh chatgpt             # Chạy benchmark tự động với ChatGPT Web
 #   ./scripts/test_provider.sh claude -i           # Mở Claude Code tương tác qua Claude Web
+#   ./scripts/test_provider.sh gemini --matrix     # Glob/Grep/Skill/MCP/subagent/Write/Bash qua Gemini Web
+#
+# AMUX_TEST_PORT / AMUX_TEST_DIR chạy song song nhiều provider; gateway.log
+# được giữ lại ở "$AMUX_TEST_DIR.gateway.log".
 # ==============================================================================
 
 set -e
@@ -65,8 +69,8 @@ if [ -z "$TARGET_ID" ]; then
     exit 1
 fi
 
-TEST_PORT="18789"
-TEST_DIR="/tmp/amux-test-sandbox"
+TEST_PORT="${AMUX_TEST_PORT:-18789}"
+TEST_DIR="${AMUX_TEST_DIR:-/tmp/amux-test-sandbox}"
 
 echo "================================================="
 echo "  AMUX Isolated Provider Test"
@@ -93,6 +97,8 @@ cleanup() {
     echo "Đang dọn dẹp test gateway trên cổng $TEST_PORT..."
     [ -n "$GATEWAY_PID" ] && kill "$GATEWAY_PID" 2>/dev/null || true
     lsof -ti :"$TEST_PORT" | xargs -r kill -9 2>/dev/null || true
+    cp "$TEST_DIR/gateway.log" "$TEST_DIR.gateway.log" 2>/dev/null || true
+    cp "$TEST_DIR/requests.log" "$TEST_DIR.requests.log" 2>/dev/null || true
     rm -rf "$TEST_DIR"
     echo "✓ Hoàn tất dọn dẹp. Cổng 8787 vẫn hoạt động bình thường."
 }
@@ -100,7 +106,7 @@ trap cleanup EXIT INT TERM
 
 # 2. Khởi động Test Gateway trên cổng phụ
 echo "Khởi động AMUX Gateway trên cổng $TEST_PORT..."
-AMUX_HOME="$TEST_DIR" AM_PROXY_LISTEN="127.0.0.1:$TEST_PORT" amux gateway _daemon > "$TEST_DIR/gateway.log" 2>&1 &
+AMUX_HOME="$TEST_DIR" AM_PROXY_LISTEN="127.0.0.1:$TEST_PORT" amux gateway _daemon >> "$TEST_DIR/gateway.log" 2>&1 &
 GATEWAY_PID=$!
 
 # Đợi Gateway khởi động
@@ -115,7 +121,17 @@ done
 # 3. Thực thi kiểm thử
 cd "$TEST_DIR/work"
 
-if [ "$MODE" = "-i" ] || [ "$MODE" = "--interactive" ]; then
+if [ "$MODE" = "--matrix" ]; then
+    echo ""
+    echo "=== MA TRẬN TOOL / SKILL / MCP / SUBAGENT ==="
+    printf 'TODO: fix me\n' > notes.md
+    cat > mcp.json <<J
+{"mcpServers":{"amux":{"command":"$(command -v amux)","args":["mcp","serve"],"env":{"AMUX_HOME":"$TEST_DIR","AM_PROXY_ADDR":"127.0.0.1:$TEST_PORT"}}}}
+J
+    AMUX_HOME="$TEST_DIR" AM_PROXY_ADDR="127.0.0.1:$TEST_PORT" AMUX_PORT="$TEST_PORT" \
+    amux run claude -p "$TARGET_ID" --dangerously-skip-permissions --mcp-config mcp.json --print \
+    "Use your tools for every step; never guess results. 1) List *.txt and *.md files here. 2) Find which file contains 'TODO'. 3) Skill: invoke the skill named caveman-help and note the name of one mode it lists. 4) MCP: call the amux MCP tool amux_status and note how many providers it reports. 5) Agent: launch an Explore subagent that counts the lines of data.txt and reports the number. 6) Write result.txt containing the word DONE, then Bash: cat result.txt. Final answer: a numbered list with the result of each step 1-6." < /dev/null
+elif [ "$MODE" = "-i" ] || [ "$MODE" = "--interactive" ]; then
     echo ""
     echo "=== BẮT ĐẦU PHIÊN TƯƠNG TÁC CLAUDE CODE ==="
     echo "Gõ prompt bạn muốn test. Nhấn Ctrl+D hoặc gõ /exit để thoát."

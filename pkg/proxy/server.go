@@ -800,13 +800,14 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 			// compact the transcript so the new account does not pay massive
 			// uncached / cache_creation token penalties on stale historical context.
 			targetAccount := rot.Active()
+			var switched bool
+			var prevAcct string
 			if usePool {
 				targetAccount = pool.Preferred()
-				if targetAccount == "" {
-					targetAccount = "pool"
-				}
+				switched, prevAcct = bridge.SessionSwitched(r, parsedReq, pool)
+			} else {
+				switched, prevAcct = guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount)
 			}
-			switched, prevAcct := guard.CheckSessionAccountSwitch(r, parsedReq, targetAccount)
 			if switched && parsedReq != nil {
 				// Only compact if transcript is actually massive (>20 messages and >30,000 tokens)
 				// or target is web tier. Preserves exact text & prompt cache for normal subscription accounts.
@@ -851,7 +852,7 @@ func newHandler(rot *Rotator, life *Lifecycle, mode *ProxyMode, chatPool, toolPo
 				}
 				if autoFromClaude {
 					if id := pool.LastUsed(); id != "" {
-						pool.SetPreferred(id)
+						pool.NoteAutoSwitch(id)
 						mode.Set("provider")
 						log.Printf("amux: auto-switched active provider → %s (status updated)", id)
 					}
@@ -1140,13 +1141,10 @@ func serveWithResilience(
 		r.ContentLength = int64(len(body))
 		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 
-		if parsedReq != nil {
-			guard.CheckSessionAccountSwitch(r, parsedReq, poolName)
-		}
 
 		if err := bridge.HandleClaudeMessages(w, r, toolPool, body); err == nil {
 			if id := toolPool.LastUsed(); id != "" {
-				toolPool.SetPreferred(id)
+				toolPool.NoteAutoSwitch(id)
 				if mode != nil {
 					mode.Set("provider")
 				}

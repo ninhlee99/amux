@@ -135,6 +135,69 @@ func ExtractCookie(domainFilter, cookieName string) (string, string, error) {
 	return "", "", fmt.Errorf("cookie %q for %q not found in any browser", cookieName, domainFilter)
 }
 
+// FoundCookie is one browser profile's value for a cookie, with the path of
+// the cookie store it came from so companion cookies can be read from the
+// same profile.
+type FoundCookie struct {
+	Value   string
+	Browser string
+	Store   string
+}
+
+// ExtractCookies returns every profile's unexpired value for cookieName,
+// most recently used first (the order ExtractCookie picks from). Callers that
+// need a specific account check each one instead of trusting the first.
+func ExtractCookies(domainFilter, cookieName string) []FoundCookie {
+	keychainFree := auth.UsesFileSecretStore()
+	var cands []cookieCandidate
+	for _, b := range KnownBrowsers() {
+		if _, err := os.Stat(b.CookiePath); err != nil {
+			continue
+		}
+		if keychainFree && b.KeychainService != "" {
+			continue
+		}
+		if got, err := listCookieCandidates(b, domainFilter, cookieName); err == nil {
+			cands = append(cands, got...)
+		}
+	}
+	sortCookieCandidates(cands)
+	keys := map[string][]byte{}
+	var out []FoundCookie
+	seen := map[string]bool{}
+	for _, c := range cands {
+		val, err := c.value(cookieName, keys)
+		if err != nil || val == "" || seen[val] {
+			continue
+		}
+		seen[val] = true
+		out = append(out, FoundCookie{Value: val, Browser: c.browser.Name, Store: c.browser.CookiePath})
+	}
+	return out
+}
+
+// ExtractCookieFromStore reads cookieName for domainFilter from one cookie
+// store (as returned in FoundCookie.Store).
+func ExtractCookieFromStore(store, domainFilter, cookieName string) string {
+	for _, b := range KnownBrowsers() {
+		if b.CookiePath != store {
+			continue
+		}
+		got, err := listCookieCandidates(b, domainFilter, cookieName)
+		if err != nil {
+			return ""
+		}
+		sortCookieCandidates(got)
+		keys := map[string][]byte{}
+		for _, c := range got {
+			if v, err := c.value(cookieName, keys); err == nil && v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // loginTargetForDomain maps a cookie domain to the amux login profile for it.
 func loginTargetForDomain(domain string) (WebLoginTarget, bool) {
 	d := strings.TrimPrefix(strings.ToLower(domain), ".")

@@ -133,7 +133,7 @@ func (r *Rotator) Load() {
 		r.order = append(r.order, p.Name)
 		r.tokens[p.Name] = profile.LoadClaudeToken(r.tool, p.Name)
 		r.accounts[p.Name] = p.Account
-		r.disabled[p.Name] = p.Disabled
+		r.disabled[p.Name] = p.Disabled || identityTurnedOff(r.tool, p.Account)
 	}
 	if a := profile.ReadActivePointer(r.tool); a != "" {
 		for i, n := range r.order {
@@ -191,7 +191,7 @@ func (r *Rotator) RefreshFromDisk() {
 		r.disabled = map[string]bool{}
 	}
 	for _, p := range profs {
-		r.disabled[p.Name] = p.Disabled
+		r.disabled[p.Name] = p.Disabled || identityTurnedOff(r.tool, p.Account)
 		r.accounts[p.Name] = p.Account
 		if !known[p.Name] {
 			r.order = append(r.order, p.Name)
@@ -849,4 +849,32 @@ func parseFirstTime(h http.Header, keys ...string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// identityTurnedOff reports whether the user turned off (`amux account off`)
+// the subscription identity behind a saved profile. A profile snapshotted
+// from the live login (fresh AMUX_HOME, new machine) carries no off flag of
+// its own, and must not let the gateway spend a subscription the user
+// switched off.
+var identityTurnedOff = func(tool, account string) bool {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return false
+	}
+	cfg, err := identity.LoadConfig("")
+	if err != nil {
+		return false
+	}
+	for _, id := range cfg.Identities {
+		if !id.IsSubscription() || !strings.EqualFold(id.Email(), account) {
+			continue
+		}
+		if identity.CanonicalProvider(id.Provider) != identity.CanonicalProvider(tool) {
+			continue
+		}
+		if !identity.IsEnabled(id) {
+			return true
+		}
+	}
+	return false
 }
