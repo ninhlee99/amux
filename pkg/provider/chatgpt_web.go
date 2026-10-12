@@ -123,7 +123,7 @@ func BuildConcatenatedPrompt(messages []types.ChatMessage) string {
 			sys.WriteString(m.Content)
 		case "user":
 			sb.WriteString("User: ")
-			if isSkillExpansion(tools.CleanUserTurnContent(m.Content)) {
+			if isSkillExpansionAt(messages, idx) {
 				sb.WriteString(skillLoadedNote)
 			}
 			sb.WriteString(tools.SimplifyTaskNotifications(m.Content))

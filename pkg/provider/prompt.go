@@ -209,7 +209,7 @@ func currentUserTask(messages []types.ChatMessage) string {
 		m := messages[i]
 		if strings.EqualFold(m.Role, "user") {
 			c := tools.CleanUserTurnContent(m.Content)
-			if c != "" && !isSkillExpansion(c) {
+			if c != "" && !isSkillExpansionAt(messages, i) {
 				return c
 			}
 		}
@@ -235,6 +235,22 @@ func currentUserTask(messages []types.ChatMessage) string {
 // naming it as "Task:" made ChatGPT drop the user's remaining steps.
 func isSkillExpansion(content string) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), "Base directory for this skill:")
+}
+
+// isSkillExpansionAt reports whether msgs[i] is the body Claude Code injects
+// after a Skill call. Skills start with "Base directory for this skill:";
+// commands loaded through the Skill tool (plugin or user commands) have no
+// such header, so the turn right after a "Launching skill:" result counts
+// too. Taking such a body for the user's request would replace the real task.
+func isSkillExpansionAt(msgs []types.ChatMessage, i int) bool {
+	if i < 0 || i >= len(msgs) {
+		return false
+	}
+	if isSkillExpansion(tools.CleanUserTurnContent(msgs[i].Content)) {
+		return true
+	}
+	return i > 0 && strings.EqualFold(msgs[i-1].Role, "tool") &&
+		strings.HasPrefix(strings.TrimSpace(msgs[i-1].Content), "Launching skill:")
 }
 
 // newRequestCue follows a new user request on a live thread whose session

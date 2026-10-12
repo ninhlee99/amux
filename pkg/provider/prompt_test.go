@@ -490,3 +490,21 @@ func TestWaitingOnBackgroundAgent(t *testing.T) {
 		t.Fatalf("prompt lacks the background-agent cue:\n%s", p)
 	}
 }
+
+// A command loaded through the Skill tool has no "Base directory" header:
+// it is still a skill body, gets the skill note, and never replaces the
+// user's task in the mid-task cue.
+func TestCommandExpansionIsSkillNotTask(t *testing.T) {
+	msgs := []types.ChatMessage{
+		{Role: "user", Content: "Run the 8 steps; step 5 invokes dev-workflow:status"},
+		{Role: "assistant", ToolCalls: []types.ToolCall{{ID: "t1", Name: "Skill", Arguments: `{"skill":"dev-workflow:status"}`}}},
+		{Role: "tool", ToolCallID: "t1", Content: "Launching skill: dev-workflow:status"},
+		{Role: "user", Content: "Show current status.\nRead /p/skills/status/SKILL.md and follow it."},
+	}
+	if got := currentUserTask(msgs); !strings.HasPrefix(got, "Run the 8 steps") {
+		t.Fatalf("task = %q, want the user's request", got)
+	}
+	if p := BuildConcatenatedPrompt(msgs); !strings.Contains(p, skillLoadedNote+"Show current status.") {
+		t.Fatalf("command body lacks the skill note:\n%s", p)
+	}
+}
